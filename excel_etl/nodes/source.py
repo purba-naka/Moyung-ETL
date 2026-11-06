@@ -201,8 +201,9 @@ def read_region(
         + ")"
     )
     if rows:
-        con.executemany(
-            f"INSERT INTO {quote(name)} VALUES ({', '.join('?' * len(names))})",
-            list(zip(*cols, strict=True)),
+        # one list parameter per column, unnested: ~100x faster than executemany per row
+        con.execute(
+            f"INSERT INTO {quote(name)} SELECT " + ", ".join(f"unnest(?::{t}[])" for t in types),
+            cols,
         )
     return con.table(name)
