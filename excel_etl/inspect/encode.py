@@ -278,13 +278,24 @@ def _target(
         return f"{sid} {_name(name)}", name, _parse_range(rng) if rng is not None else None, None
     if rng is not None:
         raise WorkbookError(f"{ref} is a region; give either a region id or a range, not both")
+    label, name, region, g = _region(wb, file_id, ref)
+    return label, name, region.box, g
+
+
+def _region(wb: Workbook, file_id: str, ref: str) -> tuple[str, str, Region, SheetGrid]:
+    """Region id (`F1.S12.R3`) -> (label, sheet name, region, grid)."""
+    m = _REGION_ID.match(ref) if isinstance(ref, str) else None
+    if m is None:
+        raise WorkbookError(
+            f"{ref!r} is not a region id like {file_id}.S12.R3; get one from sheet_regions"
+        )
     _, name = _resolve(wb, file_id, m[1])
     g = SheetGrid(wb, name)
     regions = detect_regions(wb, name, g)
     i = int(m[2])
     if not 1 <= i <= len(regions):
         raise WorkbookError(f"{ref}: sheet {m[1]} has regions R1..R{len(regions)}")
-    return f"{ref} {_name(name)}", name, regions[i - 1].box, g
+    return f"{ref} {_name(name)}", name, regions[i - 1], g
 
 
 def _kind(v: object) -> str:
@@ -466,8 +477,7 @@ def render_range(
     _paging(offset)
     if mode not in ("compressed", "raw"):
         raise WorkbookError(f"mode must be 'compressed' or 'raw', got {mode!r}")
-    if not isinstance(budget, int) or isinstance(budget, bool) or budget < 1:
-        raise WorkbookError(f"budget must be an integer >= 1, got {budget!r}")
+    _check_budget(budget)
     label, name, box, g = _target(wb, file_id, ref, range)
     g = g or SheetGrid(wb, name)
     extent = g.extent
@@ -480,6 +490,16 @@ def render_range(
     if mode == "raw":
         head += f", first column {col_letters(box[1])}"
     body = _compressed(g, box) if mode == "compressed" else list(_raw(g, box))
+    return _fit(head, body, offset, budget)
+
+
+def _check_budget(budget: int) -> None:
+    if not isinstance(budget, int) or isinstance(budget, bool) or budget < 1:
+        raise WorkbookError(f"budget must be an integer >= 1, got {budget!r}")
+
+
+def _fit(head: str, body: list[str], offset: int, budget: int) -> dict:
+    """Head line plus as many body lines from `offset` as fit in `budget` chars (at least one)."""
     lines, size = [_clip(head)], len(head)
     for line in body[offset:]:
         if size + len(line) + 1 > budget and len(lines) > 1:
@@ -487,3 +507,104 @@ def render_range(
         lines.append(line)
         size += len(line) + 1
     return _page(lines, offset, len(lines) - 1, len(body))
+
+
+def _column_names(g: SheetGrid, region: Region) -> list[str]:
+    """One name per column, header rows joined top to bottom: `JANUARI|PKG`."""
+    _, left, _, right = region.box
+    rows = region.header_rows
+    # ponytail: a parent label that is not merged is carried right until the next label
+    # (JANUARI over PKG..TOTAL); upgrade: stop at ColumnGroup edges if a sheet has a gap.
+    filled: list[list[str | None]] = []
+    for hr in rows[:-1]:
+        last, row = None, []
+        for c in range(left, right + 1):
+            last = g.label(hr, c) or last
+            row.append(last)
+        filled.append(row)
+    names = []
+    for i, c in enumerate(range(left, right + 1)):
+        parts = [row[i] for row in filled] + ([g.label(rows[-1], c)] if rows else [])
+        out: list[str] = []
+        for p in parts:
+            # a vertical merge repeats its label on every header row, so keep it once
+            if p and (not out or out[-1] != _name(_fmt(p))):
+                out.append(_name(_fmt(p)))
+        names.append("|".join(out) or "-")
+    return names
+
+
+def _rows(rows: list[int], n: int = 4) -> str:
+    return _few([f"r{r + 1}" for r in rows], n)
+
+
+def _profile_column(g: SheetGrid, c: int, rows: list[int]) -> str:
+    kinds: dict[str, list[int]] = {}
+    values: dict[str, list[object]] = {}
+    for r in rows:
+        v = g.get(r, c)
+        if v is None:
+            kind = "=?" if (r, c) in g.formulas else "null"
+        else:
+            kind = _kind(v)
+            values.setdefault(kind, []).append(v)
+        kinds.setdefault(kind, []).append(r)
+    filled = {k: v for k, v in kinds.items() if k not in ("null", "=?")}
+    if not filled:
+        uncached = len(kinds.get("=?", ()))
+        return f"=? x{uncached} (formulas, no cached value)" if uncached else "empty"
+    main = max(filled, key=lambda k: (len(filled[k]), k))
+    vals = values[main]
+    parts = [main]
+    if main in ("num", "date", "datetime", "time", "duration"):
+        with contextlib.suppress(TypeError):  # naive vs aware datetimes
+            lo, hi = min(vals), max(vals)
+            parts.append(_fmt(lo, 3) if lo == hi else f"{_fmt(lo, 3)}..{_fmt(hi, 3)}")
+    distinct = list(dict.fromkeys(vals))
+    if main in ("text", "bool"):
+        parts.append("e.g. " + ",".join(_fmt(v) for v in distinct[:3]))
+    parts.append(f"distinct {len(distinct)}")
+    if null := len(kinds.get("null", ())):
+        parts.append(f"null {round(100 * null / len(rows))}%")
+    if uncached := len(kinds.get("=?", ())):
+        parts.append(f"=? {uncached}")
+    for kind in sorted(filled, key=lambda k: -len(filled[k])):
+        if kind != main:
+            odd = filled[kind]
+            sample = ",".join(_fmt(v) for v in list(dict.fromkeys(values[kind]))[:2])
+            parts.append(f"odd {kind} {len(odd)} at {_rows(odd)} ({sample})")
+    return " ".join(parts)
+
+
+def profile_region(
+    wb: Workbook, file_id: str, ref: str, offset: int = 0, budget: int = 24_000
+) -> dict:
+    """Describe each column of one table (region id from sheet_regions). Use before a pipeline.
+
+    One line per column: `D JANUARI|PKG: num 0..523 distinct 31 null 4% odd text 2 at r25,r26 (x)`
+    = column letter, name from the header rows, main type with min..max, distinct values,
+    share of empty cells, `=? n` = formulas without a cached value, and `odd` = cells of
+    another type and their rows (often subtotal or label rows to drop, like JAN in a date
+    column). Total rows are left out of the numbers and listed in the first line.
+    `offset` continues a page of columns; `budget` caps the text in chars.
+    """
+    _paging(offset)
+    _check_budget(budget)
+    label, _, region, g = _region(wb, file_id, ref)
+    top, left, bottom, right = region.box
+    totals = set(region.total_rows)
+    rows = [r for r in range(region.data_start, bottom + 1) if r not in totals]
+    hdr = region.header_rows
+    head = (
+        f"{label} {_box(region.box)}: {len(rows)} data rows"
+        + (f" from r{rows[0] + 1}" if rows else "")
+        + (f", header r{hdr[0] + 1}-r{hdr[-1] + 1}" if hdr else ", no header")
+        + (f", totals left out: {_rows(sorted(totals), 6)}" if totals else "")
+        + ". col name: type range|e.g. distinct null =? odd"
+    )
+    names = _column_names(g, region)
+    body = [
+        _clip(f"{col_letters(c)} {names[i]}: {_profile_column(g, c, rows) if rows else 'no data'}")
+        for i, c in enumerate(range(left, right + 1))
+    ]
+    return _fit(head, body, offset, budget)
