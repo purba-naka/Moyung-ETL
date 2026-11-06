@@ -133,7 +133,7 @@ sources:
 Kolom baru yang cocok `group` (mis. `Phonska 6`) diterima otomatis karena
 `unpivot_groups` bekerja per pola, bukan per daftar tetap.
 
-Spec diberi versi; repair menghasilkan versi baru + diff, bukan menimpa.
+Spec diberi versi; repair menghasilkan versi baru + diff, bukan menimpa (`SpecHistory.add`, `diff_specs`; host menyimpan JSON-nya).
 
 ## 7. HITL
 

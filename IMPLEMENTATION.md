@@ -7,14 +7,14 @@ Perbarui setiap selesai satu item (lihat AGENTS.md §7).
 
 - Fase: **1, 2 selesai (termasuk P6). Fase 3 selesai: 3.1-3.6 (`PipelineSpec`, registry, 18 node, `validate`/`run` + RunReport, multi-file per job).**
 - 3.5 selesai: `engine.py` `validate(spec)`/`run(spec)` -> parquet/csv + report; 3.6 selesai lewat `file_role` per source.
-- Fase 4: 4.1 + 4.2 + 4.4 selesai (`rebind.py`); sisa 4.3 (versi spec + diff saat repair).
+- Fase 4 selesai: 4.1-4.4 (`rebind.py`, `versions.py`).
 - 3.4 selesai: validator ekspresi SQL + 18 node (`select rename cast filter derive fill_missing sort dedupe join union group_by pivot` + 6 node Excel).
-- Berikutnya: **4.3 versi spec + diff saat repair (`SpecVersion`, `diff_specs`); lalu P6 Fase 3-4, Fase 5.**
+- Berikutnya: **P6 verifikasi paralel Fase 3-4 (3 subagent), lalu Fase 5 (HITL, Knowledge, Quality, State).**
 - **Aturan kerja (dari user): BALANSITAS hanya satu contoh, bukan patokan bentuk.** Node berbasis pola umum dan config eksplisit; tes memakai beberapa bentuk sintetis berbeda; sampel hanya sanity. Temuan P6 Fase 1/2 yang ditunda: lihat §Temuan.
 
 ## Berikutnya
 
-1. 4.3 versi spec + diff saat repair: spec lama tidak ditimpa; repair = spec baru + diff terstruktur (source/step/output berubah).
+1. P6 Fase 3-4: adversarial / auditor / agent-user atas `engine.py`, `rebind.py`, `versions.py`, node. Lalu Fase 5.
 2. 3.4-3.6 node + registry + `validate`/`run` (lihat §Fase 3).
 3. Sambil jalan: temuan P6 yang ditunda (konversi WorkbookError ke dict di `tools.py`).
 
@@ -100,7 +100,7 @@ Selesai bila: semua test hijau, angka token dicatat di §Temuan.
       (`header_anchor`, `header_rows`, `end`), kontrak kolom (`match`, `match_regex`,
       `group`, `required`).
 - [x] 4.2 `rebind(spec, files, previous=None)` -> BindReport (`exact`/`shifted`/`drift`/`missing`) + diff (`rebind.py`). `previous` = `records()` laporan lama, disimpan host.
-- [ ] 4.3 Versi spec + diff saat repair.
+- [x] 4.3 Versi spec + diff saat repair (`versions.py`: `diff_specs`, `SpecHistory`).
 - [x] 4.4 Test: file sintetis bergeser baris/kolom, kolom grup bertambah, sheet ganti nama.
 
 ## Fase 5 — HITL, Knowledge, Quality, State
@@ -469,3 +469,4 @@ NULL) dan dihapus.
 | 2026-11-06 | 3.5 `engine.py`: `validate(spec, files=None)` + `run(spec, files, out_dir)` lewat `_load_sources`+`_run_steps` yang sama. ValidationReport (ok/issues/warnings/schemas per nama), RunReport (status/issues/nodes/outputs/seconds), `PipelineError` bila tak bisa mulai. Masalah satu step tak menyembunyikan masalah step tak bergantung; lanjutan step gagal tidak menambah issue. Output `.part` + `os.replace` bila semua sukses; `connect(write_dir)` set `allowed_directories` sebelum kunci. Perbaikan urutan hasil ukur: join diurut `__lp`/`__rp`, union distinct simpan salinan pertama urutan tumpuk, dedupe tanpa keys row_number semua kolom, unpivot_groups urut baris lalu blok. `pipeline.py`: nama tolak prefiks `__`, >64 char, beda hanya huruf besar-kecil (duckdb me-rename `A` jadi `A_1`), output = nama device Windows; `source._unique` casefold. Gotcha duckdb: `fetchone()` meninggalkan result terbuka (pakai `fetchall`); bind tabel kosong tak evaluasi konstanta & terima INTEGER vs literal VARCHAR (limitasi terdokumentasi; `expect_columns` cek kehadiran, type/group belum -> warning). `tests/test_engine.py` 35 (+1 sampel end-to-end): validate dengan/tanpa file, masalah independen, sandbox, round-trip nilai/nama aneh, gagal bersih (2 output, direktori penghalang, output lama terlindungi), dua file satu run, urutan 20k baris, HUGEINT->DOUBLE warning. 5 mutasi: 4 tertangkap; 1 lolos (cek skema run != infer) = jaring pengaman bug node, dipertahankan sadar. 524 unit + 15 sampel lulus. 3.5 selesai. |
 | 2026-11-06 | 3.6 multi-file per job: tidak perlu kode baru — `file_role` per source + `run(spec, files, out_dir)` sudah mencakupnya (workbook di-cache per role; dua source boleh satu role; `files` terima path/str/bytes/Workbook). Tes tambahan `test_two_files_with_the_same_layout_are_unioned`: dua file layout sama (jan/feb, nama sheet sama) di-union + `source_column` (nomor input 0-based) + `validate` dua role. 525 unit + 15 sampel lulus. Fase 3 selesai. |
 | 2026-11-06 | 4.1/4.2/4.4 `rebind.py`: `rebind(spec, files, previous=None)` -> `BindReport` (per source `exact`/`shifted`/`drift`/`missing`, `record`, `diff`, `message`; `.ok`, `.records()`, `.text()`). `nodes/source.py`: `read_region` dipecah jadi `locate()` (sheet + tabel + nama kolom, tanpa muat ke duckdb) + `Location`; `expect_hits`/`expect_label` dipakai bersama `engine._check_columns` (satu sumber kebenaran). Aturan: kolom required hilang / sheet hanya ketemu lewat isi (`fallback_contains`) / kolom tambah-hilang yang tak dicakup `expect_columns` = drift; header/sheet pindah atau kolom tambah-hilang yang dicakup grup = shifted; tak ada `previous` = hanya kontrak + sheet yang dinilai. File jelek/tak ada = `missing`, tidak raise; satu source jelek tak menyembunyikan lainnya. Record JSON-serializable (host simpan; library tanpa state). Bug ditemukan tes: `text()` crash bila record None. `tests/test_rebind.py` (15): geser bawah/kanan/dua tempat, sheet ganti nama, grup kolom tambah/hilang, header 2 baris, missing 4 sebab, JSON round-trip. 8 mutasi, semua tertangkap. ponytail: tipe kolom tak dibandingkan. 539 unit + 16 sampel lulus. |
+| 2026-11-06 | 4.3 `versions.py`: `diff_specs(old, new)` -> `Change(where, kind added/removed/changed, before, after)` per path (`sources.pkg.region.header_anchor`), step dicocokkan lewat id (step bergeser = bukan perubahan; urutan tertukar = satu `steps.order`), nilai dipotong 80 char. `SpecHistory` (pydantic beku, JSON): `start`, `add(spec, note)` -> riwayat baru (lama tak berubah), `get(n)`, `current`, `text()`. `add` menolak spec sama dan note kosong (repair yang tak mengubah apa pun menyembunyikan kegagalan). Host menyimpan JSON; library tanpa state. ponytail: list dibandingkan utuh, bukan per item. `tests/test_versions.py` (11); 6 mutasi, 1 lolos (nomor versi tetap 2) lalu ditutup dengan tes 3 versi. 550 unit + 16 sampel lulus. Fase 4 selesai. |
