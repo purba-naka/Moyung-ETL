@@ -1,0 +1,26 @@
+[project]
+name = "excel-etl"
+version = "0.1.0"
+description = "Tools for LLM agents to understand raw Excel and build ETL pipelines."
+requires-python = ">=3.12"
+dependencies = [
+    "python-calamine>=0.9",
+    "openpyxl>=3.1",
+    "duckdb>=1.1",
+    "pydantic>=2",
+]
+
+[dependency-groups]
+dev = ["pytest>=8", "ruff>=0.6"]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+markers = ["sample: needs the real BALANSITAS file via EXCEL_ETL_SAMPLE"]

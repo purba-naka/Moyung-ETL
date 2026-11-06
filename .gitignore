@@ -1,0 +1,12 @@
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+
+# Real workbooks are internal data (AGENTS.md section 2). Tests build theirs in memory.
+*.xlsx
+*.xlsm
+*.xls
+*.parquet
+*.csv
