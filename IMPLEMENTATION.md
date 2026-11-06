@@ -5,13 +5,13 @@ Perbarui setiap selesai satu item (lihat AGENTS.md §7).
 
 ## Status
 
-- Fase: **1 selesai. Fase 2 selesai (2.1-2.5 + P6 Fase 2: verifikasi paralel + perbaikan).**
-- Berikutnya: **Fase 3, item 3.1** (`PipelineSpec` + parse YAML/JSON). Temuan P6 Fase 1/2 yang ditunda: lihat §Temuan.
+- Fase: **1, 2 selesai (termasuk P6). Fase 3: 3.1 selesai.**
+- Berikutnya: **Fase 3, item 3.2** (registry `@node`, kontrak `infer_schema` + `run`). Temuan P6 Fase 1/2 yang ditunda: lihat §Temuan.
 
 ## Berikutnya
 
-1. 3.1 `PipelineSpec` (pydantic) + parse dari YAML/JSON string.
-2. 3.2-3.6 node + registry + `validate`/`run` (lihat §Fase 3).
+1. 3.2 registry `@node` + kontrak `infer_schema`/`run`; setelah itu config tiap node divalidasi terhadap spec.
+2. 3.3-3.6 node + registry + `validate`/`run` (lihat §Fase 3).
 3. Sambil jalan: temuan P6 yang ditunda (konversi WorkbookError ke dict di `tools.py`).
 
 ## Struktur target
@@ -83,7 +83,7 @@ Selesai bila: semua test hijau, angka token dicatat di §Temuan.
 
 ## Fase 3 — Node + pipeline
 
-- [ ] 3.1 `PipelineSpec` (pydantic) + parse dari YAML/JSON string.
+- [x] 3.1 `PipelineSpec` (pydantic) + parse dari JSON string (YAML ditunda, lihat §Keputusan).
 - [ ] 3.2 Registry `@node`, kontrak `infer_schema` + `run` (duckdb relation).
 - [ ] 3.3 Node Excel-spesifik.
 - [ ] 3.4 Node umum + validasi ekspresi SQL skalar.
@@ -129,6 +129,7 @@ Selesai bila: semua test hijau, angka token dicatat di §Temuan.
 | 2026-11-05 | HITL via `ask_human` + `HitlPolicy` config | penempatan checkpoint fleksibel tanpa ubah kode |
 | 2026-11-05 | Tolak `sheetwise` sebagai dependency, port idenya | lihat §Temuan |
 | 2026-11-05 | Tolak `SheetBrain` sebagai dependency, ambil pola U-E-V + sandbox | terikat OpenAI/tiktoken/multimodal |
+| 2026-11-06 | Spec diterima sebagai JSON saja, tanpa `pyyaml` | AGENTS.md batasi dependency; agent LLM menulis JSON andal, YAML = dependency baru untuk kenyamanan. Tambah bila host butuh (parse YAML -> dict -> `PipelineSpec.model_validate`). `SpecError` memberi hint bila input terlihat YAML. |
 
 ## Temuan
 
@@ -282,6 +283,15 @@ body dulu), render compressed menggabung kolom sejenis jadi satu run, heuristik
 total-row match label "Total ..." di dashboard, formula `=?` tanpa teks di render
 compressed. 153 unit + 11 sampel lulus.
 
+**PipelineSpec (3.1)** `pipeline.py`: `sources` (file_role, sheet: name/name_like/
+fallback_contains, region: header_anchor/header_rows/end, expect_columns), `steps` (id, node,
+inputs, config bebas), `outputs` (input, format parquet|csv). Semua model `extra="forbid"`:
+kunci salah ketik jadi error, bukan hilang diam-diam. Validasi pelekatan: step hanya boleh
+membaca nama yang sudah ada (source atau step sebelumnya), jadi urutan tak bisa berputar;
+nama = huruf/angka/`_` (jadi nama relation duckdb). Error = `SpecError` berisi
+`path.ke.field: pesan` per baris, maks 10. Config node masih dict bebas; divalidasi saat
+registry node (3.2) ada. Spec tidak punya path output: itu urusan host.
+
 ## Pertanyaan terbuka
 
 - Batas jumlah dataset per job?
@@ -306,3 +316,4 @@ compressed. 153 unit + 11 sampel lulus.
 | 2026-11-06 | 2.4 `compare_sheets(wb, file_id, a, b, budget)` di `encode.py`: verdict + shape + sel terisi yang beda di bagian shared + jumlah formula + region (`_same` type-aware: bool ≠ 1), 6 diff pertama + baris yang memuat diff. Tanpa paginasi. `tests/test_compare.py` (11); formula ber-cache di test via patch XML (`<v />` openpyxl kosong). |
 | 2026-11-06 | 2.5 `propose_datasets(wb, file_id, offset, limit)` di `encode.py`: usulan tabel source/mixed (`id|sheet|range|role|rows|cols|2 nama kolom`), head menghitung derived yang ditinggalkan, seksi derived = sheet dengan edge cross + yang dibaca, hasil di-memo per file_id. `tests/test_propose.py` (7). Fase 2 (inspect) selesai; P6 Fase 2 disarankan sebelum fase 3. |
 | 2026-11-06 | P6 Fase 2: 3 subagent paralel (adversarial/auditor/agent-user) atas 2.1-2.5. 11 perbaikan di `encode.py`/`workbook.py`: limit=None -> WorkbookError (paged=True di `_paging`), guard localSheetId, truncated `compare_sheets`, gating seksi derived (cross di dalam box), hitungan baris data tanpa total, repr diff float, echo query 40 char, cap 5 nama sheet di error, sheet bernama id region, "has no regions", wording budget. +18 test; 153 unit + 11 sampel lulus. Temuan valid yang tidak diperbaiki dicatat di §Temuan. |
+| 2026-11-06 | 3.1 `pipeline.py`: `PipelineSpec` (sources/steps/outputs, pydantic v2, `extra="forbid"`), `parse_spec(json)` -> `SpecError` dengan path per masalah, `dump_spec`. `tests/test_pipeline.py` (31); mutasi (forbid off, cek input off) menjatuhkan tes. 184 unit lulus. |
