@@ -6,13 +6,13 @@ Perbarui setiap selesai satu item (lihat AGENTS.md §7).
 ## Status
 
 - Fase: **1, 2 selesai (termasuk P6). Fase 3: 3.1, 3.2 selesai; 3.3 selesai (`read_region`, `drop_rows`, `fill_down`, `unpivot`, `unpivot_groups`, `parse_hierarchy`, `split_header_token`).**
-- 3.4 sebagian: validator ekspresi SQL + node umum langkah 1 selesai (`select`, `rename`, `cast`, `filter`, `derive`, `fill_missing`, `sort`, `dedupe`).
-- Berikutnya: **3.4 langkah 2: `join`, `union`, `group_by`, `pivot`** (banyak input / ubah bentuk).
+- 3.4 selesai: validator ekspresi SQL + 18 node (`select rename cast filter derive fill_missing sort dedupe join union group_by pivot` + 6 node Excel).
+- Berikutnya: **3.5 `validate(spec)` tanpa data + `run(spec)` -> parquet/csv + RunReport.**
 - **Aturan kerja (dari user): BALANSITAS hanya satu contoh, bukan patokan bentuk.** Node berbasis pola umum dan config eksplisit; tes memakai beberapa bentuk sintetis berbeda; sampel hanya sanity. Temuan P6 Fase 1/2 yang ditunda: lihat §Temuan.
 
 ## Berikutnya
 
-1. 3.4 langkah 2: `join`, `union`, `group_by`, `pivot`. `group_by` boleh memakai agregat yang ditolak `check_expression` (daftar agregat dari katalog duckdb). Catatan: `fill_down` dan `sort` bergantung pada urutan baris; `join`/`group_by` tidak menjamin urutan. `flatten_header` sudah terjadi di `read_region`: kolom sudah `PARENT|LEAF`, node terpisah hanya bila perlu.
+1. 3.5 `validate(spec)` (urutkan step, `build` + `infer` tiap node dari skema source, tanpa data) dan `run(spec)` (satu koneksi `connect()`, tulis parquet/csv ke path dari host, RunReport baris in/out per node). Catatan: `fill_down`/`dedupe`/`group_by first` bergantung urutan baris; `join` tidak menjamin urutan. Catatan: `fill_down` dan `sort` bergantung pada urutan baris; `join`/`group_by` tidak menjamin urutan. `flatten_header` sudah terjadi di `read_region`: kolom sudah `PARENT|LEAF`, node terpisah hanya bila perlu.
 2. 3.4-3.6 node + registry + `validate`/`run` (lihat §Fase 3).
 3. Sambil jalan: temuan P6 yang ditunda (konversi WorkbookError ke dict di `tools.py`).
 
@@ -88,7 +88,7 @@ Selesai bila: semua test hijau, angka token dicatat di §Temuan.
 - [x] 3.1 `PipelineSpec` (pydantic) + parse dari JSON string (YAML ditunda, lihat §Keputusan).
 - [x] 3.2 Registry `@node`, kontrak `infer_schema` + `run` (duckdb relation).
 - [x] 3.3 Node Excel-spesifik: `read_region` (source), `drop_rows`, `fill_down`, `unpivot`, `unpivot_groups`, `parse_hierarchy`, `split_header_token`. `flatten_header` = bagian `read_region`.
-- [ ] 3.4 Node umum + validasi ekspresi SQL skalar. Selesai: `check_expression`, `check_type`, `bind`; `select rename cast filter derive fill_missing sort dedupe`. Sisa: `join union group_by pivot`.
+- [x] 3.4 Node umum + validasi ekspresi SQL skalar: `check_expression`, `check_type`, `bind`; `select rename cast filter derive fill_missing sort dedupe join union group_by pivot`.
 - [ ] 3.5 `validate(spec)` tanpa data; `run(spec)` -> output parquet/csv + RunReport.
 - [ ] 3.6 Multi-file per job (join/union antar `F1`, `F2`).
 
@@ -408,6 +408,27 @@ sendiri. Mutasi lolos yang dinilai kode ganda/bukan celah: `NULLS LAST` (default
 begitu, tetap ditulis eksplisit dan dites), `count_star` manual (sudah ada di katalog), cek nama
 baru ganda di `rename` config (cek keluaran di `infer_schema` menangkap yang sama).
 
+**Node umum langkah 2 (3.4)** `nodes/combine.py` + `nodes/relops.py`. Tidak ada teks SQL di
+config: semua pilihan berupa opsi bernama, jadi spec tidak bisa menyelipkan ekspresi.
+`relops.apply`/`shape`: satu fungsi SQL per node dipakai `run` (atas relation) dan
+`infer_schema` (atas tabel kosong berskema sama), jadi keduanya tidak bisa berbeda. Nama view
+unik per panggilan: view bernama sama yang diganti membuat relation lama membaca data baru
+(diukur), mutasi nama tetap menjatuhkan 12 tes. Kolom berawalan `__` dicadangkan (`__pos`).
+`join`: `on` (nama sama atau `{left,right}`), `how` inner/left/right/full, `suffixes` opsional
+(kolom non-kunci bernama sama tanpa suffix = error, tidak diam-diam diganti nama),
+`null_equal`; tipe kunci harus sama (cast dulu); kunci bernama sama muncul sekali, di full/right
+join diisi dari sisi yang ada. `union`: `by` name (kolom yang tak ada = NULL) atau position
+(jumlah kolom sama, nama dari input pertama), tipe disatukan seperti `unpivot`,
+`source_column` (nomor input), `distinct`; 2+ input. `group_by`: `by` + `aggs`
+`{name, fn, column}` dengan fn tetap (sum avg min max count count_rows count_distinct first last
+join_text); hasil berurutan kemunculan pertama grup; `first`/`last`/`join_text` mengikuti urutan
+tabel (diuji 200k baris); sum bilangan bulat -> BIGINT (duckdb memberi HUGEINT; overflow =
+error, bukan angka salah); sum/avg kolom teks ditolak. `pivot`: `values` WAJIB (kolom hasil harus
+diketahui sebelum data dibaca), nilai yang tak muat di tipe kolom ditolak (evaluasi konstanta,
+pelajaran `fill_missing`), `prefix`, fn sum avg min max count first last. 14 mutasi: 13
+tertangkap; 1 lolos = kode mubazir (`IS NOT DISTINCT FROM` di pivot, nilai config tak bisa
+NULL) dan dihapus.
+
 ## Pertanyaan terbuka
 
 - Batas jumlah dataset per job?
@@ -440,3 +461,4 @@ baru ganda di `rename` config (cek keluaran di `infer_schema` menangkap yang sam
 | 2026-11-06 | 3.3d `nodes/labels.py`: `parse_hierarchy`, `split_header_token`. `tests/test_label_nodes.py` (26): 4+ pemisah, kode salah -> NULL, desimal ditolak, pola/pemisah, nama berkutip, dua workbook sintetis. 8 mutasi: 6 tertangkap, 2 = kode mubazir (dihapus). 272 unit + 14 sampel lulus. 3.3 selesai. |
 | 2026-11-06 | 3.4a `nodes/sqlexpr.py`: `check_expression` (parser duckdb + bentuk + whitelist kelas node + deny-list fungsi). `tests/test_sqlexpr.py` (78): ekspresi biasa lolos (24), bentuk/sintaks jahat ditolak (26), fungsi berbahaya di mana pun (20), klausa dalam pemanggilan, panjang/NUL/non-string. Fuzz tata bahasa + bungkus jahat + teks acak bersih. 350 unit lulus. |
 | 2026-11-06 | 3.4b node umum langkah 1: `rename cast filter derive fill_missing sort dedupe` di `nodes/general.py`; `check_type`, `bind`, deteksi agregat di `nodes/sqlexpr.py`; `INTEGER_TYPE` bersama di `base.py`. `tests/test_general_nodes.py` (67) + tes agregat. 14+ mutasi; temuan: agregat lolos validator, dedupe salah-urutan pada data besar. 430 unit lulus. |
+| 2026-11-06 | 3.4c `nodes/combine.py` (`join`, `union`, `group_by`, `pivot`) + `nodes/relops.py` (`apply`, `shape`, view unik). `tests/test_combine_nodes.py` (54): semua jenis join, union by name/position/3 input, 10 fungsi agregat, pivot 7 fungsi, urutan pada 200k baris, overflow, rantai dua sheet join->derive->group_by->pivot. 13/14 mutasi tertangkap. 484 unit + 14 sampel lulus. 3.4 selesai. |
