@@ -21,8 +21,21 @@ from pydantic import (
 
 from excel_etl.nodes.base import describe
 
-_IDENT = r"^[A-Za-z_][A-Za-z0-9_]*$"
+# Letters, digits and `_`, up to 64 characters, not starting with `__` (helper columns and
+# views inside queries use that prefix). No lookahead: pydantic's regex engine has none.
+_IDENT = r"^(?:[A-Za-z]|_[A-Za-z0-9])[A-Za-z0-9_]{0,62}$"
 _END = re.compile(r"^until_blank_rows\(\d+\)$")
+# Output names become file names; Windows cannot create these whatever the extension.
+_DEVICE_NAMES = frozenset(
+    {
+        "con",
+        "prn",
+        "aux",
+        "nul",
+        *(f"com{i}" for i in range(1, 10)),
+        *(f"lpt{i}" for i in range(1, 10)),
+    }
+)
 
 # a name becomes a relation name in duckdb, so letters, digits and _ only
 Ident = Annotated[str, StringConstraints(pattern=_IDENT)]
@@ -106,10 +119,17 @@ class PipelineSpec(_Model):
 
     @model_validator(mode="after")
     def _names_and_wiring(self) -> PipelineSpec:
+        # duckdb ignores letter case in names, so `Data` and `data` would be one table
+        lower: dict[str, str] = {}
+        for name in self.sources:
+            if (other := lower.setdefault(name.lower(), name)) != name:
+                raise ValueError(f"source names {other!r} and {name!r} differ only in letter case")
         known = set(self.sources)
         for step in self.steps:
             if step.id in known:
                 raise ValueError(f"step id {step.id!r} is already used by a source or step")
+            if (other := lower.setdefault(step.id.lower(), step.id)) != step.id:
+                raise ValueError(f"names {other!r} and {step.id!r} differ only in letter case")
             for inp in step.inputs:
                 # only earlier names count, so the steps form an order and cannot loop
                 if inp not in known:
@@ -117,9 +137,14 @@ class PipelineSpec(_Model):
                         f"step {step.id!r} reads {inp!r}, which is not a source or an earlier step"
                     )
             known.add(step.id)
+        files: dict[str, str] = {}
         for name, out in self.outputs.items():
             if out.input not in known:
                 raise ValueError(f"output {name!r} reads {out.input!r}, which is not defined")
+            if name.lower() in _DEVICE_NAMES:
+                raise ValueError(f"output name {name!r} is a reserved file name on Windows")
+            if (other := files.setdefault(name.lower(), name)) != name:
+                raise ValueError(f"output names {other!r} and {name!r} would be the same file")
         return self
 
 

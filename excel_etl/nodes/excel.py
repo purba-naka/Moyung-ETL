@@ -282,7 +282,7 @@ class UnpivotGroups(Node):
         found, measures, _ = self._plan(schema_of(rel))
         keep = [quote(c) for c in cfg.keep]
         selects = []
-        for g, cols in found.items():
+        for n, (g, cols) in enumerate(found.items()):
             vals = [
                 f"CAST({quote(cols[m])} AS {t}) AS {quote(m)}"
                 if m in cols
@@ -295,5 +295,12 @@ class UnpivotGroups(Node):
                 where = " WHERE " + " OR ".join(f"{c} IS NOT NULL" for c in have)
             lit = _lit(g)
             head = ", ".join([*keep, f"{lit} AS {quote(cfg.group_column)}", *vals])
-            selects.append(f"SELECT {head} FROM __in{where}")
-        return rel.query("__in", " UNION ALL ".join(selects))
+            # each input row comes out as its blocks in column order: UNION ALL alone gives
+            # whatever order the plan finds, so the row and block numbers are kept to sort on
+            selects.append(f"SELECT {head}, __row, {n} AS __blk FROM __numbered{where}")
+        out = ", ".join([*keep, quote(cfg.group_column), *(quote(m) for m in measures)])
+        sql = (
+            "WITH __numbered AS (SELECT *, row_number() OVER () AS __row FROM __in) "
+            f"SELECT {out} FROM ({' UNION ALL '.join(selects)}) ORDER BY __row, __blk"
+        )
+        return rel.query("__in", sql)

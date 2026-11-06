@@ -86,11 +86,14 @@ def _header(wb: Workbook, g: SheetGrid, sheet: str, source: Source) -> tuple[int
 
 
 def _unique(names: list[str]) -> list[str]:
+    # compared without letter case: duckdb treats `Ton` and `TON` as one name and would
+    # rename the second to `TON_1` when the table is created
     seen: dict[str, int] = {}
     out = []
     for n in names:
-        seen[n] = seen.get(n, 0) + 1
-        out.append(n if seen[n] == 1 else f"{n} ({seen[n]})")
+        key = n.casefold()
+        seen[key] = seen.get(key, 0) + 1
+        out.append(n if seen[key] == 1 else f"{n} ({seen[key]})")
     return out
 
 
