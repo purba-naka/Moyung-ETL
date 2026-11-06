@@ -7,6 +7,7 @@ checked before any file is opened, so it must agree with what `run` produces.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, ClassVar
@@ -17,6 +18,7 @@ from pydantic import BaseModel, ConfigDict, ValidationError
 type Relation = duckdb.DuckDBPyRelation
 
 _MAX_ERRORS = 10
+INTEGER_TYPE = re.compile(r"^U?(TINY|SMALL|BIG|HUGE)?INT(EGER)?$")  # duckdb whole-number types
 
 
 class NodeError(Exception):

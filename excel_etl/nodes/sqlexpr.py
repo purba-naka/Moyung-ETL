@@ -17,11 +17,12 @@ Three layers, each enough on its own for the cases it names:
 from __future__ import annotations
 
 import json
+import re
 from typing import Any
 
 import duckdb
 
-from excel_etl.nodes.base import NodeError
+from excel_etl.nodes.base import Column, NodeError, Schema, connect, quote
 
 _MAX_LEN = 4000
 
@@ -92,6 +93,8 @@ def _walk(node: Any, expr: str) -> None:
             name = str(node.get("function_name", "")).lower()  # duckdb already lowercases
             if name in _DENIED_FUNCTIONS:
                 raise _fail(expr, f"function {name!r} is not allowed")
+            if name in _aggregates():
+                raise _fail(expr, f"aggregate {name!r} is not allowed here; use the group_by node")
             if node.get("order_bys", {}).get("orders") or node.get("filter"):
                 raise _fail(expr, "ORDER BY or FILTER inside a function call is not allowed")
             if node.get("distinct"):
@@ -101,6 +104,25 @@ def _walk(node: Any, expr: str) -> None:
     elif isinstance(node, list):
         for v in node:
             _walk(v, expr)
+
+
+_AGGREGATES: frozenset[str] | None = None
+
+
+def _aggregates() -> frozenset[str]:
+    """Names duckdb lists as aggregate functions (sum, count, string_agg, ...); none is also scalar.
+
+    Read from duckdb itself, so a function added by an upgrade is covered. In a plain SELECT
+    an aggregate collapses the whole table to one row instead of computing per row.
+    """
+    global _AGGREGATES
+    if _AGGREGATES is None:
+        rows = duckdb.connect().execute(
+            "SELECT DISTINCT lower(function_name) FROM duckdb_functions() "
+            "WHERE function_type = 'aggregate'"
+        )
+        _AGGREGATES = frozenset(r[0] for r in rows.fetchall()) | {"count_star"}
+    return _AGGREGATES
 
 
 def _parse(expr: str) -> dict:
@@ -156,3 +178,51 @@ def check_expression(expr: str) -> str:
         raise _fail(text, "must be one expression, nothing around it (no FROM, WHERE, UNION, ...)")
     _walk(items[0], text)
     return text
+
+
+_TYPE = re.compile(r"^[A-Za-z][A-Za-z ]{0,30}(\(\s*\d{1,2}\s*(,\s*\d{1,2}\s*)?\))?(\[\])?$")
+
+
+def check_type(name: str) -> str:
+    """Return duckdb's own spelling of a plain type name (`varchar(5)` -> `VARCHAR`).
+
+    A type name goes into `CAST(x AS <type>)`, so it is as much an injection point as an
+    expression: only letters, spaces, `(10,2)` and `[]` are accepted, then duckdb must know it.
+    STRUCT, ENUM and other types that carry names or values are not plain and are refused.
+    """
+    if not isinstance(name, str):
+        raise NodeError(f"type must be a string, got {type(name).__name__}")
+    text = " ".join(name.split())
+    if not _TYPE.match(text):
+        raise NodeError(
+            f"type {name!r}: use a plain type name such as VARCHAR, DOUBLE, DECIMAL(10,2), "
+            "DATE, TIMESTAMP, BOOLEAN"
+        )
+    try:
+        return duckdb.connect().execute(f"SELECT typeof(try_cast(NULL AS {text}))").fetchone()[0]
+    except duckdb.Error:
+        raise NodeError(f"type {name!r} is not a duckdb type") from None
+
+
+def _reason(e: Exception) -> str:
+    msg = str(e).strip().splitlines()[0] if str(e).strip() else type(e).__name__
+    if "GROUP BY" in msg:
+        return "aggregate functions are not allowed here; use the group_by node"
+    return msg.split(": ", 1)[-1][:200] if ": " in msg[:30] else msg[:200]
+
+
+def bind(schema: Schema, select_list: str, who: str) -> Schema:
+    """Output columns of `SELECT <select_list> FROM <table shaped like schema>`; no data read.
+
+    The select list holds only text that `check_expression` and `check_type` passed and names
+    that went through `quote`. A missing column, an aggregate or a type mismatch comes back
+    as a NodeError that names `who`.
+    """
+    cols = ", ".join(f"{quote(c.name)} {c.type}" for c in schema)
+    con = connect()
+    try:
+        con.execute(f"CREATE TEMP TABLE __s ({cols})")
+        rel = con.sql(f"SELECT {select_list} FROM __s")
+        return tuple(Column(n, str(t)) for n, t in zip(rel.columns, rel.types, strict=True))
+    except duckdb.Error as e:
+        raise NodeError(f"{who}: {_reason(e)}") from None
