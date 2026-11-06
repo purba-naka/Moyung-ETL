@@ -5,12 +5,12 @@ Perbarui setiap selesai satu item (lihat AGENTS.md §7).
 
 ## Status
 
-- Fase: **1, 2 selesai (termasuk P6). Fase 3: 3.1, 3.2 selesai; 3.3 sebagian (`read_region` selesai).**
-- Berikutnya: **3.3 lanjut: node Excel-spesifik** (`flatten_header`, `fill_down`, `drop_rows`, `unpivot`, `unpivot_groups`, `parse_hierarchy`, `split_header_token`). Temuan P6 Fase 1/2 yang ditunda: lihat §Temuan.
+- Fase: **1, 2 selesai (termasuk P6). Fase 3: 3.1, 3.2 selesai; 3.3 sebagian (`read_region`, `drop_rows`, `fill_down` selesai).**
+- Berikutnya: **3.3 lanjut: `unpivot`, `unpivot_groups`, `parse_hierarchy`, `split_header_token`.** Temuan P6 Fase 1/2 yang ditunda: lihat §Temuan.
 
 ## Berikutnya
 
-1. 3.3 sisa node Excel-spesifik, mulai `drop_rows` (membuang label subtotal di kolom tanggal), `fill_down`, `unpivot`/`unpivot_groups`, lalu `parse_hierarchy`, `split_header_token`. `flatten_header` sudah terjadi di `read_region`: kolom sudah `PARENT|LEAF`, node terpisah hanya bila perlu.
+1. 3.3 sisa node Excel-spesifik: `unpivot`/`unpivot_groups` dulu (bentuk lebar Phonska N [Ton, Formula] -> panjang), lalu `parse_hierarchy`, `split_header_token`. `flatten_header` sudah terjadi di `read_region`: kolom sudah `PARENT|LEAF`, node terpisah hanya bila perlu.
 2. 3.4-3.6 node + registry + `validate`/`run` (lihat §Fase 3).
 3. Sambil jalan: temuan P6 yang ditunda (konversi WorkbookError ke dict di `tools.py`).
 
@@ -85,7 +85,7 @@ Selesai bila: semua test hijau, angka token dicatat di §Temuan.
 
 - [x] 3.1 `PipelineSpec` (pydantic) + parse dari JSON string (YAML ditunda, lihat §Keputusan).
 - [x] 3.2 Registry `@node`, kontrak `infer_schema` + `run` (duckdb relation).
-- [ ] 3.3 Node Excel-spesifik. Selesai: `read_region` (source). Sisa: lihat Berikutnya.
+- [ ] 3.3 Node Excel-spesifik. Selesai: `read_region` (source), `drop_rows`, `fill_down`. Sisa: lihat Berikutnya.
 - [ ] 3.4 Node umum + validasi ekspresi SQL skalar.
 - [ ] 3.5 `validate(spec)` tanpa data; `run(spec)` -> output parquet/csv + RunReport.
 - [ ] 3.6 Multi-file per job (join/union antar `F1`, `F2`).
@@ -320,6 +320,17 @@ dipertahankan (BIGINT/DOUBLE/DATE/...), campuran jadi VARCHAR dengan bentuk teks
 bukan angka, jadi VARCHAR. Per Bulan: dua kolom pertama tanpa nama header (`-`, `- (2)`).
 Ditunda: kontrak `expect_columns` (cek tipe/wajib) dan status exact/shifted/drift ke fase rebind.
 
+**drop_rows, fill_down (3.3)** `nodes/excel.py`. `drop_rows`: `blank` (default true, baris
+semua-NULL), `column` + `keep_type` (date|timestamp|bigint|double|boolean; simpan baris yang
+`try_cast` ke tipe itu berhasil, jadi label `JAN`/`FEB - 2025`/`.` terbuang) atau `column` +
+`drop_regex` (baris Total; sel NULL tidak cocok jadi tetap). Tipe kolom tidak diubah: `cast`
+(3.4) yang mengubah. Config tak konsisten (column tanpa aturan, aturan tanpa column, regex rusak)
+ditolak saat `build`. `fill_down`: `last_value(... IGNORE NULLS)` dengan frame `ROWS UNBOUNDED
+PRECEDING..CURRENT ROW`, `* REPLACE` jadi urutan kolom sama; NULL di awal tetap NULL.
+Mengandalkan urutan baris, yang dijaga `read_region` (tabel dimuat berurutan). BALANSITAS
+`(N) PKG`: `drop_rows(TANGGAL, keep_type=date)` menyisakan tepat 730 baris tanggal dari 802
+(72 baris subtotal/label/kosong terbuang).
+
 ## Pertanyaan terbuka
 
 - Batas jumlah dataset per job?
@@ -347,3 +358,4 @@ Ditunda: kontrak `expect_columns` (cek tipe/wajib) dan status exact/shifted/drif
 | 2026-11-06 | 3.1 `pipeline.py`: `PipelineSpec` (sources/steps/outputs, pydantic v2, `extra="forbid"`), `parse_spec(json)` -> `SpecError` dengan path per masalah, `dump_spec`. `tests/test_pipeline.py` (31); mutasi (forbid off, cek input off) menjatuhkan tes. 184 unit lulus. |
 | 2026-11-06 | 3.2 `nodes/base.py` (`Node`, `@node`, `build`, `infer`, `schema_of`, `quote`, `NodeError`) + `nodes/general.py` (`select`). `tests/test_nodes.py` (10); 3 mutasi (forbid off, infer != run, arity off) tertangkap. `parse_spec` memakai `describe` bersama. 194 unit lulus. |
 | 2026-11-06 | 3.3a `nodes/source.py`: `read_region` (sheet via name/name_like/fallback, header via anchor per tabel, akhir via blank rows, tipe per kolom). `nodes/base.py`: `connect()` (duckdb tanpa akses file). `_column_names(sep_safe=)`. `tests/test_read_region.py` (12). Uji BALANSITAS menemukan bug: anchor yang berulang di tabel samping gagal (dinilai per workbook-wide) -> dinilai per tabel. 206 unit lulus. |
+| 2026-11-06 | 3.3b `nodes/excel.py`: `drop_rows` (blank, keep_type, drop_regex) dan `fill_down`. `tests/test_excel_nodes.py` (14 + 1 sampel); tiap kasus mengecek `infer_schema == schema_of(run)`; 3 mutasi (keep_type terbalik, tanpa IGNORE NULLS, regex tak NULL-aman) tertangkap. Sampel: (N) PKG 802 -> 730 baris. 221 unit + 13 sampel lulus. |
