@@ -5,12 +5,12 @@ Perbarui setiap selesai satu item (lihat AGENTS.md §7).
 
 ## Status
 
-- Fase: **1 selesai. Fase 2: 2.1, 2.2, 2.3 selesai.**
-- Berikutnya: **Fase 2, item 2.4** (`compare_sheets`). Lihat §Temuan "P6 Fase 1" untuk temuan yang ditunda; sebagian (tipe per kolom, kolom tanggal) dijawab 2.2.
+- Fase: **1 selesai. Fase 2: 2.1, 2.2, 2.3, 2.4 selesai.**
+- Berikutnya: **Fase 2, item 2.5** (`propose_datasets`). Lihat §Temuan "P6 Fase 1" untuk temuan yang ditunda; sebagian (tipe per kolom, kolom tanggal) dijawab 2.2.
 
 ## Berikutnya
 
-1. 2.4 `compare_sheets(a, b)`: kemiripan struktur + nilai (deteksi `X (2)`).
+1. 2.5 `propose_datasets(files)`: usulan dataset dari region `source`/`mixed`, turunan dijadikan target rekonsiliasi. Output untuk dipilih manusia.
 2. Sambil jalan: temuan P6 yang ditunda (konversi WorkbookError ke dict di `tools.py`).
 
 ## Struktur target
@@ -76,7 +76,7 @@ Selesai bila: semua test hijau, angka token dicatat di §Temuan.
       defined names) -> graf sheet->sheet; peran `source`/`derived`/`mixed` per region.
 - [x] 2.2 `profile_region`: per kolom tipe, null %, distinct, min/max, contoh.
 - [x] 2.3 `find_text(file, query)`: case-insensitive, normalisasi spasi/unicode.
-- [ ] 2.4 `compare_sheets(a, b)`: kemiripan struktur + nilai (deteksi `X (2)`).
+- [x] 2.4 `compare_sheets(a, b)`: kemiripan struktur + nilai (deteksi `X (2)`).
 - [ ] 2.5 `propose_datasets(files)`: usulan dataset dari region `source`/`mixed`,
       turunan dijadikan target rekonsiliasi. Output untuk dipilih manusia.
 
@@ -241,6 +241,14 @@ tanggal (subtotal bulan), menjawab keluhan agent P6.
 dan `supplyinout` 0 hit (nama sheet saja; nama sheet urusan `workbook_map`). Normalisasi
 NFKC + casefold + kolaps spasi (ligatur `ﬀ` = `ff`, NBSP = spasi), substring, bukan regex.
 
+**compare_sheets (2.4)** BALANSITAS: `supplyinout (2)` ternyata bukan copy-paste `supplyinout`
+(1115 dari 1150 sel terisi beda; duplikat nama saja, isinya data periode lain). `(N) PKG` vs
+`(N) PKC`: 17.183 dari 17.837 beda. Cepat: 0,04-0,32 s per pasang (sheet sudah termuat).
+Verdict 3 kata (`same values`/`values differ`/`shapes differ`); baris 2 = shape, sel terisi
+yang beda di bagian shared, jumlah formula, jumlah region + same ranges; baris 3 = 6 diff
+pertama `A5 10|12` + jumlah baris yang memuat diff. Tanpa paginasi (output kecil by design).
+Satu workbook saja; compare antar file = kebutuhan fase recycle (ditunda).
+
 ## Pertanyaan terbuka
 
 - Batas jumlah dataset per job?
@@ -262,3 +270,4 @@ NFKC + casefold + kolaps spasi (ligatur `ﬀ` = `ff`, NBSP = spasi), substring, 
 | 2026-11-06 | 2.1 `inspect/lineage.py`: `lineage(wb)` (edge sheet->sheet, sel cross), `Votes`/`sheet_role`/`region_role` (typed/local/cross), tool `formula_lineage` di `encode.py`. `Workbook.formulas()` (teks formula, shared formula diisi dari sel pertama), `Workbook.defined_names()`, `Workbook.memo`. `workbook_map` role dan `sheet_regions` kolom `orientation/role` kini dari lineage; `_role` berbasis persen formula dihapus. `tests/test_lineage.py` (26) + `test_lineage_tool.py`; 3 mutasi (string literal, 3D, nama lokal) sudah dicek menggagalkan test. |
 | 2026-11-06 | 2.2 `profile_region(wb, file_id, ref, offset, budget)` di `encode.py`: satu baris per kolom (nama dari header, tipe utama + min..max, distinct, null %, `=?`, `odd` + baris). Butuh id region; helper `_region`, `_fit`, `_check_budget` dipakai bersama `render_range`. `tests/test_profile.py`. |
 | 2026-11-06 | 2.3 `find_text(wb, file_id, query, offset, budget)` di `encode.py`: sel teks yang memuat query (substring, NFKC + casefold + kolaps spasi, via `_text_key`), satu baris per sheet (hits + maks 6 posisi + `+N`), flag `[hidden]`, normalisasi teks di-cache di `wb.memo["text_keys"]`. `tests/test_find_text.py` (12). Rencana `profile.py` dilepas: semua tool render hidup di `encode.py`, helper dipakai bersama. |
+| 2026-11-06 | 2.4 `compare_sheets(wb, file_id, a, b, budget)` di `encode.py`: verdict + shape + sel terisi yang beda di bagian shared + jumlah formula + region (`_same` type-aware: bool ≠ 1), 6 diff pertama + baris yang memuat diff. Tanpa paginasi. `tests/test_compare.py` (11); formula ber-cache di test via patch XML (`<v />` openpyxl kosong). |
