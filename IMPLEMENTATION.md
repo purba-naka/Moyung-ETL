@@ -10,12 +10,14 @@ Perbarui setiap selesai satu item (lihat AGENTS.md §7).
 - Fase 4 selesai: 4.1-4.4 (`rebind.py`, `versions.py`).
 - 3.4 selesai: validator ekspresi SQL + 18 node (`select rename cast filter derive fill_missing sort dedupe join union group_by pivot` + 6 node Excel).
 - P6 Fase 3-4 selesai (perbaikan di Log; sisa di §Temuan P6 Fase 3-4).
-- Berikutnya: **Fase 5 (HITL, Knowledge, Quality, State).**
+- 5.1 selesai (`knowledge.py`). Berikutnya: **5.2 HITL, 5.3 Quality, 5.4 State.**
+- **TERTUNDA: ulang P6 adversarial Fase 3-4 (subagent sebelumnya dibatalkan/gagal). Ingatkan user saat lanjut.**
 - **Aturan kerja (dari user): BALANSITAS hanya satu contoh, bukan patokan bentuk.** Node berbasis pola umum dan config eksplisit; tes memakai beberapa bentuk sintetis berbeda; sampel hanya sanity. Temuan P6 Fase 1/2 yang ditunda: lihat §Temuan.
 
 ## Berikutnya
 
-1. Fase 5: HITL, Knowledge, Quality, State (P1 review plan dulu).
+0. Ulang P6 adversarial Fase 3-4 (belum pernah menghasilkan temuan).
+1. Fase 5.2 HITL, 5.3 Quality, 5.4 State (P1 review plan dulu tiap item).
 2. 3.4-3.6 node + registry + `validate`/`run` (lihat §Fase 3).
 3. Sambil jalan: temuan P6 yang ditunda (konversi WorkbookError ke dict di `tools.py`).
 
@@ -106,7 +108,7 @@ Selesai bila: semua test hijau, angka token dicatat di §Temuan.
 
 ## Fase 5 — HITL, Knowledge, Quality, State
 
-- [ ] 5.1 `Knowledge` + `lookup_knowledge`.
+- [x] 5.1 `Knowledge` + `lookup_knowledge` (`knowledge.py`).
 - [ ] 5.2 `HitlPolicy`, `PendingQuestion`, `ask_human`, `answer` -> qa_log.
       `run` menolak bila checkpoint `required` belum approved.
 - [ ] 5.3 `quality.py`: assert + rekonsiliasi dengan toleransi.
@@ -483,3 +485,4 @@ NULL) dan dihapus.
 | 2026-11-06 | 4.3 `versions.py`: `diff_specs(old, new)` -> `Change(where, kind added/removed/changed, before, after)` per path (`sources.pkg.region.header_anchor`), step dicocokkan lewat id (step bergeser = bukan perubahan; urutan tertukar = satu `steps.order`), nilai dipotong 80 char. `SpecHistory` (pydantic beku, JSON): `start`, `add(spec, note)` -> riwayat baru (lama tak berubah), `get(n)`, `current`, `text()`. `add` menolak spec sama dan note kosong (repair yang tak mengubah apa pun menyembunyikan kegagalan). Host menyimpan JSON; library tanpa state. ponytail: list dibandingkan utuh, bukan per item. `tests/test_versions.py` (11); 6 mutasi, 1 lolos (nomor versi tetap 2) lalu ditutup dengan tes 3 versi. 550 unit + 16 sampel lulus. Fase 4 selesai. |
 | 2026-11-06 | P6 Fase 3-4 (auditor + agent-user; adversarial dibatalkan). Diperbaiki: `_unique` header kembar beda huruf (`Ton`,`Ton`,`Ton (2)`) -> nama unik tanpa memandang huruf; cek nama kolom di `unique`, `_unique` (general), `_clash`, `union` kini tanpa memandang huruf (duckdb tak membedakan); `_load_sources` tangkap `duckdb.Error`; `check_arity` dipanggil setelah `build` (validate tanpa files tetap cek jumlah input); `os.replace` terjaga (Issue, bukan exception); `validate`/`rebind` dengan `files` bukan dict -> Issue/`missing`; `BindReport.records()` hanya exact/shifted; `ValidationReport.text()` menampilkan nama kolom; `SpecHistory` memvalidasi nomor + diff saat dimuat dan menyalin spec; alias `FileRef` -> `FileInput` (bentrok dengan `FileRef` AGENTS §2); komentar usang; `_FUNCS` mati dan regex ganda dihapus; DESIGN.md §3/§5/§6 disesuaikan. +9 tes, mutasi tertangkap. Ditunda: lihat §Temuan P6 Fase 3-4. 559 unit lulus. |
 | 2026-11-06 | Perf `read_region`: `executemany` per baris 112 s untuk 200k baris x 4 kolom (103 s di insert). Diganti satu `INSERT ... SELECT unnest(?::T[]), ...` dengan satu list per kolom: 8.5 s total (insert ~1 s; sisanya locate/detect_regions ~7 s). 559 unit + 16 sampel lulus. |
+| 2026-11-06 | 5.1 `knowledge.py`: `Knowledge` (brief, glossary, rules, target_schema, examples, qa_log; `extra=forbid`, JSON round-trip) + `lookup_knowledge(k, query)`: kata utuh tanpa beda huruf, top 5 per seksi, brief per kalimat, examples maks 2, total <= 4000 char; query kosong -> overview; tidak ketemu -> daftar seksi terisi + saran tanya manusia. ponytail: tanpa stemming/fuzzy. 16 tes; 7 mutasi mati (2 selamat -> tes ditambah). |
