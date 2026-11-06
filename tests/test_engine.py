@@ -601,3 +601,40 @@ def test_validate_text_names_the_columns_and_bad_files_become_an_issue() -> None
     assert "s: Key, Ton" in validate(spec, {"f": f}).text()
     rep = validate(spec, ["x"])  # type: ignore[arg-type]
     assert not rep.ok and rep.issues[0].where == "files"
+
+
+# --- run: human checkpoints ------------------------------------------------------------------
+
+
+def test_run_without_hitl_is_unchanged(book, tmp_path) -> None:
+    assert run(_pipeline(), {"f": book}, tmp_path).status == "ok"
+
+
+def test_run_refused_until_checkpoint_approved(book, tmp_path) -> None:
+    from excel_etl.hitl import HitlPolicy, HitlState, approve
+
+    s = HitlState()
+    with pytest.raises(PipelineError) as e:
+        run(_pipeline(), {"f": book}, tmp_path / "out", hitl=s)
+    assert [i.where for i in e.value.issues] == ["hitl.after_propose_datasets"]
+    assert not (tmp_path / "out").exists()  # refused before touching the disk
+    s = approve(s, "after_propose_datasets", "dina")
+    assert run(_pipeline(), {"f": book}, tmp_path / "out", hitl=s).status == "ok"
+    # both required: both reported
+    both = HitlState(
+        policy=HitlPolicy(
+            checkpoints={"after_propose_datasets": "required", "after_spec": "required"}
+        )
+    )
+    with pytest.raises(PipelineError) as e:
+        run(_pipeline(), {"f": book}, tmp_path, hitl=both)
+    assert len(e.value.issues) == 2
+
+
+def test_run_refuses_stale_approval(book, tmp_path) -> None:
+    from excel_etl.hitl import HitlState, approve
+
+    s = approve(HitlState(), "after_propose_datasets", "dina", ref="v1")
+    assert run(_pipeline(), {"f": book}, tmp_path, hitl=s, ref="v1").status == "ok"
+    with pytest.raises(PipelineError, match="approved for 'v1'"):
+        run(_pipeline(), {"f": book}, tmp_path, hitl=s, ref="v2")

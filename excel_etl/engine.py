@@ -19,6 +19,7 @@ from typing import Literal
 import duckdb
 from pydantic import BaseModel, ConfigDict
 
+from excel_etl.hitl import HitlState, gate
 from excel_etl.nodes import Column, NodeError, Schema, build, infer, quote, schema_of
 from excel_etl.nodes.base import check_arity, connect
 from excel_etl.nodes.source import expect_hits, expect_label, read_region
@@ -280,14 +281,29 @@ def _literal(path: Path) -> str:
 
 
 def run(
-    spec: PipelineSpec, files: dict[str, FileInput], out_dir: str | os.PathLike[str]
+    spec: PipelineSpec,
+    files: dict[str, FileInput],
+    out_dir: str | os.PathLike[str],
+    hitl: HitlState | None = None,
+    ref: str | None = None,
 ) -> RunReport:
     """Run a spec: read the sources, run the steps in order, write each output to
     `out_dir/<output name>.<format>`. Files are written under a temporary name and moved into
     place only when every step and every output succeeded, so a failed run leaves no
     half-written file. A failed run returns status "failed" with the issues; it raises
-    PipelineError only when it cannot start (bad `out_dir`, `files`).
+    PipelineError only when it cannot start (bad `out_dir`, `files`, or a checkpoint that
+    needs a person's approval). With `hitl` the checkpoints `after_propose_datasets` and
+    `after_spec` are checked first; `ref` names what is being run (e.g. a spec version) so an
+    approval given for another one is refused.
     """
+    if hitl is not None:
+        blocked = [
+            Issue(where=f"hitl.{c}", message=why)
+            for c in ("after_propose_datasets", "after_spec")
+            if (why := gate(hitl, c, ref=ref))
+        ]
+        if blocked:
+            raise PipelineError(blocked)
     if not isinstance(files, dict):
         raise PipelineError(
             [Issue(where="files", message="files must be a dict of file_role -> file")]
