@@ -763,3 +763,85 @@ def compare_sheets(wb: Workbook, file_id: str, a: str, b: str, budget: int = 24_
         rows_txt = _few([f"r{r + 1}" for r in first_rows], 6)
         lines.append(_clip(f"diffs: {cells}{more}; rows: {diff_rows} of {rows} ({rows_txt})"))
     return {"text": _clip("\n".join(lines), budget), "truncated": False, "next_offset": None}
+
+
+def _proposals(wb: Workbook, file_id: str) -> tuple[list[str], list[str], int, int, int]:
+    """(proposal lines, derived-sheet lines, source, mixed, derived table count). Memoized."""
+    key = f"proposals:{file_id}"
+    if (hit := wb.memo.get(key)) is not None:
+        return hit
+    props: list[str] = []
+    derived: dict[str, int] = {}  # sheet -> how many of its tables are derived
+    counts = {"source": 0, "mixed": 0}
+    for i, s in enumerate(wb.sheets, start=1):
+        g = SheetGrid(wb, s.name)
+        for j, r in enumerate(detect_regions(wb, s.name, g), start=1):
+            if not r.header_rows:
+                continue  # headerless blocks are notes and KPIs, not datasets
+            role = region_role(wb, s.name, r.box)
+            if role == "derived":
+                derived[s.name] = derived.get(s.name, 0) + 1
+                continue
+            if role not in counts:
+                continue  # a text-only table has no lineage signal either way; skipped for now
+            counts[role] += 1
+            names = _column_names(g, r)
+            shown = ", ".join(names[:2])
+            more = f" (+{len(names) - 2})" if len(names) > 2 else ""
+            flag = "" if s.visible == "visible" else f" [{s.visible}]"
+            props.append(
+                _clip(
+                    f"{file_id}.S{i}.R{j}|{_name(s.name)}{flag}|{_box(r.box)}|{role}"
+                    f"|{r.box[2] - r.data_start + 1}|{r.box[3] - r.box[1] + 1}|{shown}{more}"
+                )
+            )
+    reads: dict[str, list[tuple[int, str]]] = {}
+    for (src, dst), n in lineage(wb).edges.items():
+        reads.setdefault(src, []).append((n, dst))
+    dlines = []
+    for i, s in enumerate(wb.sheets, start=1):
+        # a table that only totals its own sheet has nothing to reconcile against
+        src = sorted(reads.get(s.name, ()), key=lambda x: (-x[0], x[1]))
+        if s.name not in derived or not src:
+            continue
+        parts = [f"{'[file]' if d == '[file]' else _name(d)} x{n}" for n, d in src]
+        more = f", +{len(parts) - 4} more" if len(parts) > 4 else ""
+        dlines.append(
+            _clip(
+                f"{file_id}.S{i} {_name(s.name)}: {derived[s.name]} derived tables <- "
+                + ", ".join(parts[:4])
+                + more
+            )
+        )
+    out = (props, dlines, counts["source"], counts["mixed"], sum(derived.values()))
+    wb.memo[key] = out
+    return out
+
+
+def propose_datasets(wb: Workbook, file_id: str, offset: int = 0, limit: int = 50) -> dict:
+    """List the tables worth loading as datasets, for a human to choose from.
+
+    One line per table that people typed numbers into (source) or that also holds some
+    typed numbers (mixed): `F1.S59.R1|(N) PKG|A4:AC807|source|803|29|TANGGAL, Phonska 1|Ton (+27)`
+    = region id, sheet, range, role, data rows, columns, first column names. Derived
+    tables are not proposals; the `derived sheets to check against` line names the sheets
+    that hold them and the sheets they read, to check the chosen data against
+    (formula_lineage has the counts). `offset`/`limit` page over the proposals.
+    """
+    _paging(offset, limit)
+    props, dlines, n_source, n_mixed, n_derived = _proposals(wb, file_id)
+    page = props[offset : offset + limit]
+    lines = [
+        f"{file_id}: {len(props)} datasets to choose from ({n_source} source, {n_mixed} mixed, "
+        f"{n_derived} derived tables left out) in {len(wb.sheets)} sheets. "
+        "id|sheet|range|role|rows|cols|columns"
+    ]
+    lines += page
+    if offset == 0 and dlines:
+        more = f", +{len(dlines) - 10} sheets" if len(dlines) > 10 else ""
+        lines.append(
+            "derived sheets to check against (what they read: formula_lineage): "
+            + "; ".join(dlines[:10])
+            + more
+        )
+    return _page(lines, offset, len(page), len(props))

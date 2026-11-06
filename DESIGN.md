@@ -76,6 +76,7 @@ ID stabil: `F1` (file), `F1.S12` (sheet), `F1.S12.R2` (region).
 | `profile_region(region)` | per kolom: tipe, null %, distinct, min/max, contoh |
 | `find_text(file, query)` | lokasi sel yang cocok (label, istilah glossary) |
 | `compare_sheets(a, b)` | kemiripan struktur + nilai (deteksi duplikat/versi seperti `REKAP BALANS (2)`) |
+| `propose_datasets(file)` | tabel layak jadi dataset (source/mixed), untuk dipilih manusia; derived = target rekonsiliasi |
 | `lookup_knowledge(term)` | arti istilah dari Knowledge |
 
 Deteksi region: generalisasi `pinter-be-refactor/modules/parse_excel/parser.py`

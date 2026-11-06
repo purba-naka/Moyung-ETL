@@ -5,13 +5,14 @@ Perbarui setiap selesai satu item (lihat AGENTS.md §7).
 
 ## Status
 
-- Fase: **1 selesai. Fase 2: 2.1, 2.2, 2.3, 2.4 selesai.**
-- Berikutnya: **Fase 2, item 2.5** (`propose_datasets`). Lihat §Temuan "P6 Fase 1" untuk temuan yang ditunda; sebagian (tipe per kolom, kolom tanggal) dijawab 2.2.
+- Fase: **1 selesai. Fase 2 selesai (2.1-2.5).**
+- Berikutnya: **Fase 3, item 3.1** (`PipelineSpec` + parse YAML/JSON). Sebelum itu, pertimbangkan P6 untuk fase 2 (verifikasi paralel) sebelum pindah fase. Temuan P6 Fase 1 yang ditunda: lihat §Temuan.
 
 ## Berikutnya
 
-1. 2.5 `propose_datasets(files)`: usulan dataset dari region `source`/`mixed`, turunan dijadikan target rekonsiliasi. Output untuk dipilih manusia.
-2. Sambil jalan: temuan P6 yang ditunda (konversi WorkbookError ke dict di `tools.py`).
+1. P6 Fase 2 (verifikasi paralel 3 subagent) atas 2.1-2.5, lalu lanjut fase 3.
+2. 3.1 `PipelineSpec` (pydantic) + parse dari YAML/JSON string.
+3. Sambil jalan: temuan P6 yang ditunda (konversi WorkbookError ke dict di `tools.py`).
 
 ## Struktur target
 
@@ -77,8 +78,8 @@ Selesai bila: semua test hijau, angka token dicatat di §Temuan.
 - [x] 2.2 `profile_region`: per kolom tipe, null %, distinct, min/max, contoh.
 - [x] 2.3 `find_text(file, query)`: case-insensitive, normalisasi spasi/unicode.
 - [x] 2.4 `compare_sheets(a, b)`: kemiripan struktur + nilai (deteksi `X (2)`).
-- [ ] 2.5 `propose_datasets(files)`: usulan dataset dari region `source`/`mixed`,
-      turunan dijadikan target rekonsiliasi. Output untuk dipilih manusia.
+- [x] 2.5 `propose_datasets(files)`: usulan dataset dari region `source`/`mixed`, turunan
+      dijadikan target rekonsiliasi. Output untuk dipilih manusia.
 
 ## Fase 3 — Node + pipeline
 
@@ -123,6 +124,7 @@ Selesai bila: semua test hijau, angka token dicatat di §Temuan.
 | 2026-11-05 | duckdb sebagai engine + SQL skalar sebagai expression | volume bervariasi, tanpa expression language sendiri |
 | 2026-11-05 | Spec pakai anchor semantik untuk recycle | tiap file beda bentuk, alamat sel tidak stabil |
 | 2026-11-05 | Default: dataset dari sheet source; derived untuk rekonsiliasi | cegah hitung dobel |
+| 2026-11-06 | propose_datasets: seksi derived level-sheet (edge lineage), bukan level-region | resolusi region->source butuh kerja per sel; presisinya baru berguna di fase quality (rekonsiliasi), ditunda ke sana |
 | 2026-11-05 | State: dua mode, stateless (host pegang JSON) atau `StateStore` | fleksibel untuk host |
 | 2026-11-05 | HITL via `ask_human` + `HitlPolicy` config | penempatan checkpoint fleksibel tanpa ubah kode |
 | 2026-11-05 | Tolak `sheetwise` sebagai dependency, port idenya | lihat §Temuan |
@@ -249,6 +251,13 @@ yang beda di bagian shared, jumlah formula, jumlah region + same ranges; baris 3
 pertama `A5 10|12` + jumlah baris yang memuat diff. Tanpa paginasi (output kecil by design).
 Satu workbook saja; compare antar file = kebutuhan fase recycle (ditunda).
 
+**propose_datasets (2.5)** BALANSITAS: 447 usulan (367 source, 80 mixed), 297 tabel derived
+ditinggalkan, 72 sheet. Halaman pertama 4.777 char (~1.200 token), 9 halaman (limit 50).
+Panggilan pertama 7,6 s (detect_regions + region_role semua sheet), halaman berikut 0,0 s
+(hasil di-`wb.memo` per file_id). Seksi `derived sheets to check against` hanya sheet yang
+punya edge cross (sheet ber-tablet derived-lokal hanya dihitung di head, tidak masuk seksi:
+tidak ada yang bisa direkonsiliasi). Dashboard = pembaca terbanyak (5 tabel, 29 sheet dibaca).
+
 ## Pertanyaan terbuka
 
 - Batas jumlah dataset per job?
@@ -271,3 +280,4 @@ Satu workbook saja; compare antar file = kebutuhan fase recycle (ditunda).
 | 2026-11-06 | 2.2 `profile_region(wb, file_id, ref, offset, budget)` di `encode.py`: satu baris per kolom (nama dari header, tipe utama + min..max, distinct, null %, `=?`, `odd` + baris). Butuh id region; helper `_region`, `_fit`, `_check_budget` dipakai bersama `render_range`. `tests/test_profile.py`. |
 | 2026-11-06 | 2.3 `find_text(wb, file_id, query, offset, budget)` di `encode.py`: sel teks yang memuat query (substring, NFKC + casefold + kolaps spasi, via `_text_key`), satu baris per sheet (hits + maks 6 posisi + `+N`), flag `[hidden]`, normalisasi teks di-cache di `wb.memo["text_keys"]`. `tests/test_find_text.py` (12). Rencana `profile.py` dilepas: semua tool render hidup di `encode.py`, helper dipakai bersama. |
 | 2026-11-06 | 2.4 `compare_sheets(wb, file_id, a, b, budget)` di `encode.py`: verdict + shape + sel terisi yang beda di bagian shared + jumlah formula + region (`_same` type-aware: bool ≠ 1), 6 diff pertama + baris yang memuat diff. Tanpa paginasi. `tests/test_compare.py` (11); formula ber-cache di test via patch XML (`<v />` openpyxl kosong). |
+| 2026-11-06 | 2.5 `propose_datasets(wb, file_id, offset, limit)` di `encode.py`: usulan tabel source/mixed (`id|sheet|range|role|rows|cols|2 nama kolom`), head menghitung derived yang ditinggalkan, seksi derived = sheet dengan edge cross + yang dibaca, hasil di-memo per file_id. `tests/test_propose.py` (7). Fase 2 (inspect) selesai; P6 Fase 2 disarankan sebelum fase 3. |
