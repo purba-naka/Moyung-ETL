@@ -27,3 +27,4 @@ markers = ["sample: needs the real BALANSITAS file via EXCEL_ETL_SAMPLE"]
 
 [tool.ruff.lint.per-file-ignores]
 "tests/test_quality.py" = ["E501"]
+"tests/test_state.py" = ["E501"]
