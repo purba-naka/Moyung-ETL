@@ -5,12 +5,12 @@ Perbarui setiap selesai satu item (lihat AGENTS.md §7).
 
 ## Status
 
-- Fase: **1 selesai. Fase 2: 2.1 selesai.**
-- Berikutnya: **Fase 2, item 2.2** (`profile_region`). Lihat §Temuan "P6 Fase 1" untuk temuan yang ditunda; sebagian (tipe per kolom, kolom tanggal) dijawab 2.2.
+- Fase: **1 selesai. Fase 2: 2.1, 2.2 selesai.**
+- Berikutnya: **Fase 2, item 2.3** (`find_text`). Lihat §Temuan "P6 Fase 1" untuk temuan yang ditunda; sebagian (tipe per kolom, kolom tanggal) dijawab 2.2.
 
 ## Berikutnya
 
-1. 2.2 `profile_region`: tipe, null %, distinct, min/max, contoh per kolom (jawab keluhan agent: kolom mana tanggal, baris subtotal bercampur).
+1. 2.3 `find_text(file, query)`: case-insensitive, normalisasi spasi/unicode.
 2. Sambil jalan: temuan P6 yang ditunda (kolom tanggal/subtotal di `sheet_regions`, `workbook_map` role "mixed", konversi WorkbookError ke dict di `tools.py`).
 
 ## Struktur target
@@ -74,7 +74,7 @@ Selesai bila: semua test hijau, angka token dicatat di §Temuan.
 
 - [x] 2.1 `lineage.py`: parse referensi formula (`Sheet!A1`, `'Nama Sheet'!A1:B2`,
       defined names) -> graf sheet->sheet; peran `source`/`derived`/`mixed` per region.
-- [ ] 2.2 `profile_region`: per kolom tipe, null %, distinct, min/max, contoh.
+- [x] 2.2 `profile_region`: per kolom tipe, null %, distinct, min/max, contoh.
 - [ ] 2.3 `find_text(file, query)`: case-insensitive, normalisasi spasi/unicode.
 - [ ] 2.4 `compare_sheets(a, b)`: kemiripan struktur + nilai (deteksi `X (2)`).
 - [ ] 2.5 `propose_datasets(files)`: usulan dataset dari region `source`/`mixed`,
@@ -228,6 +228,13 @@ ketikan = source). Per region: `(N) PKG` R1 source, R13-R15 derived (kolom turun
   teks formula 2,3 s. `workbook_map` sampel 8 s (sebelum lineage 4,5 s; sempat 25 s karena
   `count` mengiterasi sejuta baris).
 
+**Profile (2.2)** BALANSITAS: `(N) PKG` R1 512 token (29 kolom), `Per Bulan` R1 1.151 token
+(76 kolom), `RKAP 2026` R1 409 token. Nama kolom dari header bertingkat (`JANUARI|PKG`,
+`Phonska 1|Ton`); parent yang tidak di-merge dibawa ke kanan sampai label berikutnya.
+Baris total dibuang dari angka dan disebut di baris pertama. `odd <tipe> n at r..` menunjuk
+sel bertipe lain: di `(N) PKG` kolom A memperlihatkan 21 baris teks `JAN`/`.JAN` di tengah
+tanggal (subtotal bulan), menjawab keluhan agent P6.
+
 ## Pertanyaan terbuka
 
 - Batas jumlah dataset per job?
@@ -247,3 +254,4 @@ ketikan = source). Per region: `(N) PKG` R1 source, R13-R15 derived (kolom turun
 | 2026-11-05 | 1.6 `render_range(wb, file_id, ref, range, mode, offset, budget)` di `encode.py`: ref = nama/id sheet atau id region, range A1 opsional. `compressed` (teks per baris/kolom + inverted index + run tipe/rentang per kolom) dan `raw` (`row|A|B`, `^` merged, `=?` formula tanpa cache). Budget dalam char (default 24k, sekitar 6k token) + paginasi per baris output. `tests/test_render.py`. |
 | 2026-11-06 | 1.7 + P6 Fase 1: 3 subagent paralel (adversarial/auditor/agent). Perbaikan di `workbook.py` (guard persegi sel, wrap error, zip-bomb cap), `regions.py` (`SheetGrid`, split iteratif, sweep merge), `encode.py` (clamp range, klip baris, validasi paging, docstring LLM). `tests/test_hardening.py` (44 test) termasuk budget 800x160 sintetis < 1k token tanpa file sampel. Total 71 test lulus + 5 sampel. Fase 1 selesai. |
 | 2026-11-06 | 2.1 `inspect/lineage.py`: `lineage(wb)` (edge sheet->sheet, sel cross), `Votes`/`sheet_role`/`region_role` (typed/local/cross), tool `formula_lineage` di `encode.py`. `Workbook.formulas()` (teks formula, shared formula diisi dari sel pertama), `Workbook.defined_names()`, `Workbook.memo`. `workbook_map` role dan `sheet_regions` kolom `orientation/role` kini dari lineage; `_role` berbasis persen formula dihapus. `tests/test_lineage.py` (26) + `test_lineage_tool.py`; 3 mutasi (string literal, 3D, nama lokal) sudah dicek menggagalkan test. |
+| 2026-11-06 | 2.2 `profile_region(wb, file_id, ref, offset, budget)` di `encode.py`: satu baris per kolom (nama dari header, tipe utama + min..max, distinct, null %, `=?`, `odd` + baris). Butuh id region; helper `_region`, `_fit`, `_check_budget` dipakai bersama `render_range`. `tests/test_profile.py`. |
