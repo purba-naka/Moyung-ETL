@@ -19,9 +19,10 @@ from pydantic import (
     model_validator,
 )
 
+from excel_etl.nodes.base import describe
+
 _IDENT = r"^[A-Za-z_][A-Za-z0-9_]*$"
 _END = re.compile(r"^until_blank_rows\(\d+\)$")
-_MAX_ERRORS = 10
 
 # a name becomes a relation name in duckdb, so letters, digits and _ only
 Ident = Annotated[str, StringConstraints(pattern=_IDENT)]
@@ -122,10 +123,6 @@ class PipelineSpec(_Model):
         return self
 
 
-def _where(loc: tuple[int | str, ...]) -> str:
-    return ".".join(str(x) for x in loc) or "spec"
-
-
 def parse_spec(text: str) -> PipelineSpec:
     """JSON text -> PipelineSpec. Raises SpecError listing what is wrong (at most 10 items)."""
     if not isinstance(text, str):
@@ -133,13 +130,9 @@ def parse_spec(text: str) -> PipelineSpec:
     try:
         return PipelineSpec.model_validate_json(text)
     except ValidationError as e:
-        items = e.errors(include_url=False, include_input=False, include_context=False)
-        lines = [f"{_where(x['loc'])}: {x['msg'].removeprefix('Value error, ')}" for x in items]
-        more = f"\n(+{len(lines) - _MAX_ERRORS} more)" if len(lines) > _MAX_ERRORS else ""
-        hint = (
-            "\nThe spec must be JSON (YAML is not supported)." if "json" in lines[0].lower() else ""
-        )
-        raise SpecError("\n".join(lines[:_MAX_ERRORS]) + more + hint) from None
+        msg = describe(e, "spec")
+        hint = "\nThe spec must be JSON (YAML is not supported)." if "json" in msg.lower() else ""
+        raise SpecError(msg + hint) from None
 
 
 def dump_spec(spec: PipelineSpec) -> str:
