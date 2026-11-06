@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import contextlib
 import re
+import unicodedata
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
 from typing import Literal
@@ -607,4 +608,63 @@ def profile_region(
         _clip(f"{col_letters(c)} {names[i]}: {_profile_column(g, c, rows) if rows else 'no data'}")
         for i, c in enumerate(range(left, right + 1))
     ]
+    return _fit(head, body, offset, budget)
+
+
+_WS = re.compile(r"\s+")
+
+
+def _text_key(s: str) -> str:
+    """Text ready to match: one casefolded line, unicode look-alikes folded (ﬀ = ff)."""
+    return _WS.sub(" ", unicodedata.normalize("NFKC", s).casefold()).strip()
+
+
+def find_text(
+    wb: Workbook, file_id: str, query: str, offset: int = 0, budget: int = 24_000
+) -> dict:
+    """Find text cells that contain a query, to locate a label or term before reading a sheet.
+
+    Case, extra spaces and unicode look-alikes (ﬀ = ff, non-breaking space) are ignored.
+    Text cells only: numbers and dates never match. One line per sheet with a match, in
+    workbook order: `F1.S9 Per Bulan: 12 hits | A4=TANGGAL | ... +10`, positions in
+    reading order, up to 6 shown per sheet, `+N` = further cells in that sheet.
+    `offset` pages over the matching sheets; `budget` caps the text in chars.
+    """
+    _paging(offset)
+    _check_budget(budget)
+    if not isinstance(query, str):
+        raise WorkbookError(f"query must be a string, got {query!r}")
+    key = _text_key(query)
+    if not key:
+        raise WorkbookError(f"query {query!r} is empty once whitespace is trimmed")
+    # values() is cached per sheet and the normalized texts are kept on the workbook, so
+    # later pages of the same query cost one pass of containment checks.
+    norm: dict[str, str] = wb.memo.setdefault("text_keys", {})
+
+    def _key(v: str) -> str:
+        k = norm.get(v)
+        return k if k is not None else norm.setdefault(v, _text_key(v))
+
+    body = []
+    cells = 0
+    for i, s in enumerate(wb.sheets, start=1):
+        hits = [
+            f"{a1(r, c)}={_name(_fmt(v))}"
+            for r, row in enumerate(wb.values(s.name))
+            for c, v in enumerate(row)
+            if isinstance(v, str) and key in _key(v)
+        ]
+        if not hits:
+            continue
+        cells += len(hits)
+        flag = "" if s.visible == "visible" else f" [{s.visible}]"
+        shown = " | ".join(hits[:6])
+        more = f" | +{len(hits) - 6}" if len(hits) > 6 else ""
+        body.append(
+            _clip(f"{file_id}.S{i} {_name(s.name)}{flag}: {len(hits)} hits | {shown}{more}")
+        )
+    head = (
+        f"{file_id}: '{_name(query)}' matches {cells} cells in "
+        f"{len(body)} of {len(wb.sheets)} sheets. sheet: hits | cell=text"
+    )
     return _fit(head, body, offset, budget)

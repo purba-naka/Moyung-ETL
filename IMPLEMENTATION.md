@@ -5,13 +5,13 @@ Perbarui setiap selesai satu item (lihat AGENTS.md §7).
 
 ## Status
 
-- Fase: **1 selesai. Fase 2: 2.1, 2.2 selesai.**
-- Berikutnya: **Fase 2, item 2.3** (`find_text`). Lihat §Temuan "P6 Fase 1" untuk temuan yang ditunda; sebagian (tipe per kolom, kolom tanggal) dijawab 2.2.
+- Fase: **1 selesai. Fase 2: 2.1, 2.2, 2.3 selesai.**
+- Berikutnya: **Fase 2, item 2.4** (`compare_sheets`). Lihat §Temuan "P6 Fase 1" untuk temuan yang ditunda; sebagian (tipe per kolom, kolom tanggal) dijawab 2.2.
 
 ## Berikutnya
 
-1. 2.3 `find_text(file, query)`: case-insensitive, normalisasi spasi/unicode.
-2. Sambil jalan: temuan P6 yang ditunda (kolom tanggal/subtotal di `sheet_regions`, `workbook_map` role "mixed", konversi WorkbookError ke dict di `tools.py`).
+1. 2.4 `compare_sheets(a, b)`: kemiripan struktur + nilai (deteksi `X (2)`).
+2. Sambil jalan: temuan P6 yang ditunda (konversi WorkbookError ke dict di `tools.py`).
 
 ## Struktur target
 
@@ -25,9 +25,9 @@ excel-etl/
     inspect/
       __init__.py
       regions.py       # deteksi region/header/total (port parse_excel/parser.py)
-      encode.py        # render teks untuk LLM (map, regions, compressed, raw)
+      encode.py        # render teks untuk LLM (map, regions, compressed, raw, profile,
+                      #  find_text; compare_sheets menyusul di sini)
       lineage.py       # formula -> graf sheet, peran source/derived/mixed
-      profile.py       # profil kolom, find_text, compare_sheets
     nodes/
       __init__.py      # registry @node
       excel.py         # flatten_header, fill_down, parse_hierarchy, unpivot(_groups), drop_rows, split_header_token
@@ -75,7 +75,7 @@ Selesai bila: semua test hijau, angka token dicatat di §Temuan.
 - [x] 2.1 `lineage.py`: parse referensi formula (`Sheet!A1`, `'Nama Sheet'!A1:B2`,
       defined names) -> graf sheet->sheet; peran `source`/`derived`/`mixed` per region.
 - [x] 2.2 `profile_region`: per kolom tipe, null %, distinct, min/max, contoh.
-- [ ] 2.3 `find_text(file, query)`: case-insensitive, normalisasi spasi/unicode.
+- [x] 2.3 `find_text(file, query)`: case-insensitive, normalisasi spasi/unicode.
 - [ ] 2.4 `compare_sheets(a, b)`: kemiripan struktur + nilai (deteksi `X (2)`).
 - [ ] 2.5 `propose_datasets(files)`: usulan dataset dari region `source`/`mixed`,
       turunan dijadikan target rekonsiliasi. Output untuk dipilih manusia.
@@ -235,6 +235,12 @@ Baris total dibuang dari angka dan disebut di baris pertama. `odd <tipe> n at r.
 sel bertipe lain: di `(N) PKG` kolom A memperlihatkan 21 baris teks `JAN`/`.JAN` di tengah
 tanggal (subtotal bulan), menjawab keluhan agent P6.
 
+**find_text (2.3)** BALANSITAS: `tanggal` 78 sel di 42 dari 72 sheet, 598 token; `phonska`
+195 sel di 17 sheet, 469 token. Panggilan pertama 2,0 s (memuat semua sheet + normalisasi
+144k teks, di-cache di `wb.memo`), panggilan berikut 0,09 s. Hanya sel teks: `rekap balans`
+dan `supplyinout` 0 hit (nama sheet saja; nama sheet urusan `workbook_map`). Normalisasi
+NFKC + casefold + kolaps spasi (ligatur `ﬀ` = `ff`, NBSP = spasi), substring, bukan regex.
+
 ## Pertanyaan terbuka
 
 - Batas jumlah dataset per job?
@@ -255,3 +261,4 @@ tanggal (subtotal bulan), menjawab keluhan agent P6.
 | 2026-11-06 | 1.7 + P6 Fase 1: 3 subagent paralel (adversarial/auditor/agent). Perbaikan di `workbook.py` (guard persegi sel, wrap error, zip-bomb cap), `regions.py` (`SheetGrid`, split iteratif, sweep merge), `encode.py` (clamp range, klip baris, validasi paging, docstring LLM). `tests/test_hardening.py` (44 test) termasuk budget 800x160 sintetis < 1k token tanpa file sampel. Total 71 test lulus + 5 sampel. Fase 1 selesai. |
 | 2026-11-06 | 2.1 `inspect/lineage.py`: `lineage(wb)` (edge sheet->sheet, sel cross), `Votes`/`sheet_role`/`region_role` (typed/local/cross), tool `formula_lineage` di `encode.py`. `Workbook.formulas()` (teks formula, shared formula diisi dari sel pertama), `Workbook.defined_names()`, `Workbook.memo`. `workbook_map` role dan `sheet_regions` kolom `orientation/role` kini dari lineage; `_role` berbasis persen formula dihapus. `tests/test_lineage.py` (26) + `test_lineage_tool.py`; 3 mutasi (string literal, 3D, nama lokal) sudah dicek menggagalkan test. |
 | 2026-11-06 | 2.2 `profile_region(wb, file_id, ref, offset, budget)` di `encode.py`: satu baris per kolom (nama dari header, tipe utama + min..max, distinct, null %, `=?`, `odd` + baris). Butuh id region; helper `_region`, `_fit`, `_check_budget` dipakai bersama `render_range`. `tests/test_profile.py`. |
+| 2026-11-06 | 2.3 `find_text(wb, file_id, query, offset, budget)` di `encode.py`: sel teks yang memuat query (substring, NFKC + casefold + kolaps spasi, via `_text_key`), satu baris per sheet (hits + maks 6 posisi + `+N`), flag `[hidden]`, normalisasi teks di-cache di `wb.memo["text_keys"]`. `tests/test_find_text.py` (12). Rencana `profile.py` dilepas: semua tool render hidup di `encode.py`, helper dipakai bersama. |
