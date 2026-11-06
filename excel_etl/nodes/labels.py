@@ -7,6 +7,7 @@ import re
 from pydantic import Field, model_validator
 
 from excel_etl.nodes.base import (
+    INTEGER_TYPE,
     Column,
     Node,
     NodeConfig,
@@ -18,8 +19,6 @@ from excel_etl.nodes.base import (
     schema_of,
 )
 from excel_etl.nodes.excel import _lit, _need
-
-_INTEGER = re.compile(r"^U?(TINY|SMALL|BIG|HUGE)?INT(EGER)?$")
 
 
 def _clash(schema: Schema, new: list[str], dropped: str | None, who: str) -> None:
@@ -55,7 +54,7 @@ class ParseHierarchy(Node):
         cfg = self.config
         _need(schema, cfg.column, self.name)
         kind = next(c.type for c in schema if c.name == cfg.column)
-        if kind != "VARCHAR" and not _INTEGER.match(kind):
+        if kind != "VARCHAR" and not INTEGER_TYPE.match(kind):
             raise NodeError(
                 f"{self.name}: column {cfg.column!r} is {kind}; codes like 1.10 are lost as "
                 "numbers (1.10 becomes 1.1). Keep them as text"

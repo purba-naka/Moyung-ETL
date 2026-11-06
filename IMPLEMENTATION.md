@@ -6,13 +6,13 @@ Perbarui setiap selesai satu item (lihat AGENTS.md §7).
 ## Status
 
 - Fase: **1, 2 selesai (termasuk P6). Fase 3: 3.1, 3.2 selesai; 3.3 selesai (`read_region`, `drop_rows`, `fill_down`, `unpivot`, `unpivot_groups`, `parse_hierarchy`, `split_header_token`).**
-- 3.4 sebagian: **validator ekspresi SQL selesai** (`nodes/sqlexpr.py`).
-- Berikutnya: **3.4 lanjut: node umum** (`rename`, `cast`, `filter`, `dedupe`, `sort`, `fill_missing`, `derive`, `join`, `union`, `group_by`, `pivot`); `filter` dan `derive` wajib memanggil `check_expression`.
+- 3.4 sebagian: validator ekspresi SQL + node umum langkah 1 selesai (`select`, `rename`, `cast`, `filter`, `derive`, `fill_missing`, `sort`, `dedupe`).
+- Berikutnya: **3.4 langkah 2: `join`, `union`, `group_by`, `pivot`** (banyak input / ubah bentuk).
 - **Aturan kerja (dari user): BALANSITAS hanya satu contoh, bukan patokan bentuk.** Node berbasis pola umum dan config eksplisit; tes memakai beberapa bentuk sintetis berbeda; sampel hanya sanity. Temuan P6 Fase 1/2 yang ditunda: lihat §Temuan.
 
 ## Berikutnya
 
-1. 3.4 node umum (`rename`, `cast`, `filter`, `dedupe`, `sort`, `fill_missing`, `derive`, `join`, `union`, `group_by`, `pivot`); `filter`/`derive` memakai `check_expression`. Catatan: `fill_down` dan `sort` bergantung pada urutan baris; `join`/`group_by` tidak menjamin urutan. `flatten_header` sudah terjadi di `read_region`: kolom sudah `PARENT|LEAF`, node terpisah hanya bila perlu.
+1. 3.4 langkah 2: `join`, `union`, `group_by`, `pivot`. `group_by` boleh memakai agregat yang ditolak `check_expression` (daftar agregat dari katalog duckdb). Catatan: `fill_down` dan `sort` bergantung pada urutan baris; `join`/`group_by` tidak menjamin urutan. `flatten_header` sudah terjadi di `read_region`: kolom sudah `PARENT|LEAF`, node terpisah hanya bila perlu.
 2. 3.4-3.6 node + registry + `validate`/`run` (lihat §Fase 3).
 3. Sambil jalan: temuan P6 yang ditunda (konversi WorkbookError ke dict di `tools.py`).
 
@@ -88,7 +88,7 @@ Selesai bila: semua test hijau, angka token dicatat di §Temuan.
 - [x] 3.1 `PipelineSpec` (pydantic) + parse dari JSON string (YAML ditunda, lihat §Keputusan).
 - [x] 3.2 Registry `@node`, kontrak `infer_schema` + `run` (duckdb relation).
 - [x] 3.3 Node Excel-spesifik: `read_region` (source), `drop_rows`, `fill_down`, `unpivot`, `unpivot_groups`, `parse_hierarchy`, `split_header_token`. `flatten_header` = bagian `read_region`.
-- [ ] 3.4 Node umum + validasi ekspresi SQL skalar. Selesai: validator `check_expression`. Sisa: node umum.
+- [ ] 3.4 Node umum + validasi ekspresi SQL skalar. Selesai: `check_expression`, `check_type`, `bind`; `select rename cast filter derive fill_missing sort dedupe`. Sisa: `join union group_by pivot`.
 - [ ] 3.5 `validate(spec)` tanpa data; `run(spec)` -> output parquet/csv + RunReport.
 - [ ] 3.6 Multi-file per job (join/union antar `F1`, `F2`).
 
@@ -384,6 +384,30 @@ sebagai pemanggilan tanpa argumen (aman, tidak bisa menjangkau data lain); `min(
 yang berbahaya (banyak kolom) ditolak. Dikunci di tes. 11 mutasi: 8 tertangkap, 3 lolos
 (WHERE, tipe node, huruf besar-kecil) karena memang lapisan cadangan (lihat di atas).
 
+**Node umum langkah 1 (3.4)** `nodes/general.py`. Aturan bersama: config yang mengandung SQL
+(`filter.where`, `derive.expr`, `derive.type`, `cast.types`) diperiksa saat `build` (validator di
+`sqlexpr.py`), lalu diikat ke skema saat `infer_schema` lewat `bind` (CREATE TEMP TABLE kosong
+berskema input + `SELECT`), jadi kolom tak ada, tipe tak cocok, dan agregat jadi `NodeError`
+sebelum ada data. `check_type` = whitelist regex (huruf, spasi, `(10,2)`, `[]`) lalu duckdb
+harus mengenalnya; STRUCT/ENUM ditolak; nama tipe adalah titik injeksi kedua di `CAST`.
+`rename` (swap diperbolehkan, bentrok nama keluaran ditolak), `cast` (`strict` false = TRY_CAST,
+nilai tak cocok jadi NULL), `filter` (ekspresi harus BOOLEAN), `derive` (ganti di tempat atau
+tambah di akhir, `type` opsional), `fill_missing` (nilai tetap; harus muat di tipe kolom, dicek
+dengan evaluasi konstanta karena bind di tabel kosong tidak mengevaluasi), `sort` (`-kolom` =
+turun, NULL selalu di akhir, kolom yang namanya memang diawali `-` menang atas penanda),
+`dedupe` (`keys` opsional; yang pertama = pertama menurut urutan tabel).
+**Temuan dari tes-tes ini:** (1) *agregat lolos validator*: `derive` dengan `sum(x)` akan mengubah
+seluruh tabel jadi satu baris tanpa error; validator awal (dan tes saya sendiri) bahkan menyatakan
+`sum(a)` "lolos". Kini agregat ditolak dengan daftar dari `duckdb_functions()` (79 nama, tak ada
+yang sekaligus skalar) + `count_star`. (2) *dedupe memilih baris salah pada data besar*:
+`row_number() OVER (PARTITION BY k)` tanpa ORDER BY mengikuti scan paralel, bukan urutan tabel
+(200k baris: baris "pertama" bukan yang pertama); mutasi menangkapnya, kini memakai posisi
+eksplisit `row_number() OVER ()`. (3) bind di tabel kosong tidak mengevaluasi konstanta
+(`coalesce(id, CAST('abc' AS INTEGER))` lolos) sehingga `fill_missing` mengevaluasi nilainya
+sendiri. Mutasi lolos yang dinilai kode ganda/bukan celah: `NULLS LAST` (default duckdb sudah
+begitu, tetap ditulis eksplisit dan dites), `count_star` manual (sudah ada di katalog), cek nama
+baru ganda di `rename` config (cek keluaran di `infer_schema` menangkap yang sama).
+
 ## Pertanyaan terbuka
 
 - Batas jumlah dataset per job?
@@ -415,3 +439,4 @@ yang berbahaya (banyak kolom) ditolak. Dikunci di tes. 11 mutasi: 8 tertangkap, 
 | 2026-11-06 | 3.3c `unpivot` dan `unpivot_groups` di `nodes/excel.py` (+`_common_type`, `_pick`, `_regex`). Tes memakai 8+ bentuk sintetis (pemisah `|` dan `_`, ukuran tak seragam, nama dengan kutip, tipe campur, workbook dua baris header Q1..Q3 x Sales/Cost), bukan tiruan BALANSITAS. +24 tes; 5 dari 6 mutasi tertangkap, 1 mutasi tanpa efek. 246 unit + 14 sampel lulus. Aturan kerja baru: contoh bukan patokan (memory + Status). |
 | 2026-11-06 | 3.3d `nodes/labels.py`: `parse_hierarchy`, `split_header_token`. `tests/test_label_nodes.py` (26): 4+ pemisah, kode salah -> NULL, desimal ditolak, pola/pemisah, nama berkutip, dua workbook sintetis. 8 mutasi: 6 tertangkap, 2 = kode mubazir (dihapus). 272 unit + 14 sampel lulus. 3.3 selesai. |
 | 2026-11-06 | 3.4a `nodes/sqlexpr.py`: `check_expression` (parser duckdb + bentuk + whitelist kelas node + deny-list fungsi). `tests/test_sqlexpr.py` (78): ekspresi biasa lolos (24), bentuk/sintaks jahat ditolak (26), fungsi berbahaya di mana pun (20), klausa dalam pemanggilan, panjang/NUL/non-string. Fuzz tata bahasa + bungkus jahat + teks acak bersih. 350 unit lulus. |
+| 2026-11-06 | 3.4b node umum langkah 1: `rename cast filter derive fill_missing sort dedupe` di `nodes/general.py`; `check_type`, `bind`, deteksi agregat di `nodes/sqlexpr.py`; `INTEGER_TYPE` bersama di `base.py`. `tests/test_general_nodes.py` (67) + tes agregat. 14+ mutasi; temuan: agregat lolos validator, dedupe salah-urutan pada data besar. 430 unit lulus. |
