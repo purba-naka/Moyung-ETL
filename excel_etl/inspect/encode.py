@@ -518,8 +518,13 @@ def _fit(head: str, body: list[str], offset: int, budget: int) -> dict:
     return _page(lines, offset, len(lines) - 1, len(body))
 
 
-def _column_names(g: SheetGrid, region: Region) -> list[str]:
-    """One name per column, header rows joined top to bottom: `JANUARI|PKG`."""
+def _column_names(g: SheetGrid, region: Region, sep_safe: bool = True) -> list[str]:
+    """One name per column, header rows joined top to bottom: `JANUARI|PKG`.
+
+    `sep_safe` writes each label as `_name` does (no `|` inside a label), for text views.
+    A loader passes False to keep the label as typed.
+    """
+    clean = _name if sep_safe else (lambda s: " ".join(s.split()))
     _, left, _, right = region.box
     rows = region.header_rows
     # ponytail: a parent label that is not merged is carried right until the next label
@@ -537,8 +542,8 @@ def _column_names(g: SheetGrid, region: Region) -> list[str]:
         out: list[str] = []
         for p in parts:
             # a vertical merge repeats its label on every header row, so keep it once
-            if p and (not out or out[-1] != _name(_fmt(p))):
-                out.append(_name(_fmt(p)))
+            if p and (not out or out[-1] != clean(_fmt(p))):
+                out.append(clean(_fmt(p)))
         names.append("|".join(out) or "-")
     return names
 
