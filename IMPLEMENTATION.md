@@ -5,12 +5,13 @@ Perbarui setiap selesai satu item (lihat AGENTS.md §7).
 
 ## Status
 
-- Fase: **1, 2 selesai (termasuk P6). Fase 3: 3.1, 3.2 selesai; 3.3 sebagian (`read_region`, `drop_rows`, `fill_down` selesai).**
-- Berikutnya: **3.3 lanjut: `unpivot`, `unpivot_groups`, `parse_hierarchy`, `split_header_token`.** Temuan P6 Fase 1/2 yang ditunda: lihat §Temuan.
+- Fase: **1, 2 selesai (termasuk P6). Fase 3: 3.1, 3.2 selesai; 3.3 sebagian (`read_region`, `drop_rows`, `fill_down`, `unpivot`, `unpivot_groups` selesai).**
+- Berikutnya: **3.3 lanjut: `parse_hierarchy`, `split_header_token`; lalu 3.4.**
+- **Aturan kerja (dari user): BALANSITAS hanya satu contoh, bukan patokan bentuk.** Node berbasis pola umum dan config eksplisit; tes memakai beberapa bentuk sintetis berbeda; sampel hanya sanity. Temuan P6 Fase 1/2 yang ditunda: lihat §Temuan.
 
 ## Berikutnya
 
-1. 3.3 sisa node Excel-spesifik: `unpivot`/`unpivot_groups` dulu (bentuk lebar Phonska N [Ton, Formula] -> panjang), lalu `parse_hierarchy`, `split_header_token`. `flatten_header` sudah terjadi di `read_region`: kolom sudah `PARENT|LEAF`, node terpisah hanya bila perlu.
+1. 3.3 sisa node Excel-spesifik: `parse_hierarchy` (`1.2.1` -> level, parent), `split_header_token` (`A|B` -> dua kolom). `flatten_header` sudah terjadi di `read_region`: kolom sudah `PARENT|LEAF`, node terpisah hanya bila perlu.
 2. 3.4-3.6 node + registry + `validate`/`run` (lihat §Fase 3).
 3. Sambil jalan: temuan P6 yang ditunda (konversi WorkbookError ke dict di `tools.py`).
 
@@ -85,7 +86,7 @@ Selesai bila: semua test hijau, angka token dicatat di §Temuan.
 
 - [x] 3.1 `PipelineSpec` (pydantic) + parse dari JSON string (YAML ditunda, lihat §Keputusan).
 - [x] 3.2 Registry `@node`, kontrak `infer_schema` + `run` (duckdb relation).
-- [ ] 3.3 Node Excel-spesifik. Selesai: `read_region` (source), `drop_rows`, `fill_down`. Sisa: lihat Berikutnya.
+- [ ] 3.3 Node Excel-spesifik. Selesai: `read_region` (source), `drop_rows`, `fill_down`, `unpivot`, `unpivot_groups`. Sisa: lihat Berikutnya.
 - [ ] 3.4 Node umum + validasi ekspresi SQL skalar.
 - [ ] 3.5 `validate(spec)` tanpa data; `run(spec)` -> output parquet/csv + RunReport.
 - [ ] 3.6 Multi-file per job (join/union antar `F1`, `F2`).
@@ -331,6 +332,22 @@ Mengandalkan urutan baris, yang dijaga `read_region` (tabel dimuat berurutan). B
 `(N) PKG`: `drop_rows(TANGGAL, keep_type=date)` menyisakan tepat 730 baris tanggal dari 802
 (72 baris subtotal/label/kosong terbuang).
 
+**unpivot, unpivot_groups (3.3)** `nodes/excel.py`, dirancang tanpa asumsi satu workbook.
+`unpivot`: `keep` + (`columns` XOR `pattern` regex pada nama kolom), `name_column`/`value_column`,
+`value_type` opsional, `drop_nulls` (default true). Tipe kolom nilai disatukan: sama = tetap,
+semua numerik = DOUBLE, selain itu VARCHAR (atau `value_type`); duckdb menolak UNPIVOT lintas tipe,
+jadi tiap kolom di-CAST dulu. `unpivot_groups`: `pattern` wajib berisi grup bernama
+`(?P<group>..)` dan `(?P<measure>..)`; pemisah/format nama bebas (`A|Ton`, `north_units`,
+`Q1 Sales`...) karena itu di regex, bukan di kode. Blok boleh tak seragam (ukuran yang tak ada
+= NULL bertipe), `drop_empty` membuang baris blok yang kosong semua, duplikat (grup, ukuran) dan
+ukuran yang bentrok dengan kolom keluaran = `NodeError`. Dibangun dengan `UNION ALL` per grup
+(duckdb `UNPIVOT` multi-kolom dibatasi: tiap entri harus berukuran sama). Catatan perilaku:
+pattern yang terlalu longgar ikut menangkap blok yang tak dimaksud (mis. `Total|n`); ada tes
+yang menunjukkannya dan cara mempersempit dengan lookahead. Di sampel, `unpivot_groups`
+menghasilkan 13 kolom keluaran (ukuran Ton, Formula, Sub, NS, ...): pattern longgar menangkap
+semua `X|Y`, jadi pengguna menyempit sesuai kebutuhan. Mutasi `NULL` polos vs `CAST(NULL AS t)`
+tidak berefek: UNION ALL mengikuti tipe cabang lain; CAST dipertahankan agar eksplisit.
+
 ## Pertanyaan terbuka
 
 - Batas jumlah dataset per job?
@@ -359,3 +376,4 @@ Mengandalkan urutan baris, yang dijaga `read_region` (tabel dimuat berurutan). B
 | 2026-11-06 | 3.2 `nodes/base.py` (`Node`, `@node`, `build`, `infer`, `schema_of`, `quote`, `NodeError`) + `nodes/general.py` (`select`). `tests/test_nodes.py` (10); 3 mutasi (forbid off, infer != run, arity off) tertangkap. `parse_spec` memakai `describe` bersama. 194 unit lulus. |
 | 2026-11-06 | 3.3a `nodes/source.py`: `read_region` (sheet via name/name_like/fallback, header via anchor per tabel, akhir via blank rows, tipe per kolom). `nodes/base.py`: `connect()` (duckdb tanpa akses file). `_column_names(sep_safe=)`. `tests/test_read_region.py` (12). Uji BALANSITAS menemukan bug: anchor yang berulang di tabel samping gagal (dinilai per workbook-wide) -> dinilai per tabel. 206 unit lulus. |
 | 2026-11-06 | 3.3b `nodes/excel.py`: `drop_rows` (blank, keep_type, drop_regex) dan `fill_down`. `tests/test_excel_nodes.py` (14 + 1 sampel); tiap kasus mengecek `infer_schema == schema_of(run)`; 3 mutasi (keep_type terbalik, tanpa IGNORE NULLS, regex tak NULL-aman) tertangkap. Sampel: (N) PKG 802 -> 730 baris. 221 unit + 13 sampel lulus. |
+| 2026-11-06 | 3.3c `unpivot` dan `unpivot_groups` di `nodes/excel.py` (+`_common_type`, `_pick`, `_regex`). Tes memakai 8+ bentuk sintetis (pemisah `|` dan `_`, ukuran tak seragam, nama dengan kutip, tipe campur, workbook dua baris header Q1..Q3 x Sales/Cost), bukan tiruan BALANSITAS. +24 tes; 5 dari 6 mutasi tertangkap, 1 mutasi tanpa efek. 246 unit + 14 sampel lulus. Aturan kerja baru: contoh bukan patokan (memory + Status). |

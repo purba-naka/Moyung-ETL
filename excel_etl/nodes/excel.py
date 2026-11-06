@@ -7,7 +7,17 @@ from typing import Literal
 
 from pydantic import Field, model_validator
 
-from excel_etl.nodes.base import Node, NodeConfig, NodeError, Relation, Schema, node, quote
+from excel_etl.nodes.base import (
+    Column,
+    Node,
+    NodeConfig,
+    NodeError,
+    Relation,
+    Schema,
+    node,
+    quote,
+    schema_of,
+)
 
 
 def _need(schema: Schema, column: str, node_name: str) -> None:
@@ -93,3 +103,197 @@ class FillDown(Node):
             for c in dict.fromkeys(self.config.columns)
         )
         return rel.project(f"* REPLACE ({fills})")
+
+
+_NUMERIC = re.compile(r"^(U?(TINY|SMALL|BIG|HUGE)?INT(EGER)?|FLOAT|DOUBLE|DECIMAL\(.*\))$")
+type ValueType = Literal["VARCHAR", "DOUBLE", "BIGINT", "DATE", "TIMESTAMP", "BOOLEAN"]
+
+
+def _common_type(types: list[str], forced: str | None) -> str:
+    """One type for columns that become one: same stays, all numbers become DOUBLE, else text."""
+    if forced:
+        return forced
+    kinds = set(types)
+    if len(kinds) == 1:
+        return types[0]
+    return "DOUBLE" if all(_NUMERIC.match(t) for t in kinds) else "VARCHAR"
+
+
+def _pick(
+    schema: Schema, keep: list[str], columns: list[str] | None, pattern: str | None, who: str
+):
+    """The value columns: listed ones, or every other column whose name matches `pattern`."""
+    for c in keep:
+        _need(schema, c, who)
+    if columns is not None:
+        for c in columns:
+            _need(schema, c, who)
+        picked = list(dict.fromkeys(columns))
+    else:
+        assert pattern is not None
+        picked = [c.name for c in schema if c.name not in keep and re.search(pattern, c.name)]
+    if clash := [c for c in picked if c in keep]:
+        raise NodeError(f"{who}: column {clash[0]!r} is both kept and unpivoted")
+    if not picked:
+        shown = ", ".join(c.name for c in schema[:12]) + (", ..." if len(schema) > 12 else "")
+        raise NodeError(f"{who}: no column to unpivot; columns: {shown}")
+    return picked
+
+
+def _regex(value: str, names: tuple[str, ...] = ()) -> str:
+    try:
+        rx = re.compile(value)
+    except re.error as e:
+        raise ValueError(f"{value!r} is not a regex: {e}") from e
+    if missing := [n for n in names if n not in rx.groupindex]:
+        raise ValueError(f"regex needs named groups (?P<{missing[0]}>...); got {value!r}")
+    return value
+
+
+@node("unpivot")
+class Unpivot(Node):
+    """Turn columns into rows: wide (one column per month, product, ...) to long.
+
+    `keep` columns repeat on every row; every other column not listed in `columns` or matched by
+    `pattern` is dropped. Each value column gives one row per record: its name goes to
+    `name_column`, its cell to `value_column`. Columns of different types become one type: all
+    numbers -> DOUBLE, otherwise text (or the `value_type` you give). Empty cells give no row
+    unless `drop_nulls` is false.
+    """
+
+    class Config(NodeConfig):
+        keep: list[str] = []
+        columns: list[str] | None = Field(default=None, min_length=1)
+        pattern: str | None = None  # regex searched in the column name
+        name_column: str = Field(default="variable", min_length=1)
+        value_column: str = Field(default="value", min_length=1)
+        value_type: ValueType | None = None
+        drop_nulls: bool = True
+
+        @model_validator(mode="after")
+        def _rules(self) -> Unpivot.Config:
+            if (self.columns is None) == (self.pattern is None):
+                raise ValueError("give exactly one of columns or pattern")
+            if self.pattern is not None:
+                _regex(self.pattern)
+            if self.name_column == self.value_column:
+                raise ValueError("name_column and value_column must differ")
+            if {self.name_column, self.value_column} & set(self.keep):
+                raise ValueError("name_column and value_column must not be kept columns")
+            return self
+
+    def _plan(self, schema: Schema):
+        cfg = self.config
+        picked = _pick(schema, cfg.keep, cfg.columns, cfg.pattern, self.name)
+        by_name = {c.name: c.type for c in schema}
+        return picked, _common_type([by_name[c] for c in picked], cfg.value_type), by_name
+
+    def infer_schema(self, inputs: list[Schema]) -> Schema:
+        (schema,) = inputs
+        _, vtype, by_name = self._plan(schema)
+        cfg = self.config
+        return (
+            *(Column(c, by_name[c]) for c in cfg.keep),
+            Column(cfg.name_column, "VARCHAR"),
+            Column(cfg.value_column, vtype),
+        )
+
+    def run(self, inputs: list[Relation]) -> Relation:
+        (rel,) = inputs
+        cfg = self.config
+        picked, vtype, _ = self._plan(schema_of(rel))
+        cols = [quote(c) for c in cfg.keep] + [
+            f"CAST({quote(c)} AS {vtype}) AS {quote(c)}" for c in picked
+        ]
+        nulls = "" if cfg.drop_nulls else " INCLUDE NULLS"
+        listed = ", ".join(quote(c) for c in picked)
+        return rel.query(
+            "__in",
+            f"SELECT * FROM (SELECT {', '.join(cols)} FROM __in) UNPIVOT{nulls} "
+            f"({quote(cfg.value_column)} FOR {quote(cfg.name_column)} IN ({listed}))",
+        )
+
+
+@node("unpivot_groups")
+class UnpivotGroups(Node):
+    """Turn repeated blocks of columns into rows, one row per block.
+
+    A sheet with `A|Ton, A|Rate, B|Ton, B|Rate` (the same measures repeated for several
+    groups: months, plants, products) becomes rows `(group, Ton, Rate)`. `pattern` must name two
+    regex groups: `(?P<group>...)` is the block, `(?P<measure>...)` the column inside it, e.g.
+    `^(?P<group>.+)[|](?P<measure>[^|]+)$`. A block that lacks a measure gets NULL there.
+    Columns that are neither kept nor matched are dropped. A measure with different types in
+    different blocks follows the `unpivot` rule (numbers -> DOUBLE, else text).
+    """
+
+    class Config(NodeConfig):
+        pattern: str
+        keep: list[str] = []
+        group_column: str = Field(default="group", min_length=1)
+        drop_empty: bool = True  # skip a block that has no value at all in a row
+
+        @model_validator(mode="after")
+        def _rules(self) -> UnpivotGroups.Config:
+            _regex(self.pattern, ("group", "measure"))
+            if self.group_column in self.keep:
+                raise ValueError("group_column must not be a kept column")
+            return self
+
+    def _plan(self, schema: Schema):
+        cfg, rx = self.config, re.compile(self.config.pattern)
+        for c in cfg.keep:
+            _need(schema, c, self.name)
+        found: dict[str, dict[str, str]] = {}  # group -> measure -> column
+        types: dict[str, list[str]] = {}
+        by_name = {c.name: c.type for c in schema}
+        for col in schema:
+            m = rx.search(col.name) if col.name not in cfg.keep else None
+            if not m:
+                continue
+            g, ms = m["group"], m["measure"]
+            if ms in found.setdefault(g, {}):
+                raise NodeError(
+                    f"{self.name}: columns {found[g][ms]!r} and {col.name!r} are both "
+                    f"group {g!r}, measure {ms!r}"
+                )
+            found[g][ms] = col.name
+            types.setdefault(ms, []).append(col.type)
+        if not found:
+            shown = ", ".join(c.name for c in schema[:12]) + (", ..." if len(schema) > 12 else "")
+            raise NodeError(f"{self.name}: pattern matches no column; columns: {shown}")
+        measures = {m: _common_type(t, None) for m, t in types.items()}
+        if clash := [m for m in measures if m in cfg.keep or m == cfg.group_column]:
+            raise NodeError(f"{self.name}: measure {clash[0]!r} clashes with another output column")
+        return found, measures, by_name
+
+    def infer_schema(self, inputs: list[Schema]) -> Schema:
+        (schema,) = inputs
+        _, measures, by_name = self._plan(schema)
+        cfg = self.config
+        return (
+            *(Column(c, by_name[c]) for c in cfg.keep),
+            Column(cfg.group_column, "VARCHAR"),
+            *(Column(m, t) for m, t in measures.items()),
+        )
+
+    def run(self, inputs: list[Relation]) -> Relation:
+        (rel,) = inputs
+        cfg = self.config
+        found, measures, _ = self._plan(schema_of(rel))
+        keep = [quote(c) for c in cfg.keep]
+        selects = []
+        for g, cols in found.items():
+            vals = [
+                f"CAST({quote(cols[m])} AS {t}) AS {quote(m)}"
+                if m in cols
+                else f"CAST(NULL AS {t}) AS {quote(m)}"
+                for m, t in measures.items()
+            ]
+            where = ""
+            if cfg.drop_empty:
+                have = [quote(c) for c in cols.values()]
+                where = " WHERE " + " OR ".join(f"{c} IS NOT NULL" for c in have)
+            lit = _lit(g)
+            head = ", ".join([*keep, f"{lit} AS {quote(cfg.group_column)}", *vals])
+            selects.append(f"SELECT {head} FROM __in{where}")
+        return rel.query("__in", " UNION ALL ".join(selects))
