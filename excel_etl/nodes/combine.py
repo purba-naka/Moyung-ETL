@@ -5,13 +5,13 @@ cannot smuggle an expression in, and `infer_schema` can say what comes out witho
 
 from __future__ import annotations
 
-import re
 from typing import Literal
 
 import duckdb
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from excel_etl.nodes.base import (
+    INTEGER_TYPE,
     Column,
     Node,
     NodeConfig,
@@ -23,7 +23,7 @@ from excel_etl.nodes.base import (
     quote,
     schema_of,
 )
-from excel_etl.nodes.excel import _common_type, _lit
+from excel_etl.nodes.excel import _NUMERIC, _common_type, _lit
 from excel_etl.nodes.relops import apply, check_reserved, need, shape, unique
 
 
@@ -81,7 +81,7 @@ class Join(Node):
         return [JoinKey(left=k, right=k) if isinstance(k, str) else k for k in self.config.on]
 
     def _plan(self, schemas: list[Schema]) -> tuple[list[tuple[str, str]], list[Column]]:
-        """((view-side, source column name, output name) per output column, schema)."""
+        """(source column name, output name) per output column, and the output schema."""
         left, right = schemas
         pairs = self._pairs()
         for p in pairs:
@@ -184,13 +184,15 @@ class Union(Node):
                 )
             first = schemas[0]
             return [(c.name, [s[i].name for s in schemas]) for i, c in enumerate(first)]
-        order: list[str] = []
+        # matched without letter case, like duckdb; the first spelling names the output
+        order: dict[str, str] = {}
         for s in schemas:
-            order += [c.name for c in s if c.name not in order]
+            for c in s:
+                order.setdefault(c.name.casefold(), c.name)
         for s in schemas:
             unique([c.name for c in s], "column", self.name)
-        have = [{c.name for c in s} for s in schemas]
-        return [(n, [n if n in h else None for h in have]) for n in order]
+        have = [{c.name.casefold(): c.name for c in s} for s in schemas]
+        return [(n, [h.get(k) for h in have]) for k, n in order.items()]
 
     def _types(self, schemas: list[Schema]) -> list[tuple[str, str, list[str | None]]]:
         out = []
@@ -201,7 +203,9 @@ class Union(Node):
                 if src is not None
             ]
             out.append((name, _common_type(types, None), srcs))
-        if self.config.source_column and self.config.source_column in {n for n, _, _ in out}:
+        if self.config.source_column and self.config.source_column.casefold() in {
+            n.casefold() for n, _, _ in out
+        }:
             raise NodeError(
                 f"{self.name}: source_column {self.config.source_column!r} is already a column"
             )
@@ -254,20 +258,6 @@ class Union(Node):
 
 
 # --- group_by --------------------------------------------------------------------------------
-
-_FUNCS = {
-    "sum": "sum",
-    "count": "count",  # non-empty values of the column
-    "count_rows": "count",  # rows in the group; `column` not used
-    "count_distinct": "count_distinct",
-    "avg": "avg",
-    "min": "min",
-    "max": "max",
-    "first": "first",  # first in table order
-    "last": "last",
-    "join_text": "string_agg",
-}
-_NUMERIC = re.compile(r"^(U?(TINY|SMALL|BIG|HUGE)?INT(EGER)?|FLOAT|DOUBLE|DECIMAL\(.*\))$")
 
 
 class Agg(_Part):
@@ -328,7 +318,7 @@ class GroupBy(Node):
             elif a.fn == "count_distinct":
                 expr, out = f"count(DISTINCT {col})", "BIGINT"
             elif a.fn == "sum":
-                whole = bool(re.match(r"^U?(TINY|SMALL|BIG|HUGE)?INT(EGER)?$", kind))
+                whole = bool(INTEGER_TYPE.match(kind))
                 if whole:
                     expr, out = f"CAST(sum({col}) AS BIGINT)", "BIGINT"
                 else:

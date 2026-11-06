@@ -22,8 +22,8 @@ from excel_etl.nodes.excel import _lit, _need
 
 
 def _clash(schema: Schema, new: list[str], dropped: str | None, who: str) -> None:
-    have = {c.name for c in schema if c.name != dropped}
-    if bad := [n for n in new if n in have]:
+    have = {c.name.casefold() for c in schema if c.name != dropped}
+    if bad := [n for n in new if n.casefold() in have]:
         raise NodeError(f"{who}: output column {bad[0]!r} already exists")
 
 

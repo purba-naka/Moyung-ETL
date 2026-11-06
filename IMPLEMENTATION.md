@@ -9,12 +9,13 @@ Perbarui setiap selesai satu item (lihat AGENTS.md §7).
 - 3.5 selesai: `engine.py` `validate(spec)`/`run(spec)` -> parquet/csv + report; 3.6 selesai lewat `file_role` per source.
 - Fase 4 selesai: 4.1-4.4 (`rebind.py`, `versions.py`).
 - 3.4 selesai: validator ekspresi SQL + 18 node (`select rename cast filter derive fill_missing sort dedupe join union group_by pivot` + 6 node Excel).
-- Berikutnya: **P6 verifikasi paralel Fase 3-4 (3 subagent), lalu Fase 5 (HITL, Knowledge, Quality, State).**
+- P6 Fase 3-4 selesai (perbaikan di Log; sisa di §Temuan P6 Fase 3-4).
+- Berikutnya: **Fase 5 (HITL, Knowledge, Quality, State).**
 - **Aturan kerja (dari user): BALANSITAS hanya satu contoh, bukan patokan bentuk.** Node berbasis pola umum dan config eksplisit; tes memakai beberapa bentuk sintetis berbeda; sampel hanya sanity. Temuan P6 Fase 1/2 yang ditunda: lihat §Temuan.
 
 ## Berikutnya
 
-1. P6 Fase 3-4: adversarial / auditor / agent-user atas `engine.py`, `rebind.py`, `versions.py`, node. Lalu Fase 5.
+1. Fase 5: HITL, Knowledge, Quality, State (P1 review plan dulu).
 2. 3.4-3.6 node + registry + `validate`/`run` (lihat §Fase 3).
 3. Sambil jalan: temuan P6 yang ditunda (konversi WorkbookError ke dict di `tools.py`).
 
@@ -433,6 +434,16 @@ pelajaran `fill_missing`), `prefix`, fn sum avg min max count first last. 14 mut
 tertangkap; 1 lolos = kode mubazir (`IS NOT DISTINCT FROM` di pivot, nilai config tak bisa
 NULL) dan dihapus.
 
+## Temuan P6 Fase 3-4 (ditunda)
+
+- Error `PipelineError` untuk `run` dengan `files`/`out_dir` jelek, `ValueError`/`KeyError` di `versions.py`: AGENTS §4 minta dict; ubah saat `tools.py` (Fase 6) membungkusnya.
+- Pesan di `source.py` menyebut `find_text`/`sheet_regions`: tool itu ada di `tools.py` (Fase 6).
+- Agent-user: tak ada `catalog()` node/field config; salah ketik config -> pesan tanpa daftar field valid; pesan `Ident` berupa regex; `Step.inputs` (list) vs `Output.input` (string) menjebak; `group_by` sum atas kolom VARCHAR sebaiknya menyarankan `cast`; `drop_regex` NULL dipertahankan; `until_blank_rows(2)` bisa memotong sebelum grand total; penamaan header 2 baris (`PARENT|LEAF`) belum terdokumentasi; belum ada contoh spec lengkap.
+- Pesan drift belum memberi langkah berikut (kolom baru yang tertutup `expect_columns` jadi `shifted` tapi tak masuk `group_by.aggs`).
+- Kecil: `Location.how` str -> Literal; `_State.counts` duplikat `stats.rows_out`; `until_blank_rows(N)` diparse di dua tempat; cek `required` di `engine.py` dan `rebind.py`; import privat lintas modul; `executemany` per baris di `source.py` tanpa ponytail; `_MAX_ISSUES`/`_MAX_MESSAGE` memotong diam-diam; diff versi dipotong 80 char.
+- `ColumnExpect.group`/`type` diterima tapi belum aktif.
+- Adversarial belum dijalankan (dibatalkan): jalankan ulang bila perlu sebelum Fase 6.
+
 ## Pertanyaan terbuka
 
 - Batas jumlah dataset per job?
@@ -470,3 +481,4 @@ NULL) dan dihapus.
 | 2026-11-06 | 3.6 multi-file per job: tidak perlu kode baru — `file_role` per source + `run(spec, files, out_dir)` sudah mencakupnya (workbook di-cache per role; dua source boleh satu role; `files` terima path/str/bytes/Workbook). Tes tambahan `test_two_files_with_the_same_layout_are_unioned`: dua file layout sama (jan/feb, nama sheet sama) di-union + `source_column` (nomor input 0-based) + `validate` dua role. 525 unit + 15 sampel lulus. Fase 3 selesai. |
 | 2026-11-06 | 4.1/4.2/4.4 `rebind.py`: `rebind(spec, files, previous=None)` -> `BindReport` (per source `exact`/`shifted`/`drift`/`missing`, `record`, `diff`, `message`; `.ok`, `.records()`, `.text()`). `nodes/source.py`: `read_region` dipecah jadi `locate()` (sheet + tabel + nama kolom, tanpa muat ke duckdb) + `Location`; `expect_hits`/`expect_label` dipakai bersama `engine._check_columns` (satu sumber kebenaran). Aturan: kolom required hilang / sheet hanya ketemu lewat isi (`fallback_contains`) / kolom tambah-hilang yang tak dicakup `expect_columns` = drift; header/sheet pindah atau kolom tambah-hilang yang dicakup grup = shifted; tak ada `previous` = hanya kontrak + sheet yang dinilai. File jelek/tak ada = `missing`, tidak raise; satu source jelek tak menyembunyikan lainnya. Record JSON-serializable (host simpan; library tanpa state). Bug ditemukan tes: `text()` crash bila record None. `tests/test_rebind.py` (15): geser bawah/kanan/dua tempat, sheet ganti nama, grup kolom tambah/hilang, header 2 baris, missing 4 sebab, JSON round-trip. 8 mutasi, semua tertangkap. ponytail: tipe kolom tak dibandingkan. 539 unit + 16 sampel lulus. |
 | 2026-11-06 | 4.3 `versions.py`: `diff_specs(old, new)` -> `Change(where, kind added/removed/changed, before, after)` per path (`sources.pkg.region.header_anchor`), step dicocokkan lewat id (step bergeser = bukan perubahan; urutan tertukar = satu `steps.order`), nilai dipotong 80 char. `SpecHistory` (pydantic beku, JSON): `start`, `add(spec, note)` -> riwayat baru (lama tak berubah), `get(n)`, `current`, `text()`. `add` menolak spec sama dan note kosong (repair yang tak mengubah apa pun menyembunyikan kegagalan). Host menyimpan JSON; library tanpa state. ponytail: list dibandingkan utuh, bukan per item. `tests/test_versions.py` (11); 6 mutasi, 1 lolos (nomor versi tetap 2) lalu ditutup dengan tes 3 versi. 550 unit + 16 sampel lulus. Fase 4 selesai. |
+| 2026-11-06 | P6 Fase 3-4 (auditor + agent-user; adversarial dibatalkan). Diperbaiki: `_unique` header kembar beda huruf (`Ton`,`Ton`,`Ton (2)`) -> nama unik tanpa memandang huruf; cek nama kolom di `unique`, `_unique` (general), `_clash`, `union` kini tanpa memandang huruf (duckdb tak membedakan); `_load_sources` tangkap `duckdb.Error`; `check_arity` dipanggil setelah `build` (validate tanpa files tetap cek jumlah input); `os.replace` terjaga (Issue, bukan exception); `validate`/`rebind` dengan `files` bukan dict -> Issue/`missing`; `BindReport.records()` hanya exact/shifted; `ValidationReport.text()` menampilkan nama kolom; `SpecHistory` memvalidasi nomor + diff saat dimuat dan menyalin spec; alias `FileRef` -> `FileInput` (bentrok dengan `FileRef` AGENTS §2); komentar usang; `_FUNCS` mati dan regex ganda dihapus; DESIGN.md §3/§5/§6 disesuaikan. +9 tes, mutasi tertangkap. Ditunda: lihat §Temuan P6 Fase 3-4. 559 unit lulus. |

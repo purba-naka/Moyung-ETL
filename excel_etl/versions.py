@@ -1,8 +1,9 @@
 """Spec versions: a repair makes a new version and a diff, it never overwrites.
 
 `diff_specs` lists what changed between two specs, by path (`sources.pkg.region.header_anchor`).
-`SpecHistory` is an immutable list of versions; `add` returns a new history. It is plain data
-(pydantic, JSON), so the host stores it wherever it likes; the library keeps no state.
+`SpecHistory` is a list of versions never edited in place; `add` returns a new history.
+It is plain data (pydantic, JSON), so the host stores it wherever it likes; the library keeps
+no state.
 
 ponytail: lists inside a source or step (anchors, expect_columns, config lists) are compared
 as a whole, not item by item; upgrade: item-level diff if agents need finer repair notes.
@@ -10,10 +11,11 @@ as a whole, not item by item; upgrade: item-level diff if agents need finer repa
 
 from __future__ import annotations
 
+import itertools
 import json
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from excel_etl.pipeline import PipelineSpec
 
@@ -84,6 +86,18 @@ class SpecVersion(_Model):
 class SpecHistory(_Model):
     versions: tuple[SpecVersion, ...] = Field(min_length=1)
 
+    @model_validator(mode="after")
+    def _consistent(self) -> SpecHistory:
+        """Numbers and diffs are derived facts: a stored history that disagrees is refused."""
+        if [v.number for v in self.versions] != list(range(1, len(self.versions) + 1)):
+            raise ValueError("version numbers must be 1, 2, 3 ... in order")
+        if self.versions[0].diff:
+            raise ValueError("version 1 has no diff")
+        for prev, v in itertools.pairwise(self.versions):
+            if v.diff != diff_specs(prev.spec, v.spec):
+                raise ValueError(f"the diff of version {v.number} does not match its spec")
+        return self
+
     @classmethod
     def start(cls, spec: PipelineSpec, note: str = "first version") -> SpecHistory:
         return cls(versions=(SpecVersion(number=1, spec=spec, note=note, diff=()),))
@@ -101,6 +115,9 @@ class SpecHistory(_Model):
             raise ValueError("the new spec is the same as the current version; nothing to add")
         if not note.strip():
             raise ValueError("give a note: what was repaired and why")
+        spec = spec.model_copy(
+            deep=True
+        )  # the history must not change when the caller edits `spec`
         nxt = SpecVersion(number=self.current.number + 1, spec=spec, note=note, diff=diff)
         return SpecHistory(versions=(*self.versions, nxt))
 

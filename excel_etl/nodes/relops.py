@@ -64,5 +64,6 @@ def need(schema: Schema, column: str, who: str) -> Column:
 
 
 def unique(names: list[str], what: str, who: str) -> None:
-    if dup := next((n for n in names if names.count(n) > 1), None):
-        raise NodeError(f"{who}: {what} {dup!r} appears twice")
+    keys = [n.casefold() for n in names]  # duckdb names ignore letter case
+    if dup := next((n for n, k in zip(names, keys, strict=True) if keys.count(k) > 1), None):
+        raise NodeError(f"{who}: {what} {dup!r} appears twice (letter case is ignored)")

@@ -1,7 +1,7 @@
 """read_region: turn a spec `Source` into a duckdb table, finding the table by its header text.
 
-ponytail: exact matching only (sheet name, header text), the first match wins. Reporting
-shifted/drifted/missing per source and choosing between candidates is the rebind phase.
+Sheet and header text are matched ignoring letter case and spacing; more than one candidate
+is an error that lists them. Judging shifted/drift/missing per source is `rebind`.
 """
 
 from __future__ import annotations
@@ -92,12 +92,15 @@ def _header(wb: Workbook, g: SheetGrid, sheet: str, source: Source) -> tuple[int
 def _unique(names: list[str]) -> list[str]:
     # compared without letter case: duckdb treats `Ton` and `TON` as one name and would
     # rename the second to `TON_1` when the table is created
-    seen: dict[str, int] = {}
+    seen: set[str] = set()
     out = []
     for n in names:
-        key = n.casefold()
-        seen[key] = seen.get(key, 0) + 1
-        out.append(n if seen[key] == 1 else f"{n} ({seen[key]})")
+        new, k = n, 1
+        while new.casefold() in seen:
+            k += 1
+            new = f"{n} ({k})"
+        seen.add(new.casefold())
+        out.append(new)
     return out
 
 

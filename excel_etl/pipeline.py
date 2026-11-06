@@ -2,7 +2,7 @@
 
 A spec holds no cell addresses. A source finds its table by meaning (sheet name, header
 text), so a changed workbook can be bound again without rewriting the spec. This module
-checks the shape of a spec; node names and configs are checked once the node registry exists.
+checks the shape of a spec; node names and configs are checked by `engine.validate`.
 """
 
 from __future__ import annotations
@@ -75,11 +75,11 @@ class RegionRef(_Model):
 
 
 class ColumnExpect(_Model):
-    match: str | None = None  # exact header text
+    match: str | None = None  # header text, letter case and spacing ignored
     match_regex: str | None = None
     type: Literal["text", "int", "float", "date", "datetime", "bool"] | None = None
     required: bool = True
-    group: str | None = None  # columns matching the regex that belong together
+    group: str | None = None  # not used yet; kept so specs can name column families
 
     @model_validator(mode="after")
     def _one_matcher(self) -> ColumnExpect:
@@ -94,7 +94,7 @@ class ColumnExpect(_Model):
 
 
 class Source(_Model):
-    file_role: str = Field(min_length=1)  # which file of the job; matched to a new file by name
+    file_role: str = Field(min_length=1)  # a free label; the host maps it to a file in `files`
     sheet: SheetRef
     region: RegionRef
     expect_columns: list[ColumnExpect] = []

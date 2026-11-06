@@ -4,7 +4,8 @@ Library Python murni: tools untuk agent LLM membangun, menjalankan, dan me-recyc
 pipeline ETL dari file Excel raw (multi-sheet, multi-tabel, bentuk tak seragam)
 sampai menghasilkan data bersih. Load ke Snowflake di luar scope (fase berikut).
 
-Status: draft desain, belum ada kode.
+Status: Fase 1-4 sudah berkode (inspect, spec, node, engine, rebind, versi). Bagian lain
+(HITL, knowledge, quality, tools.py) masih desain. Lihat IMPLEMENTATION.md untuk yang berlaku.
 
 ## 1. Batasan
 
@@ -43,7 +44,10 @@ excel_etl/
   workbook.py     # Workbook handle: calamine + openpyxl lazy, cache per file hash
   inspect/        # tools memahami Excel
   nodes/          # node transformasi (registry @node)
-  pipeline.py     # Spec, validate, run, rebind
+  pipeline.py     # PipelineSpec (data), parse_spec, dump_spec
+  engine.py       # validate, run, laporan
+  rebind.py       # rebind, BindReport, BindRecord
+  versions.py     # diff_specs, SpecHistory
   hitl.py         # HitlPolicy, PendingQuestion
   knowledge.py    # Knowledge (brief, glossary, rules, qa_log)
   quality.py      # assert + rekonsiliasi
@@ -98,7 +102,8 @@ Setiap node: config pydantic + `infer_schema(inputs) -> Schema` + `run(inputs) -
 **Umum (ala KNIME)**: `select`, `rename`, `cast`, `filter`, `dedupe`, `sort`,
 `fill_missing`, `derive` (ekspresi SQL), `join`, `union`, `group_by`, `pivot`.
 
-**Sink**: `write_output` (parquet/csv). `write_snowflake` fase berikut.
+**Sink**: bukan node. `spec.outputs` (`input` + `format` parquet/csv); `run` menulis ke
+`out_dir/<nama>.<format>`. `write_snowflake` fase berikut.
 
 Ekspresi SQL `derive`/`filter`: diparse, hanya ekspresi skalar (tanpa subquery,
 tanpa fungsi file/IO), duckdb dengan `enable_external_access=false`.
@@ -107,31 +112,33 @@ tanpa fungsi file/IO), duckdb dengan `enable_external_access=false`.
 
 Kunci: spec **tidak menyimpan alamat sel** (`B5:N40`), tapi **anchor semantik**.
 
-```yaml
-sources:
-  produksi_npk_pkg:
-    file_role: balansitas            # dicocokkan ke file baru via nama/pola
-    sheet: {name_like: "(N) PKG", fallback_contains: ["TANGGAL", "Phonska"]}
-    region:
-      header_anchor: ["TANGGAL", "Phonska 1"]   # teks yang harus ada di header
-      header_rows: 2
-      end: until_blank_rows(2)
-    expect_columns:                  # kontrak kolom
-      - {match: "TANGGAL", type: date, required: true}
-      - {match_regex: "^Phonska \\d+$", group: pabrik, required: true}
+```json
+{"sources": {"produksi": {
+   "file_role": "balansitas",
+   "sheet": {"name_like": "(N) PKG", "fallback_contains": ["TANGGAL", "Phonska"]},
+   "region": {"header_anchor": ["TANGGAL", "Phonska 1"], "header_rows": 2,
+              "end": "until_blank_rows(2)"},
+   "expect_columns": [{"match": "TANGGAL", "required": true},
+                      {"match_regex": "^Phonska \\d+", "required": true}]}}}
 ```
 
-`rebind(spec, new_files)` menghasilkan `BindReport` per source:
+`file_role` = label bebas; host memetakannya ke file (`files={"balansitas": path}`).
+Spec JSON, bukan YAML. Regex di JSON: tulis dua backslash (`\\d`) untuk regex `\d`.
+
+`rebind(spec, files, previous=None)` menghasilkan `BindReport` per source:
 
 | Status | Arti | Aksi |
 |---|---|---|
-| `exact` | anchor + kontrak cocok | run langsung, tanpa LLM |
-| `shifted` | cocok tapi posisi berubah (baris/kolom bergeser) | run langsung, catat |
-| `drift` | kontrak sebagian berubah (kolom baru/hilang/ganti nama, sheet ganti nama) | agent repair dengan diff; HITL sesuai policy |
-| `missing` | source tidak ditemukan | agent cari kandidat (`find_text`, `compare_sheets`) + HITL |
+| `exact` | kontrak cocok, tabel di tempat semula (atau belum ada `previous`) | run langsung, tanpa LLM |
+| `shifted` | sheet/header pindah, atau kolom tambah/hilang yang dicakup `expect_columns` | run langsung, catat |
+| `drift` | kolom `required` hilang; sheet hanya ketemu lewat `fallback_contains`; kolom tambah/hilang yang tak dicakup `expect_columns` | agent repair dengan diff; HITL sesuai policy |
+| `missing` | file/sheet/header tak ditemukan | agent cari kandidat + HITL |
 
-Kolom baru yang cocok `group` (mis. `Phonska 6`) diterima otomatis karena
-`unpivot_groups` bekerja per pola, bukan per daftar tetap.
+"Shifted" butuh `previous` (`report.records()` dari bind lama; host menyimpan JSON-nya).
+`records()` hanya memuat source exact/shifted: tempat yang drift tak diingat.
+
+Kolom baru diterima tanpa drift bila `expect_columns` mencakupnya (`match_regex`, mis.
+`^Phonska \d+`). `ColumnExpect.group` dan `.type` diterima tapi belum dipakai.
 
 Spec diberi versi; repair menghasilkan versi baru + diff, bukan menimpa (`SpecHistory.add`, `diff_specs`; host menyimpan JSON-nya).
 
