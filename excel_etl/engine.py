@@ -24,6 +24,7 @@ from excel_etl.nodes import Column, NodeError, Schema, build, infer, quote, sche
 from excel_etl.nodes.base import check_arity, connect
 from excel_etl.nodes.source import expect_hits, expect_label, read_region
 from excel_etl.pipeline import PipelineSpec, Source
+from excel_etl.quality import CheckResult, check_schema, run_checks
 from excel_etl.workbook import Workbook, WorkbookError
 
 type FileInput = Workbook | str | os.PathLike[str] | bytes
@@ -98,12 +99,18 @@ class RunReport(_Report):
     nodes: tuple[NodeStat, ...]
     outputs: tuple[OutputStat, ...]
     seconds: float
+    checks: tuple[CheckResult, ...] = ()
 
     def text(self) -> str:
         lines = [f"run: {self.status}, {self.seconds:.2f}s"]
         for n in self.nodes:
             rows = f"{n.rows_in}->{n.rows_out} rows"
             lines.append(f"  {n.id}|{n.node}|{rows}|{n.columns} cols|{n.seconds:.2f}s")
+        for c in self.checks:
+            mark = "pass" if c.passed else ("FAIL" if c.severity == "error" else "warn")
+            lines.append(
+                f"  check {c.name}|{c.kind}|{mark}" + ("" if c.passed else f": {c.message}")
+            )
         lines += [f"  wrote {o.path}|{o.rows} rows|{o.columns} cols" for o in self.outputs]
         lines += [f"  {i.where}: {i.message}" for i in self.issues]
         lines += [f"  warning: {w}" for w in self.warnings]
@@ -264,6 +271,8 @@ def validate(spec: PipelineSpec, files: dict[str, FileInput] | None = None) -> V
     try:
         _load_sources(spec, files, con, st)
         _run_steps(spec, con, st, run_nodes=False)
+        for name, why in check_schema(spec.checks, st.schemas).items():
+            st.issue(f"checks.{name}", why)
     finally:
         con.close()
     if files is None:
@@ -320,9 +329,21 @@ def run(
     con = connect(target)
     parts: list[tuple[Path, Path]] = []
     outputs: list[OutputStat] = []
+    results: list[CheckResult] = []
     try:
         _load_sources(spec, files, con, st)
         _run_steps(spec, con, st, run_nodes=True)
+        if not st.issues:
+            results, broken = run_checks(spec.checks, con, st.schemas)
+            for name, why in broken.items():
+                st.issue(f"checks.{name}", why)
+            for r in results:
+                if r.passed:
+                    continue
+                if r.severity == "error":
+                    st.issue(f"checks.{r.name}", r.message)
+                else:
+                    st.warnings.append(f"checks.{r.name}: {r.message}")
         if not st.issues:
             _write_outputs(spec, con, target, st, parts, outputs)
         if not st.issues:
@@ -344,6 +365,7 @@ def run(
         warnings=tuple(st.warnings),
         nodes=tuple(st.stats),
         outputs=() if failed else tuple(outputs),
+        checks=tuple(results),
         seconds=round(time.perf_counter() - t0, 3),
     )
 

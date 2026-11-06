@@ -20,6 +20,7 @@ from pydantic import (
 )
 
 from excel_etl.nodes.base import describe
+from excel_etl.quality import Check, tables_of
 
 # Letters, digits and `_`, up to 64 characters, not starting with `__` (helper columns and
 # views inside queries use that prefix). No lookahead: pydantic's regex engine has none.
@@ -116,6 +117,7 @@ class PipelineSpec(_Model):
     sources: dict[Ident, Source] = {}
     steps: list[Step] = []
     outputs: dict[Ident, Output] = {}
+    checks: dict[Ident, Check] = {}  # rules and totals to hold before anything is written
 
     @model_validator(mode="after")
     def _names_and_wiring(self) -> PipelineSpec:
@@ -137,6 +139,10 @@ class PipelineSpec(_Model):
                         f"step {step.id!r} reads {inp!r}, which is not a source or an earlier step"
                     )
             known.add(step.id)
+        for name, chk in self.checks.items():
+            for t in tables_of(chk):
+                if t not in known:
+                    raise ValueError(f"check {name!r} reads {t!r}, which is not defined")
         files: dict[str, str] = {}
         for name, out in self.outputs.items():
             if out.input not in known:

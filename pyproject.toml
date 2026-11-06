@@ -24,3 +24,6 @@ select = ["E", "F", "I", "UP", "B", "SIM"]
 testpaths = ["tests"]
 pythonpath = ["."]
 markers = ["sample: needs the real BALANSITAS file via EXCEL_ETL_SAMPLE"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/test_quality.py" = ["E501"]
