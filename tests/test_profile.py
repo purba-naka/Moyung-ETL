@@ -55,6 +55,20 @@ def test_profile_needs_a_region_id(ref) -> None:
         profile_region(_wb(), "F1", ref)
 
 
+def test_profile_rejects_a_sheet_named_like_a_region_id() -> None:
+    # render_range reads such a sheet; profile_region must not read it as a region id
+    rows = [["TANGGAL", "PKG"], [date(2026, 1, 5), 10]]
+    wb = Workbook.open(make_xlsx({"F1.S1.R1": rows, "S": rows}))
+    with pytest.raises(WorkbookError, match="not a region id"):
+        profile_region(wb, "F1", "F1.S1.R1")
+
+
+def test_profile_sheet_without_regions_says_so() -> None:
+    wb = Workbook.open(make_xlsx({"Notes": [["catatan"]]}))
+    with pytest.raises(WorkbookError, match="has no regions"):
+        profile_region(wb, "F1", "F1.S1.R1")
+
+
 @pytest.mark.sample
 def test_sample_profile(sample_path) -> None:
     wb = Workbook.open(sample_path)

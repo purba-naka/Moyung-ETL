@@ -84,10 +84,47 @@ def test_propose_no_datasets() -> None:
     assert len(lines) == 1  # local-only formulas: no sheet to check against
 
 
-@pytest.mark.parametrize("kw", [{"offset": -1}, {"limit": 0}])
+@pytest.mark.parametrize("kw", [{"offset": -1}, {"limit": 0}, {"limit": None}])
 def test_propose_rejects_bad_paging(kw) -> None:
     with pytest.raises(WorkbookError):
         propose_datasets(_wb(), "F1", **kw)
+
+
+def test_propose_leaves_total_rows_out_of_the_count() -> None:
+    # the same data-row count profile_region reports: the total row is not a data row
+    wb = Workbook.open(
+        make_xlsx(
+            {
+                "Data": [
+                    ["TANGGAL", "PKG"],
+                    *[[date(2026, 1, d), d] for d in range(1, 6)],
+                    ["Total", "=B2+B3+B4+B5+B6"],
+                ]
+            }
+        )
+    )
+    assert "F1.S1.R1|Data|A1:B7|source|5|2|TANGGAL, PKG" in propose_datasets(wb, "F1")["text"]
+
+
+def test_propose_stray_kpi_does_not_name_a_check_sheet() -> None:
+    # the derived table only totals its own sheet; the cross cell is a stray KPI outside
+    # every table, so it must not put Rekap on the check-against list
+    wb = Workbook.open(
+        make_xlsx(
+            {
+                "Data": [["TANGGAL", "PKG"], [date(2026, 1, 5), 10]],
+                "Rekap": [
+                    ["BULAN", "TOTAL"],
+                    ["JAN", "=B2*2"],
+                    [],
+                    [],
+                    [],
+                    ["KPI", "=Data!B2"],
+                ],
+            }
+        )
+    )
+    assert "derived sheets to check against" not in propose_datasets(wb, "F1")["text"]
 
 
 @pytest.mark.sample

@@ -55,11 +55,15 @@ def _name(s: str) -> str:
     return " ".join(s.replace("|", "/").split())
 
 
-def _paging(offset: int, limit: int | None = None) -> None:
+def _paging(offset: int, limit: int | None = None, *, paged: bool = False) -> None:
     # Checked here, once, so an agent that sends offset=-1 or limit=0 gets an error instead
-    # of a truncated page whose next_offset points at the same page forever.
+    # of a truncated page whose next_offset points at the same page forever. The paged
+    # tools (workbook_map, formula_lineage, sheet_regions, propose_datasets) need a limit:
+    # a host that sends null for an omitted arg gets this error, not a TypeError later on.
     if not isinstance(offset, int) or isinstance(offset, bool) or offset < 0:
         raise WorkbookError(f"offset must be an integer >= 0, got {offset!r}")
+    if paged and limit is None:
+        raise WorkbookError("limit must be an integer >= 1, got None; omit it for the default")
     if limit is not None and (not isinstance(limit, int) or isinstance(limit, bool) or limit < 1):
         raise WorkbookError(f"limit must be an integer >= 1, got {limit!r}")
 
@@ -119,7 +123,7 @@ def workbook_map(wb: Workbook, file_id: str, offset: int = 0, limit: int = 200) 
     read other sheets or only add up this one, mixed = both, empty. Judged on numeric cells.
     Hidden sheets carry a `[hidden]` flag. `offset`/`limit` page over sheets.
     """
-    _paging(offset, limit)
+    _paging(offset, limit, paged=True)
     total = len(wb.sheets)
     page = [_summary(wb, file_id, i) for i in range(offset, min(offset + limit, total))]
     lines = [f"{file_id} {total} sheets. id|name|used|cells|regions|formula%|role"]
@@ -144,7 +148,7 @@ def formula_lineage(wb: Workbook, file_id: str, offset: int = 0, limit: int = 10
     left out, so a short list means the sheets are independent. `offset`/`limit` page over
     the reading sheets. Role (source/derived/mixed) is in workbook_map and sheet_regions.
     """
-    _paging(offset, limit)
+    _paging(offset, limit, paged=True)
     ids = {s.name: f"{file_id}.S{i}" for i, s in enumerate(wb.sheets, start=1)}
     reads: dict[str, list[tuple[str, int]]] = {}
     for (src, dst), n in lineage(wb).edges.items():
@@ -171,7 +175,7 @@ def _resolve(wb: Workbook, file_id: str, sheet: str) -> tuple[str, str]:
     for i, s in enumerate(wb.sheets, start=1):
         if sheet == s.name:
             return f"{file_id}.S{i}", s.name
-    names = ", ".join(s.name for s in wb.sheets)
+    names = _few([s.name for s in wb.sheets], 5)
     raise WorkbookError(
         f"no sheet {sheet!r}; use a sheet name or id like {file_id}.S1. Sheets: {names}"
     )
@@ -211,7 +215,7 @@ def sheet_regions(wb: Workbook, file_id: str, sheet: str, offset: int = 0, limit
     The `headerless:` line lists small blocks with no header (notes, KPIs).
     `offset`/`limit` page over the tables only; R numbers stay the same on every page.
     """
-    _paging(offset, limit)
+    _paging(offset, limit, paged=True)
     sid, name = _resolve(wb, file_id, sheet)
     regions = [(f"{sid}.R{i}", r) for i, r in enumerate(detect_regions(wb, name), start=1)]
     tables = [x for x in regions if x[1].header_rows]
@@ -286,7 +290,8 @@ def _target(
 def _region(wb: Workbook, file_id: str, ref: str) -> tuple[str, str, Region, SheetGrid]:
     """Region id (`F1.S12.R3`) -> (label, sheet name, region, grid)."""
     m = _REGION_ID.match(ref) if isinstance(ref, str) else None
-    if m is None:
+    # a sheet literally named like a region id is a sheet, the same as in _target
+    if m is None or ref in {s.name for s in wb.sheets}:
         raise WorkbookError(
             f"{ref!r} is not a region id like {file_id}.S12.R3; get one from sheet_regions"
         )
@@ -294,8 +299,10 @@ def _region(wb: Workbook, file_id: str, ref: str) -> tuple[str, str, Region, She
     g = SheetGrid(wb, name)
     regions = detect_regions(wb, name, g)
     i = int(m[2])
-    if not 1 <= i <= len(regions):
-        raise WorkbookError(f"{ref}: sheet {m[1]} has regions R1..R{len(regions)}")
+    n = len(regions)
+    if not 1 <= i <= n:
+        have = f"regions R1..R{n}" if n else "no regions"
+        raise WorkbookError(f"{ref}: sheet {m[1]} has {have}")
     return f"{ref} {_name(name)}", name, regions[i - 1], g
 
 
@@ -473,7 +480,8 @@ def render_range(
     columns holding only zeros. Rows are 1-based.
     mode raw: `row|A|B|...` with real values; `^` = covered by a merged cell, `=?` =
     formula without a cached value. Use on a small range.
-    `budget` caps the text in chars (about 4 per token); `offset` continues a page.
+    `budget` caps the text in chars (about 4 per token; head and first line always
+    show); `offset` continues a page.
     """
     _paging(offset)
     if mode not in ("compressed", "raw"):
@@ -587,7 +595,8 @@ def profile_region(
     share of empty cells, `=? n` = formulas without a cached value, and `odd` = cells of
     another type and their rows (often subtotal or label rows to drop, like JAN in a date
     column). Total rows are left out of the numbers and listed in the first line.
-    `offset` continues a page of columns; `budget` caps the text in chars.
+    `offset` continues a page of columns; `budget` caps the text in chars (head and
+    first line always show).
     """
     _paging(offset)
     _check_budget(budget)
@@ -628,7 +637,8 @@ def find_text(
     Text cells only: numbers and dates never match. One line per sheet with a match, in
     workbook order: `F1.S9 Per Bulan: 12 hits | A4=TANGGAL | ... +10`, positions in
     reading order, up to 6 shown per sheet, `+N` = further cells in that sheet.
-    `offset` pages over the matching sheets; `budget` caps the text in chars.
+    `offset` pages over the matching sheets; `budget` caps the text in chars (head and
+    first line always show).
     """
     _paging(offset)
     _check_budget(budget)
@@ -663,8 +673,11 @@ def find_text(
         body.append(
             _clip(f"{file_id}.S{i} {_name(s.name)}{flag}: {len(hits)} hits | {shown}{more}")
         )
+    q = _name(query)
+    if len(q) > 40:  # a huge query must not eat the head line
+        q = q[:39] + "…"
     head = (
-        f"{file_id}: '{_name(query)}' matches {cells} cells in "
+        f"{file_id}: '{q}' matches {cells} cells in "
         f"{len(body)} of {len(wb.sheets)} sheets. sheet: hits | cell=text"
     )
     return _fit(head, body, offset, budget)
@@ -681,7 +694,10 @@ def _same(x: Cell, y: Cell) -> bool:
 
 
 def _d(v: Cell) -> str:
-    return "-" if v is None else _name(_fmt(v))
+    # repr for floats: a diff the agent cannot see (0.3 vs 0.30000000000000004) is no diff
+    if v is None:
+        return "-"
+    return _name(repr(v)) if isinstance(v, float) else _name(_fmt(v))
 
 
 def compare_sheets(wb: Workbook, file_id: str, a: str, b: str, budget: int = 24_000) -> dict:
@@ -694,7 +710,7 @@ def compare_sheets(wb: Workbook, file_id: str, a: str, b: str, budget: int = 24_
     shared part, the formula counts (a pasted copy has 0) and the region counts
     (`same ranges` = same table layout). A third line lists the first differing cells
     as `A5 10|12` (`-` = empty) and the rows that hold them. The whole answer is small,
-    so there is no paging.
+    so there is no paging; `truncated: true` only means the budget was too small.
     """
     _check_budget(budget)
     aid, aname = _resolve(wb, file_id, a)
@@ -762,7 +778,12 @@ def compare_sheets(wb: Workbook, file_id: str, a: str, b: str, budget: int = 24_
         more = f" (+{differ - 6})" if differ > 6 else ""
         rows_txt = _few([f"r{r + 1}" for r in first_rows], 6)
         lines.append(_clip(f"diffs: {cells}{more}; rows: {diff_rows} of {rows} ({rows_txt})"))
-    return {"text": _clip("\n".join(lines), budget), "truncated": False, "next_offset": None}
+    text = "\n".join(lines)
+    return {
+        "text": _clip(text, budget),
+        "truncated": len(text) > budget,  # no paging; a caller with a small budget calls again
+        "next_offset": None,
+    }
 
 
 def _proposals(wb: Workbook, file_id: str) -> tuple[list[str], list[str], int, int, int]:
@@ -771,32 +792,40 @@ def _proposals(wb: Workbook, file_id: str) -> tuple[list[str], list[str], int, i
     if (hit := wb.memo.get(key)) is not None:
         return hit
     props: list[str] = []
-    derived: dict[str, int] = {}  # sheet -> how many of its tables are derived
+    derived: dict[str, int] = {}  # sheet -> its derived tables that read another sheet
     counts = {"source": 0, "mixed": 0}
+    n_derived = 0
+    lin = lineage(wb)
     for i, s in enumerate(wb.sheets, start=1):
         g = SheetGrid(wb, s.name)
+        cross = lin.cross.get(s.name, frozenset())
         for j, r in enumerate(detect_regions(wb, s.name, g), start=1):
             if not r.header_rows:
                 continue  # headerless blocks are notes and KPIs, not datasets
             role = region_role(wb, s.name, r.box)
             if role == "derived":
-                derived[s.name] = derived.get(s.name, 0) + 1
+                n_derived += 1
+                top, left, bottom, right = r.box
+                # a table that only totals its own sheet has nothing to reconcile against;
+                # only a cross cell inside the table counts, not a stray KPI cell outside
+                if any(top <= x <= bottom and left <= y <= right for x, y in cross):
+                    derived[s.name] = derived.get(s.name, 0) + 1
                 continue
-            if role not in counts:
-                continue  # a text-only table has no lineage signal either way; skipped for now
             counts[role] += 1
             names = _column_names(g, r)
             shown = ", ".join(names[:2])
             more = f" (+{len(names) - 2})" if len(names) > 2 else ""
             flag = "" if s.visible == "visible" else f" [{s.visible}]"
+            totals = set(r.total_rows)  # the same data rows profile_region counts
+            nrows = sum(1 for x in range(r.data_start, r.box[2] + 1) if x not in totals)
             props.append(
                 _clip(
                     f"{file_id}.S{i}.R{j}|{_name(s.name)}{flag}|{_box(r.box)}|{role}"
-                    f"|{r.box[2] - r.data_start + 1}|{r.box[3] - r.box[1] + 1}|{shown}{more}"
+                    f"|{nrows}|{r.box[3] - r.box[1] + 1}|{shown}{more}"
                 )
             )
     reads: dict[str, list[tuple[int, str]]] = {}
-    for (src, dst), n in lineage(wb).edges.items():
+    for (src, dst), n in lin.edges.items():
         reads.setdefault(src, []).append((n, dst))
     dlines = []
     for i, s in enumerate(wb.sheets, start=1):
@@ -813,7 +842,7 @@ def _proposals(wb: Workbook, file_id: str) -> tuple[list[str], list[str], int, i
                 + more
             )
         )
-    out = (props, dlines, counts["source"], counts["mixed"], sum(derived.values()))
+    out = (props, dlines, counts["source"], counts["mixed"], n_derived)
     wb.memo[key] = out
     return out
 
@@ -823,12 +852,13 @@ def propose_datasets(wb: Workbook, file_id: str, offset: int = 0, limit: int = 5
 
     One line per table that people typed numbers into (source) or that also holds some
     typed numbers (mixed): `F1.S59.R1|(N) PKG|A4:AC807|source|803|29|TANGGAL, Phonska 1|Ton (+27)`
-    = region id, sheet, range, role, data rows, columns, first column names. Derived
-    tables are not proposals; the `derived sheets to check against` line names the sheets
-    that hold them and the sheets they read, to check the chosen data against
-    (formula_lineage has the counts). `offset`/`limit` page over the proposals.
+    = region id, sheet, range, role, data rows (total rows left out), columns, first
+    column names. Derived tables are not proposals; the `derived sheets to check against`
+    line names the sheets that hold derived tables that read other sheets, to check the
+    chosen data against (formula_lineage has the counts). `offset`/`limit` page over the
+    proposals.
     """
-    _paging(offset, limit)
+    _paging(offset, limit, paged=True)
     props, dlines, n_source, n_mixed, n_derived = _proposals(wb, file_id)
     page = props[offset : offset + limit]
     lines = [

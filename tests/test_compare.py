@@ -82,6 +82,25 @@ def test_compare_bool_is_not_one() -> None:
     assert "1 of 1 filled cells differ" in out["text"]
 
 
+def test_compare_float_diff_shows_full_precision() -> None:
+    # 0.3 and 0.30000000000000004 must not render as the same number on both sides;
+    # openpyxl rounds the float away when saving, so it is patched back into the XML
+    data = make_xlsx({"A": [["X"], [0.3]], "B": [["X"], [0.3]]})
+    data = _zip_replace(
+        data, "sheet2.xml", lambda b: b.replace(b"<v>0.3</v>", b"<v>0.30000000000000004</v>")
+    )
+    out = compare_sheets(Workbook.open(data), "F1", "A", "B")
+    assert "A2 0.3|0.30000000000000004" in out["text"]
+
+
+def test_compare_small_budget_marks_truncated() -> None:
+    rows = [["TANGGAL", "PKG"], [date(2026, 1, 5), 10]]
+    out = compare_sheets(_wb(A=rows, B=[r[:] for r in rows]), "F1", "A", "B", budget=40)
+    assert out["truncated"] and len(out["text"]) <= 40
+    out = compare_sheets(_wb(A=rows, B=[r[:] for r in rows]), "F1", "A", "B")
+    assert not out["truncated"]
+
+
 @pytest.mark.parametrize("a,b", [("A", "A"), ("F1.S1", "F1.S1"), ("A", "Nope"), ("Nope", "A")])
 def test_compare_rejects_bad_sheets(a, b) -> None:
     with pytest.raises(WorkbookError):
