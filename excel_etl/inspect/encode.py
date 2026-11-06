@@ -15,7 +15,7 @@ from typing import Literal
 
 from excel_etl.inspect.lineage import lineage, region_role, sheet_role
 from excel_etl.inspect.regions import Box, Region, SheetGrid, detect_regions
-from excel_etl.workbook import Workbook, WorkbookError, col_index
+from excel_etl.workbook import Cell, Grid, Workbook, WorkbookError, col_index
 
 type Role = Literal["empty", "source", "mixed", "derived"]
 
@@ -668,3 +668,98 @@ def find_text(
         f"{len(body)} of {len(wb.sheets)} sheets. sheet: hits | cell=text"
     )
     return _fit(head, body, offset, budget)
+
+
+def _shape(g: Grid) -> tuple[int, int]:
+    return len(g), max((len(row) for row in g), default=0)
+
+
+def _same(x: Cell, y: Cell) -> bool:
+    # type first: True must not pass as 1, and after Workbook normalization an integer
+    # float is already an int, so equal values of different types are real diffs
+    return type(x) is type(y) and x == y
+
+
+def _d(v: Cell) -> str:
+    return "-" if v is None else _name(_fmt(v))
+
+
+def compare_sheets(wb: Workbook, file_id: str, a: str, b: str, budget: int = 24_000) -> dict:
+    """Compare two sheets (name or id) to tell a stale copy from a changed version.
+
+    Use it on sheets with look-alike names, like `supplyinout` and `supplyinout (2)`,
+    or on an old and a new sheet. The first line is the verdict: `same values` (pick
+    one), `values differ` (same shape, some cells differ), or `shapes differ`. The
+    second line gives the shape in rows x cols, how many filled cells differ on the
+    shared part, the formula counts (a pasted copy has 0) and the region counts
+    (`same ranges` = same table layout). A third line lists the first differing cells
+    as `A5 10|12` (`-` = empty) and the rows that hold them. The whole answer is small,
+    so there is no paging.
+    """
+    _check_budget(budget)
+    aid, aname = _resolve(wb, file_id, a)
+    bid, bname = _resolve(wb, file_id, b)
+    if aname == bname:
+        raise WorkbookError(f"pick two different sheets, not {aname!r} twice")
+    ga, gb = wb.values(aname), wb.values(bname)
+    (ar, ac), (br, bc) = _shape(ga), _shape(gb)
+    same_shape = (ar, ac) == (br, bc)
+    # cells past the shared rectangle cannot be compared, so the shape line carries them
+    rows, cols = min(ar, br), min(ac, bc)
+    differ = filled = 0
+    first: list[tuple[int, int, Cell, Cell]] = []
+    diff_rows = 0
+    first_rows: list[int] = []
+    last_row = -1
+    for r in range(rows):
+        row_a, row_b = ga[r], gb[r]
+        for c in range(cols):
+            va = row_a[c] if c < len(row_a) else None
+            vb = row_b[c] if c < len(row_b) else None
+            if va is None and vb is None:
+                continue
+            filled += 1
+            if _same(va, vb):
+                continue
+            differ += 1
+            if len(first) < 6:
+                first.append((r, c, va, vb))
+            if r != last_row:  # row-major order, so each row counts once
+                diff_rows += 1
+                if len(first_rows) < 6:
+                    first_rows.append(r)
+                last_row = r
+
+    def _count(x: frozenset[tuple[int, int]] | None) -> str:
+        return "?" if x is None else str(len(x))  # None = .xls, no formula scan
+
+    boxes_a = [x.box for x in detect_regions(wb, aname)]
+    boxes_b = [x.box for x in detect_regions(wb, bname)]
+    verdict = (
+        "same values"
+        if same_shape and not differ
+        else "values differ"
+        if same_shape
+        else "shapes differ"
+    )
+    lines = [f"{aid} {_name(aname)} vs {bid} {_name(bname)}: {verdict}"]
+    shape_txt = f"shape {ar}x{ac} both" if same_shape else f"shape {ar}x{ac} vs {br}x{bc}"
+    parts = [shape_txt]
+    if differ:
+        where = "" if same_shape else "on the shared part "
+        parts.append(f"{where}{differ} of {filled} filled cells differ")
+    elif not same_shape:
+        parts.append("shared part same values")
+    parts.append(f"formulas {_count(wb.formula_cells(aname))} vs {_count(wb.formula_cells(bname))}")
+    if boxes_a or boxes_b:
+        ranges = "same ranges" if boxes_a == boxes_b else "ranges differ"
+        parts.append(f"regions {len(boxes_a)} vs {len(boxes_b)} {ranges}")
+    else:
+        parts.append("regions 0")
+    lines.append("; ".join(parts))
+    if differ:
+        cells = ", ".join(f"{a1(r, c)} {_d(va)}|{_d(vb)}" for r, c, va, vb in first)
+        more = f" (+{differ - 6})" if differ > 6 else ""
+        rows_txt = _few([f"r{r + 1}" for r in first_rows], 6)
+        lines.append(_clip(f"diffs: {cells}{more}; rows: {diff_rows} of {rows} ({rows_txt})"))
+    return {"text": _clip("\n".join(lines), budget), "truncated": False, "next_offset": None}
