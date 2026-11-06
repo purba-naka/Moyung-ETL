@@ -6,12 +6,13 @@ Perbarui setiap selesai satu item (lihat AGENTS.md §7).
 ## Status
 
 - Fase: **1, 2 selesai (termasuk P6). Fase 3: 3.1, 3.2 selesai; 3.3 selesai (`read_region`, `drop_rows`, `fill_down`, `unpivot`, `unpivot_groups`, `parse_hierarchy`, `split_header_token`).**
-- Berikutnya: **3.4 node umum + validasi ekspresi SQL skalar.**
+- 3.4 sebagian: **validator ekspresi SQL selesai** (`nodes/sqlexpr.py`).
+- Berikutnya: **3.4 lanjut: node umum** (`rename`, `cast`, `filter`, `dedupe`, `sort`, `fill_missing`, `derive`, `join`, `union`, `group_by`, `pivot`); `filter` dan `derive` wajib memanggil `check_expression`.
 - **Aturan kerja (dari user): BALANSITAS hanya satu contoh, bukan patokan bentuk.** Node berbasis pola umum dan config eksplisit; tes memakai beberapa bentuk sintetis berbeda; sampel hanya sanity. Temuan P6 Fase 1/2 yang ditunda: lihat §Temuan.
 
 ## Berikutnya
 
-1. 3.4 node umum (`rename`, `cast`, `filter`, `dedupe`, `sort`, `fill_missing`, `derive`, `join`, `union`, `group_by`, `pivot`) + validasi SQL skalar (`filter`/`derive`). Catatan: `fill_down` dan `sort` bergantung pada urutan baris; `join`/`group_by` tidak menjamin urutan. `flatten_header` sudah terjadi di `read_region`: kolom sudah `PARENT|LEAF`, node terpisah hanya bila perlu.
+1. 3.4 node umum (`rename`, `cast`, `filter`, `dedupe`, `sort`, `fill_missing`, `derive`, `join`, `union`, `group_by`, `pivot`); `filter`/`derive` memakai `check_expression`. Catatan: `fill_down` dan `sort` bergantung pada urutan baris; `join`/`group_by` tidak menjamin urutan. `flatten_header` sudah terjadi di `read_region`: kolom sudah `PARENT|LEAF`, node terpisah hanya bila perlu.
 2. 3.4-3.6 node + registry + `validate`/`run` (lihat §Fase 3).
 3. Sambil jalan: temuan P6 yang ditunda (konversi WorkbookError ke dict di `tools.py`).
 
@@ -87,7 +88,7 @@ Selesai bila: semua test hijau, angka token dicatat di §Temuan.
 - [x] 3.1 `PipelineSpec` (pydantic) + parse dari JSON string (YAML ditunda, lihat §Keputusan).
 - [x] 3.2 Registry `@node`, kontrak `infer_schema` + `run` (duckdb relation).
 - [x] 3.3 Node Excel-spesifik: `read_region` (source), `drop_rows`, `fill_down`, `unpivot`, `unpivot_groups`, `parse_hierarchy`, `split_header_token`. `flatten_header` = bagian `read_region`.
-- [ ] 3.4 Node umum + validasi ekspresi SQL skalar.
+- [ ] 3.4 Node umum + validasi ekspresi SQL skalar. Selesai: validator `check_expression`. Sisa: node umum.
 - [ ] 3.5 `validate(spec)` tanpa data; `run(spec)` -> output parquet/csv + RunReport.
 - [ ] 3.6 Multi-file per job (join/union antar `F1`, `F2`).
 
@@ -362,6 +363,27 @@ Hasil keluaran selalu VARCHAR. Tes: 26, termasuk dua workbook sintetis berbeda b
 mutasi dan dihapus (cast BIGINT pada `len`, CASE di pola: `regexp_extract` tanpa cocok sudah
 '').
 
+**Validator ekspresi SQL (3.4)** `nodes/sqlexpr.py`: `check_expression(text) -> text`, `NodeError`
+bila tidak lolos. Teks dibungkus `SELECT (<expr>) AS __e` lalu diparse oleh parser duckdb sendiri
+(`json_serialize_sql`), bukan regex. Tiga lapis: (1) bentuk: harus tepat satu SELECT, satu kolom,
+tanpa FROM/WHERE/WITH/ORDER/GROUP/UNION; (2) pohon: hanya kelas node
+`BETWEEN CASE CAST COLUMN_REF COMPARISON CONJUNCTION CONSTANT FUNCTION OPERATOR TYPE`
+(subquery, `*`/`COLUMNS`, `?`, `#1`, window, lambda ditolak), fungsi tidak boleh ada di
+`_DENIED_FUNCTIONS` (baca file/jaringan, `query`, state sesi, sequence, nilai berukuran
+bebas seperti `repeat`/`range`/`lpad`, dan fungsi tak-reprodusibel: `random`, `now`, `uuid`),
+tanpa ORDER BY/FILTER/DISTINCT di dalam pemanggilan fungsi; (3) koneksi `connect()` tanpa akses
+file. Panjang maks 4000, NUL ditolak. Nama kolom yang tak ada baru ketahuan saat node meng-bind
+ekspresi ke skema (`infer_schema`). Penyelidikan: duckdb 2.0 menyerialisasi nama fungsi
+sudah huruf kecil; pembungkus `( ... )` membuat `1) WHERE (` dan sejenisnya syntax error, jadi
+sebagian cek bentuk (WHERE, tipe node) kini lapisan cadangan: ditandai di komentar dan di tes
+`test_parser_behaviour_the_shape_check_leans_on` yang mengunci perilaku parser supaya upgrade
+duckdb yang melonggarkannya langsung terlihat. Fuzz (1.500 ekspresi dari tata bahasa, 133 bentuk
+jahat terbungkus, 3.000 teks acak): tidak ada ekspresi berbahaya lolos, tidak ada exception selain
+`NodeError`. Satu celah ditemukan fuzz: `upper(*)`/`list_value(*)` lolos karena parser membacanya
+sebagai pemanggilan tanpa argumen (aman, tidak bisa menjangkau data lain); `min(COLUMNS(*))`
+yang berbahaya (banyak kolom) ditolak. Dikunci di tes. 11 mutasi: 8 tertangkap, 3 lolos
+(WHERE, tipe node, huruf besar-kecil) karena memang lapisan cadangan (lihat di atas).
+
 ## Pertanyaan terbuka
 
 - Batas jumlah dataset per job?
@@ -392,3 +414,4 @@ mutasi dan dihapus (cast BIGINT pada `len`, CASE di pola: `regexp_extract` tanpa
 | 2026-11-06 | 3.3b `nodes/excel.py`: `drop_rows` (blank, keep_type, drop_regex) dan `fill_down`. `tests/test_excel_nodes.py` (14 + 1 sampel); tiap kasus mengecek `infer_schema == schema_of(run)`; 3 mutasi (keep_type terbalik, tanpa IGNORE NULLS, regex tak NULL-aman) tertangkap. Sampel: (N) PKG 802 -> 730 baris. 221 unit + 13 sampel lulus. |
 | 2026-11-06 | 3.3c `unpivot` dan `unpivot_groups` di `nodes/excel.py` (+`_common_type`, `_pick`, `_regex`). Tes memakai 8+ bentuk sintetis (pemisah `|` dan `_`, ukuran tak seragam, nama dengan kutip, tipe campur, workbook dua baris header Q1..Q3 x Sales/Cost), bukan tiruan BALANSITAS. +24 tes; 5 dari 6 mutasi tertangkap, 1 mutasi tanpa efek. 246 unit + 14 sampel lulus. Aturan kerja baru: contoh bukan patokan (memory + Status). |
 | 2026-11-06 | 3.3d `nodes/labels.py`: `parse_hierarchy`, `split_header_token`. `tests/test_label_nodes.py` (26): 4+ pemisah, kode salah -> NULL, desimal ditolak, pola/pemisah, nama berkutip, dua workbook sintetis. 8 mutasi: 6 tertangkap, 2 = kode mubazir (dihapus). 272 unit + 14 sampel lulus. 3.3 selesai. |
+| 2026-11-06 | 3.4a `nodes/sqlexpr.py`: `check_expression` (parser duckdb + bentuk + whitelist kelas node + deny-list fungsi). `tests/test_sqlexpr.py` (78): ekspresi biasa lolos (24), bentuk/sintaks jahat ditolak (26), fungsi berbahaya di mana pun (20), klausa dalam pemanggilan, panjang/NUL/non-string. Fuzz tata bahasa + bungkus jahat + teks acak bersih. 350 unit lulus. |
