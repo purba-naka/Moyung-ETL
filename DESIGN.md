@@ -220,7 +220,7 @@ di mode mana pun.
 
 ## 10. Kualitas dan rekonsiliasi
 
-- Assert per dataset: `not_null`, `unique(keys)`, `range`, `accepted_values`.
+- Assert per tabel (`checks` di spec, dinamai seperti source): `not_null`, `unique`, `range`, `accepted_values`, `reconcile`. `severity: error` menggagalkan run sebelum file apa pun ditulis; `warn` hanya dilaporkan.
 - Rekonsiliasi: total dari data bersih dibandingkan dengan baris/kolom TOTAL Excel
   atau sheet turunan (lihat `formula_lineage`), dengan toleransi.
 - `RunReport`: baris in/out per node, baris dibuang + alasan, hasil assert,
