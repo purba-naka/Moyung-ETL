@@ -5,13 +5,13 @@ Perbarui setiap selesai satu item (lihat AGENTS.md §7).
 
 ## Status
 
-- Fase: **1, 2 selesai (termasuk P6). Fase 3: 3.1 selesai.**
-- Berikutnya: **Fase 3, item 3.2** (registry `@node`, kontrak `infer_schema` + `run`). Temuan P6 Fase 1/2 yang ditunda: lihat §Temuan.
+- Fase: **1, 2 selesai (termasuk P6). Fase 3: 3.1, 3.2 selesai.**
+- Berikutnya: **Fase 3, item 3.3** (node Excel-spesifik). Temuan P6 Fase 1/2 yang ditunda: lihat §Temuan.
 
 ## Berikutnya
 
-1. 3.2 registry `@node` + kontrak `infer_schema`/`run`; setelah itu config tiap node divalidasi terhadap spec.
-2. 3.3-3.6 node + registry + `validate`/`run` (lihat §Fase 3).
+1. 3.3 node Excel-spesifik (`flatten_header`, `fill_down`, `parse_hierarchy`, `unpivot`, `unpivot_groups`, `drop_rows`, `split_header_token`) + `read_region`.
+2. 3.4-3.6 node + registry + `validate`/`run` (lihat §Fase 3).
 3. Sambil jalan: temuan P6 yang ditunda (konversi WorkbookError ke dict di `tools.py`).
 
 ## Struktur target
@@ -84,7 +84,7 @@ Selesai bila: semua test hijau, angka token dicatat di §Temuan.
 ## Fase 3 — Node + pipeline
 
 - [x] 3.1 `PipelineSpec` (pydantic) + parse dari JSON string (YAML ditunda, lihat §Keputusan).
-- [ ] 3.2 Registry `@node`, kontrak `infer_schema` + `run` (duckdb relation).
+- [x] 3.2 Registry `@node`, kontrak `infer_schema` + `run` (duckdb relation).
 - [ ] 3.3 Node Excel-spesifik.
 - [ ] 3.4 Node umum + validasi ekspresi SQL skalar.
 - [ ] 3.5 `validate(spec)` tanpa data; `run(spec)` -> output parquet/csv + RunReport.
@@ -292,6 +292,18 @@ nama = huruf/angka/`_` (jadi nama relation duckdb). Error = `SpecError` berisi
 `path.ke.field: pesan` per baris, maks 10. Config node masih dict bebas; divalidasi saat
 registry node (3.2) ada. Spec tidak punya path output: itu urusan host.
 
+**Registry node (3.2)** `nodes/base.py`: `Node` (ClassVar `Config`, `min_inputs`/`max_inputs`,
+`infer_schema(list[Schema]) -> Schema`, `run(list[Relation]) -> Relation`), `@node("nama")`,
+`build(name, config) -> Node`, `infer(node, schemas)` (cek jumlah input), `schema_of(rel)`,
+`quote(name)`. `Schema` = tuple `Column(name, type)`; tipe = nama tipe duckdb. `NodeConfig`
+`extra="forbid"`. Semua kegagalan jadi `NodeError` (nama node tak dikenal memuat daftar node,
+config salah memuat `path: pesan`). Node pertama `select` (`nodes/general.py`) sebagai contoh
+dan bukti kontrak: test mengecek `infer_schema == schema_of(run(...))`. `describe` (format error
+pydantic) dipakai bersama `parse_spec`. `quote` wajib untuk semua identifier: header Excel
+memuat `|`, spasi, kutip (`JANUARI|PKG`). duckdb 2.0.0: `rel.columns`/`rel.types` cukup untuk
+skema; `enable_external_access=false` memblok `read_csv` (PermissionException) dan tak bisa
+dinyalakan lagi di koneksi yang sama.
+
 ## Pertanyaan terbuka
 
 - Batas jumlah dataset per job?
@@ -317,3 +329,4 @@ registry node (3.2) ada. Spec tidak punya path output: itu urusan host.
 | 2026-11-06 | 2.5 `propose_datasets(wb, file_id, offset, limit)` di `encode.py`: usulan tabel source/mixed (`id|sheet|range|role|rows|cols|2 nama kolom`), head menghitung derived yang ditinggalkan, seksi derived = sheet dengan edge cross + yang dibaca, hasil di-memo per file_id. `tests/test_propose.py` (7). Fase 2 (inspect) selesai; P6 Fase 2 disarankan sebelum fase 3. |
 | 2026-11-06 | P6 Fase 2: 3 subagent paralel (adversarial/auditor/agent-user) atas 2.1-2.5. 11 perbaikan di `encode.py`/`workbook.py`: limit=None -> WorkbookError (paged=True di `_paging`), guard localSheetId, truncated `compare_sheets`, gating seksi derived (cross di dalam box), hitungan baris data tanpa total, repr diff float, echo query 40 char, cap 5 nama sheet di error, sheet bernama id region, "has no regions", wording budget. +18 test; 153 unit + 11 sampel lulus. Temuan valid yang tidak diperbaiki dicatat di §Temuan. |
 | 2026-11-06 | 3.1 `pipeline.py`: `PipelineSpec` (sources/steps/outputs, pydantic v2, `extra="forbid"`), `parse_spec(json)` -> `SpecError` dengan path per masalah, `dump_spec`. `tests/test_pipeline.py` (31); mutasi (forbid off, cek input off) menjatuhkan tes. 184 unit lulus. |
+| 2026-11-06 | 3.2 `nodes/base.py` (`Node`, `@node`, `build`, `infer`, `schema_of`, `quote`, `NodeError`) + `nodes/general.py` (`select`). `tests/test_nodes.py` (10); 3 mutasi (forbid off, infer != run, arity off) tertangkap. `parse_spec` memakai `describe` bersama. 194 unit lulus. |

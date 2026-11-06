@@ -1,0 +1,29 @@
+"""Pipeline nodes. Importing this package registers every node that ships with the library."""
+
+from excel_etl.nodes.base import (
+    Column,
+    Node,
+    NodeError,
+    Schema,
+    build,
+    infer,
+    names,
+    node,
+    quote,
+    schema_of,
+)
+
+__all__ = [
+    "Column",
+    "Node",
+    "NodeError",
+    "Schema",
+    "build",
+    "infer",
+    "names",
+    "node",
+    "quote",
+    "schema_of",
+]
+
+from excel_etl.nodes import general as _general  # noqa: E402,F401  (registers its nodes)
