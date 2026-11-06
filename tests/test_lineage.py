@@ -7,10 +7,10 @@ import pytest
 from conftest import make_xlsx
 
 from excel_etl.inspect.lineage import classify, lineage, region_role, sheet_role
-from excel_etl.workbook import Workbook
+from excel_etl.workbook import Workbook, WorkbookError
 
 
-def _wb(sheets: dict, names: list[tuple[str, str, int | None]] | None = None) -> Workbook:
+def _wb(sheets: dict, names: list[tuple[str, str, int | str | None]] | None = None) -> Workbook:
     """`names` = (name, refers_to, localSheetId or None); written into workbook.xml by hand."""
     data = make_xlsx(sheets)
     if names:
@@ -146,6 +146,14 @@ def test_lineage_is_cached_and_xls_free() -> None:
     wb = _wb({"A": [[1]], "B": [["=A!A1"]]})
     assert lineage(wb) is lineage(wb)
     assert lineage(wb).cross == {"A": frozenset(), "B": frozenset({(0, 0)})}
+
+
+@pytest.mark.parametrize("local", ["abc", "1.5", "-1", "99"])
+def test_bad_localsheetid_is_workbook_error(local) -> None:
+    # a damaged scope id must not crash with a ValueError or bind to the wrong sheet
+    wb = _wb({"Data": [[1]]}, names=[("N", "Data!$A$1", local)])
+    with pytest.raises(WorkbookError):
+        lineage(wb)
 
 
 @pytest.mark.sample

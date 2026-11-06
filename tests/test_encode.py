@@ -3,8 +3,14 @@ from __future__ import annotations
 import pytest
 from conftest import make_xlsx
 
-from excel_etl.inspect.encode import col_letters, workbook_map
-from excel_etl.workbook import Workbook
+from excel_etl.inspect.encode import (
+    col_letters,
+    formula_lineage,
+    propose_datasets,
+    sheet_regions,
+    workbook_map,
+)
+from excel_etl.workbook import Workbook, WorkbookError
 
 
 @pytest.mark.parametrize(("c", "s"), [(0, "A"), (25, "Z"), (26, "AA"), (158, "FC"), (701, "ZZ")])
@@ -44,6 +50,30 @@ def test_workbook_map_paginates() -> None:
     assert (first["truncated"], first["next_offset"]) == (True, 2)
     assert first["text"].count("\n") == 2
     assert (last["truncated"], last["next_offset"]) == (False, None)
+
+
+@pytest.mark.parametrize(
+    "call",
+    [
+        lambda wb: workbook_map(wb, "F1", limit=None),
+        lambda wb: formula_lineage(wb, "F1", limit=None),
+        lambda wb: sheet_regions(wb, "F1", "S", limit=None),
+        lambda wb: propose_datasets(wb, "F1", limit=None),
+    ],
+)
+def test_paged_tools_reject_a_null_limit(call) -> None:
+    # a host that sends explicit null for an omitted arg gets one clear error, not a TypeError
+    from datetime import date
+
+    wb = Workbook.open(make_xlsx({"S": [["TANGGAL", "PKG"], [date(2026, 1, 5), 10]]}))
+    with pytest.raises(WorkbookError):
+        call(wb)
+
+
+def test_no_sheet_error_lists_only_a_few_names() -> None:
+    wb = Workbook.open(make_xlsx({f"S{i}": [[i]] for i in range(7)}))
+    with pytest.raises(WorkbookError, match=r"S4,\+2$"):
+        sheet_regions(wb, "F1", "nope")
 
 
 @pytest.mark.sample

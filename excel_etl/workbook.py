@@ -219,8 +219,9 @@ class Workbook:
 
     def _check(self, sheet: str) -> None:
         if sheet not in self._names:
-            names = ", ".join(s.name for s in self.sheets)
-            raise WorkbookError(f"no sheet named {sheet!r}; sheets: {names}")
+            names = ", ".join(s.name for s in self.sheets[:5])
+            more = f",+{len(self.sheets) - 5}" if len(self.sheets) > 5 else ""
+            raise WorkbookError(f"no sheet named {sheet!r}; sheets: {names}{more}")
 
     def _scan(self, sheet: str) -> _Scan | None:
         """Formula positions and cell count from the sheet XML. None when not an .xlsx."""
@@ -287,11 +288,20 @@ class Workbook:
                     raise WorkbookError(f"damaged file, cannot read names: {e!r}") from e
                 for d in book.iter(f"{_NS_MAIN}definedName"):
                     local = d.get("localSheetId")
-                    sheet = (
-                        self.sheets[int(local)].name
-                        if local and int(local) < len(self.sheets)
-                        else None
-                    )
+                    sheet = None
+                    if local:
+                        try:
+                            i = int(local)
+                        except ValueError:
+                            i = -1
+                        # a scope id that is not a sheet number is damage; a negative one
+                        # would silently bind the name to the last sheet
+                        if not 0 <= i < len(self.sheets):
+                            raise WorkbookError(
+                                f"damaged file: defined name {d.get('name', '')!r} "
+                                f"has bad localSheetId {local!r}"
+                            )
+                        sheet = self.sheets[i].name
                     out.append(DefinedName(d.get("name", ""), (d.text or "").strip(), sheet))
             self._names_def = tuple(out)
         return self._names_def

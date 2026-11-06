@@ -73,6 +73,14 @@ def test_find_clips_many_hits_per_sheet() -> None:
     assert line.endswith("+3")
 
 
+def test_find_clips_a_huge_query_in_the_head() -> None:
+    # the matches count must survive a query so long it would eat the whole head line
+    out = find_text(_wb(), "F1", "tanggal " + "x" * 5000)["text"]
+    head = out.splitlines()[0]
+    assert "matches 0 cells in 0 of 2 sheets" in head
+    assert len(head) < 120
+
+
 @pytest.mark.parametrize("query", ["", "   ", 5, None])
 def test_find_rejects_bad_query(query) -> None:
     with pytest.raises(WorkbookError):
