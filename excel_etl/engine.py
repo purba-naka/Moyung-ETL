@@ -11,7 +11,6 @@ default (80% of RAM) applies. Upgrade: a `memory_limit` argument passed to `conn
 from __future__ import annotations
 
 import os
-import re
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -22,7 +21,7 @@ from pydantic import BaseModel, ConfigDict
 
 from excel_etl.nodes import Column, NodeError, Schema, build, infer, quote, schema_of
 from excel_etl.nodes.base import connect
-from excel_etl.nodes.source import read_region
+from excel_etl.nodes.source import expect_hits, expect_label, read_region
 from excel_etl.pipeline import PipelineSpec, Source
 from excel_etl.workbook import Workbook, WorkbookError
 
@@ -117,39 +116,21 @@ class _State:
             self.issues.append(Issue(where=where, message=message[:_MAX_MESSAGE]))
 
 
-def _open(ref: FileRef) -> Workbook:
+def open_file(ref: FileRef) -> Workbook:
     if isinstance(ref, Workbook):
         return ref
     return Workbook.open(ref)
 
 
-_SPEC_TYPES = {
-    "text": ("VARCHAR",),
-    "int": ("BIGINT", "INTEGER", "HUGEINT"),
-    "float": ("DOUBLE", "FLOAT"),
-    "date": ("DATE",),
-    "datetime": ("TIMESTAMP",),
-    "bool": ("BOOLEAN",),
-}
-
-
 def _check_columns(source: Source, schema: Schema, st: _State, where: str) -> None:
     """`expect_columns`: a `required` one must match at least one column of the table."""
     names = [c.name for c in schema]
-    folded = [n.casefold() for n in names]
     for want in source.expect_columns:
-        if want.match is not None:
-            hit = [n for n, f in zip(names, folded, strict=True) if f == want.match.casefold()]
-            label = repr(want.match)
-        else:
-            rx = re.compile(want.match_regex or "")
-            hit = [n for n in names if rx.search(n)]
-            label = f"/{want.match_regex}/"
-        if not hit and want.required:
+        if not expect_hits(want, names) and want.required:
             shown = ", ".join(names[:12]) + (", ..." if len(names) > 12 else "")
-            st.issue(where, f"required column {label} not found; columns: {shown}")
-    if any(c.type or c.group for c in source.expect_columns):
-        msg = f"{where}: expect_columns type and group are not checked yet (only presence)"
+            st.issue(where, f"required column {expect_label(want)} not found; columns: {shown}")
+    if any(c.type for c in source.expect_columns):
+        msg = f"{where}: expect_columns type is not checked yet (only presence)"
         if msg not in st.warnings:
             st.warnings.append(msg)
 
@@ -170,7 +151,7 @@ def _load_sources(
                 books[role] = None
             else:
                 try:
-                    books[role] = _open(files[role])
+                    books[role] = open_file(files[role])
                 except WorkbookError as e:
                     st.issue(where, f"file {role!r}: {e}")
                     books[role] = None

@@ -6,6 +6,9 @@ shifted/drifted/missing per source and choosing between candidates is the rebind
 
 from __future__ import annotations
 
+import re
+from collections.abc import Sequence
+from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
 from typing import TYPE_CHECKING
 
@@ -17,16 +20,17 @@ from excel_etl.nodes.base import NodeError, Relation, quote
 from excel_etl.workbook import Workbook
 
 if TYPE_CHECKING:
-    from excel_etl.pipeline import Source
+    from excel_etl.pipeline import ColumnExpect, Source
 
 _BIGINT = (-(2**63), 2**63 - 1)
 _HEADER_SEARCH = 12  # rows from a table's top in which its header may start
 
 
-def _find_sheet(wb: Workbook, source: Source) -> str:
+def _find_sheet(wb: Workbook, source: Source) -> tuple[str, str]:
+    """The sheet and how it was found: "name", "name_like" or "fallback"."""
     ref = source.sheet
     names = [s.name for s in wb.sheets]
-    for want in (ref.name, ref.name_like):
+    for how, want in (("name", ref.name), ("name_like", ref.name_like)):
         if want is None:
             continue
         hits = [n for n in names if n == want] or [
@@ -35,7 +39,7 @@ def _find_sheet(wb: Workbook, source: Source) -> str:
         if len(hits) > 1:
             raise NodeError(f"sheet {want!r} matches several sheets: {_few(hits, 5)}")
         if hits:
-            return hits[0]
+            return hits[0], how
     if ref.fallback_contains:
         keys = [_text_key(t) for t in ref.fallback_contains]
         hits = [s.name for s in wb.sheets if _has_all(wb.values(s.name), keys)]
@@ -45,7 +49,7 @@ def _find_sheet(wb: Workbook, source: Source) -> str:
                 f"all of {ref.fallback_contains}: {_few(hits, 5)}"
             )
         if hits:
-            return hits[0]
+            return hits[0], "fallback"
     wanted = ref.name or ref.name_like or ref.fallback_contains
     raise NodeError(f"no sheet matches {wanted!r}; sheets: {_few(names, 8)}")
 
@@ -120,6 +124,43 @@ def _type(values: list[object]) -> str:
     return "VARCHAR"
 
 
+@dataclass(frozen=True)
+class Location:
+    """Where a source table sits in one workbook. Rows and columns are 0-based."""
+
+    sheet: str
+    how: str  # how the sheet was found: "name", "name_like" or "fallback"
+    header: int
+    left: int
+    right: int
+    names: tuple[str, ...]  # column names, header levels joined as PARENT|LEAF
+    grid: SheetGrid
+
+
+def locate(wb: Workbook, source: Source) -> Location:
+    """Find the sheet and the table of a spec source; no cell values are loaded into duckdb."""
+    sheet, how = _find_sheet(wb, source)
+    g = SheetGrid(wb, sheet)
+    top, reg = _header(wb, g, sheet, source)
+    _, left, _, right = reg.box
+    hdr = tuple(range(top, top + source.region.header_rows))
+    shape = Region(reg.box, hdr, hdr[-1] + 1, (), (), "rows", (), ())
+    names = tuple(_unique(_column_names(g, shape, sep_safe=False)))
+    return Location(sheet, how, top, left, right, names, g)
+
+
+def expect_hits(want: ColumnExpect, names: Sequence[str]) -> list[str]:
+    """The column names an `expect_columns` entry matches (`match` ignores letter case)."""
+    if want.match is not None:
+        return [n for n in names if n.casefold() == want.match.casefold()]
+    rx = re.compile(want.match_regex or "")
+    return [n for n in names if rx.search(n)]
+
+
+def expect_label(want: ColumnExpect) -> str:
+    return repr(want.match) if want.match is not None else f"/{want.match_regex}/"
+
+
 def read_region(
     wb: Workbook, source: Source, con: duckdb.DuckDBPyConnection, name: str
 ) -> Relation:
@@ -127,13 +168,9 @@ def read_region(
     `PARENT|LEAF`. Cell values keep their type when a column has one kind; a column with
     mixed kinds (a `JAN` label among dates) is text. Formulas without a cached value are NULL.
     """
-    sheet = _find_sheet(wb, source)
-    g = SheetGrid(wb, sheet)
-    top, reg = _header(wb, g, sheet, source)
-    _, left, _, right = reg.box
-    hdr = tuple(range(top, top + source.region.header_rows))
-    shape = Region(reg.box, hdr, hdr[-1] + 1, (), (), "rows", (), ())
-    names = _unique(_column_names(g, shape, sep_safe=False))
+    loc = locate(wb, source)
+    g, left, right, names = loc.grid, loc.left, loc.right, list(loc.names)
+    hdr = tuple(range(loc.header, loc.header + source.region.header_rows))
 
     gap = int(source.region.end.removeprefix("until_blank_rows(").removesuffix(")"))
     last = hdr[-1]

@@ -145,7 +145,7 @@ def test_validate_expect_columns_presence(book) -> None:
     ]
     rep = validate(_spec(sources={"orders": src}), {"f": book})
     assert [i.message[:34] for i in rep.issues] == ["required column 'Weight' not found"]
-    assert any("type and group are not checked yet" in w for w in rep.warnings)
+    assert any("type is not checked yet" in w for w in rep.warnings)
 
 
 def test_validate_catches_sandbox_and_unsafe_config(book) -> None:
