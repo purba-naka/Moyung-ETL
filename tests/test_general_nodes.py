@@ -345,9 +345,13 @@ def test_dedupe_first_means_first_in_table_order_on_a_large_table() -> None:
     assert [r[1] for r in out] == list(range(50))  # row k first appears at seq k, in order
 
 
-def test_dedupe_without_keys_keeps_one_of_each_but_promises_no_order() -> None:
-    rel = _rel("select i % 7 as k from range(1000) t(i)")
-    assert sorted(_run("dedupe", {}, rel).fetchall()) == [(i,) for i in range(7)]
+def test_dedupe_without_keys_keeps_the_first_copy_in_table_order() -> None:
+    rel = _rel("select (i * 7919 % 100003) % 50000 as k from range(300000) t(i)")
+    got = [r[0] for r in _run("dedupe", {}, rel).fetchall()]
+    seen: dict[int, None] = {}
+    for (k,) in rel.fetchall():
+        seen.setdefault(k, None)
+    assert got == list(seen)  # each value once, in order of first appearance
 
 
 def test_sort_puts_nulls_last_in_both_directions() -> None:

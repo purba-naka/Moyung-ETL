@@ -10,6 +10,7 @@ from __future__ import annotations
 import re
 from collections.abc import Callable
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, ClassVar
 
 import duckdb
@@ -124,11 +125,17 @@ def infer(n: Node, inputs: list[Schema]) -> Schema:
     return n.infer_schema(inputs)
 
 
-def connect() -> duckdb.DuckDBPyConnection:
+def connect(write_dir: Path | None = None) -> duckdb.DuckDBPyConnection:
     """A fresh in-memory duckdb that cannot touch files or the network.
 
-    Every relation of one run must come from the same connection.
+    `write_dir` is the one directory it may read and write in (outputs of a run); the
+    permission is set before access is locked, after which it cannot be widened (measured:
+    `..` paths, siblings and a later SET are refused). Every relation of one run must come
+    from the same connection.
     """
     con = duckdb.connect()
+    if write_dir is not None:
+        path = write_dir.resolve().as_posix().replace("'", "''")
+        con.execute(f"SET allowed_directories=['{path}']")
     con.execute("SET enable_external_access=false")
     return con

@@ -134,8 +134,14 @@ class Join(Node):
                 ref = f"{side}.{quote(src)}"
             parts.append(f"{ref} AS {quote(col.name)}")
         how = {"inner": "INNER", "left": "LEFT", "right": "RIGHT", "full": "FULL"}[self.config.how]
+        # A join returns rows in whatever order the plan finds them (measured on 300k rows:
+        # many-to-many output was not in left order). Positions make it: left rows in table
+        # order, each one's matches in right table order, unmatched right rows last.
+        left = f"(SELECT *, row_number() OVER () AS __lp FROM {names[0]})"
+        right = f"(SELECT *, row_number() OVER () AS __rp FROM {names[1]})"
         return (
-            f"SELECT {', '.join(parts)} FROM {names[0]} AS l {how} JOIN {names[1]} AS r ON {cond}"
+            f"SELECT {', '.join(parts)} FROM {left} AS l {how} JOIN {right} AS r ON {cond} "
+            f"ORDER BY l.__lp NULLS LAST, r.__rp"
         )
 
     def run(self, inputs: list[Relation]) -> Relation:
@@ -211,6 +217,7 @@ class Union(Node):
 
     def _sql(self, names: list[str], schemas: list[Schema]) -> str:
         plan = self._types(schemas)
+        cfg = self.config
         selects = []
         for i, name in enumerate(names):
             items = []
@@ -220,11 +227,25 @@ class Union(Node):
                     f"CAST({quote(src)} AS {kind})" if src is not None else f"CAST(NULL AS {kind})"
                 )
                 items.append(f"{expr} AS {quote(col)}")
-            if self.config.source_column:
-                items.append(f"CAST({i} AS BIGINT) AS {quote(self.config.source_column)}")
+            if cfg.source_column:
+                items.append(f"CAST({i} AS BIGINT) AS {quote(cfg.source_column)}")
+            if cfg.distinct:
+                items.append(f"{i} AS __in, row_number() OVER () AS __row")
             selects.append(f"SELECT {', '.join(items)} FROM {name}")
-        glue = " UNION ALL " if not self.config.distinct else " UNION "
-        return glue.join(selects)
+        stacked = " UNION ALL ".join(selects)
+        if not cfg.distinct:
+            # UNION ALL keeps the inputs stacked in order (measured on 600k rows; this holds
+            # while preserve_insertion_order is on, which `connect()` leaves at its default)
+            return stacked
+        # distinct = keep the first copy of each row in stacked order; plain UNION would
+        # return the survivors in hash order
+        cols = ", ".join(quote(c) for c, _, _ in plan)
+        if cfg.source_column:
+            cols += f", {quote(cfg.source_column)}"
+        return (
+            f"SELECT {cols} FROM (SELECT *, row_number() OVER (PARTITION BY {cols} "
+            f"ORDER BY __in, __row) AS __rn FROM ({stacked})) WHERE __rn = 1 ORDER BY __in, __row"
+        )
 
     def run(self, inputs: list[Relation]) -> Relation:
         schemas = [schema_of(r) for r in inputs]

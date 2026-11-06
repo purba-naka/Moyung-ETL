@@ -411,3 +411,48 @@ def test_two_sheets_joined_grouped_and_pivoted() -> None:
         rel,
     )
     assert wide.fetchall() == [(7, 1, 3)]
+
+
+# --- row order: tables are lists, so the nodes that combine them must not shuffle them -------
+
+
+def test_join_keeps_left_order_then_right_order_on_a_large_many_to_many(con) -> None:
+    # on small tables any plan looks ordered; with 300k rows the plan reorders the output
+    left = con.sql("select (i % 1000)::bigint as k, i::bigint as seq from range(300000) t(i)")
+    right = con.sql("select (i % 1000)::bigint as k, i::bigint as w from range(3000) t(i)")
+    rows = _run("join", {"on": ["k"]}, left, right).fetchall()
+    assert len(rows) == 900000
+    seqs = [r[1] for r in rows]
+    assert seqs == sorted(seqs)  # left rows in table order
+    first = [r[2] for r in rows[:3]]
+    assert first == sorted(first)  # a left row's matches in right table order
+
+
+def test_join_unmatched_right_rows_come_last(con) -> None:
+    left = con.sql("select * from (values (2, 'b'), (1, 'a')) v(k, l)")
+    right = con.sql("select * from (values (1, 'x'), (9, 'z'), (2, 'y')) v(k, r)")
+    out = _run("join", {"on": ["k"], "how": "full"}, left, right).fetchall()
+    assert out == [(2, "b", "y"), (1, "a", "x"), (9, None, "z")]
+
+
+def test_union_stacks_inputs_in_order_on_a_large_table(con) -> None:
+    a = con.sql("select i::bigint as v from range(300000) t(i)")
+    b = con.sql("select (i + 300000)::bigint as v from range(300000) t(i)")
+    rows = _run("union", {}, a, b).fetchall()
+    assert [r[0] for r in rows] == list(range(600000))
+
+
+def test_union_distinct_keeps_the_first_copy_in_stacked_order(con) -> None:
+    a = con.sql("select * from (values (3), (1), (3)) v(v)")
+    b = con.sql("select * from (values (2), (1), (4)) v(v)")
+    assert _run("union", {"distinct": True}, a, b).fetchall() == [(3,), (1,), (2,), (4,)]
+
+
+def test_unpivot_groups_keeps_row_then_block_order_on_a_large_table(con) -> None:
+    rel = con.sql("select i::bigint as seq, i as a_m, (i * 2) as b_m from range(300000) t(i)")
+    out = _run(
+        "unpivot_groups", {"pattern": "^(?P<group>.+)_(?P<measure>.+)$", "keep": ["seq"]}, rel
+    ).fetchall()
+    assert len(out) == 600000
+    assert [r[0] for r in out] == [i for i in range(300000) for _ in (0, 1)]
+    assert [r[1] for r in out[:4]] == ["a", "b", "a", "b"]

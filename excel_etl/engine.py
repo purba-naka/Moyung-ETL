@@ -1,0 +1,376 @@
+"""Check a spec against real files (`validate`) and run it to parquet/csv files (`run`).
+
+Both go through `_execute`, one pass over sources and steps, so they cannot disagree: `validate`
+stops short of running the steps, nothing more. A problem in one step does not hide problems
+in steps that do not depend on it; the report lists them all.
+
+ponytail: no memory or row limit on a run (a many-to-many join can be large); duckdb's own
+default (80% of RAM) applies. Upgrade: a `memory_limit` argument passed to `connect`.
+"""
+
+from __future__ import annotations
+
+import os
+import re
+import time
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Literal
+
+import duckdb
+from pydantic import BaseModel, ConfigDict
+
+from excel_etl.nodes import Column, NodeError, Schema, build, infer, quote, schema_of
+from excel_etl.nodes.base import connect
+from excel_etl.nodes.source import read_region
+from excel_etl.pipeline import PipelineSpec, Source
+from excel_etl.workbook import Workbook, WorkbookError
+
+type FileRef = Workbook | str | os.PathLike[str] | bytes
+
+_MAX_MESSAGE = 400
+_MAX_ISSUES = 50
+
+
+class PipelineError(Exception):
+    """A run could not start or finish. `issues` has one entry per problem."""
+
+    def __init__(self, issues: list[Issue]) -> None:
+        self.issues = issues
+        shown = "\n".join(f"{i.where}: {i.message}" for i in issues[:10])
+        more = f"\n(+{len(issues) - 10} more)" if len(issues) > 10 else ""
+        super().__init__(shown + more)
+
+
+class _Report(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+
+class Issue(_Report):
+    where: str  # "sources.sales", "steps.clean", "outputs.final", "files"
+    message: str
+
+
+class NodeStat(_Report):
+    id: str
+    kind: Literal["source", "step"]
+    node: str  # "read_region" for a source
+    rows_in: int  # rows of all inputs together; 0 for a source
+    rows_out: int
+    columns: int
+    seconds: float
+
+
+class OutputStat(_Report):
+    name: str
+    path: str
+    format: Literal["parquet", "csv"]
+    rows: int
+    columns: int
+
+
+class ValidationReport(_Report):
+    ok: bool
+    issues: tuple[Issue, ...]
+    warnings: tuple[str, ...]
+    # columns each source and step gives, by name; a name is absent when it could not be
+    # worked out (no file given, or an earlier step failed)
+    schemas: dict[str, tuple[Column, ...]]
+
+    def text(self) -> str:
+        head = "ok" if self.ok else f"{len(self.issues)} problem(s)"
+        lines = [f"validate: {head}, {len(self.schemas)} tables known"]
+        lines += [f"  {i.where}: {i.message}" for i in self.issues]
+        lines += [f"  warning: {w}" for w in self.warnings]
+        return "\n".join(lines)
+
+
+class RunReport(_Report):
+    status: Literal["ok", "failed"]
+    issues: tuple[Issue, ...]
+    warnings: tuple[str, ...]
+    nodes: tuple[NodeStat, ...]
+    outputs: tuple[OutputStat, ...]
+    seconds: float
+
+    def text(self) -> str:
+        lines = [f"run: {self.status}, {self.seconds:.2f}s"]
+        for n in self.nodes:
+            rows = f"{n.rows_in}->{n.rows_out} rows"
+            lines.append(f"  {n.id}|{n.node}|{rows}|{n.columns} cols|{n.seconds:.2f}s")
+        lines += [f"  wrote {o.path}|{o.rows} rows|{o.columns} cols" for o in self.outputs]
+        lines += [f"  {i.where}: {i.message}" for i in self.issues]
+        lines += [f"  warning: {w}" for w in self.warnings]
+        return "\n".join(lines)
+
+
+@dataclass
+class _State:
+    issues: list[Issue] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)
+    schemas: dict[str, Schema] = field(default_factory=dict)
+    stats: list[NodeStat] = field(default_factory=list)
+    counts: dict[str, int] = field(default_factory=dict)
+
+    def issue(self, where: str, message: str) -> None:
+        if len(self.issues) < _MAX_ISSUES:
+            self.issues.append(Issue(where=where, message=message[:_MAX_MESSAGE]))
+
+
+def _open(ref: FileRef) -> Workbook:
+    if isinstance(ref, Workbook):
+        return ref
+    return Workbook.open(ref)
+
+
+_SPEC_TYPES = {
+    "text": ("VARCHAR",),
+    "int": ("BIGINT", "INTEGER", "HUGEINT"),
+    "float": ("DOUBLE", "FLOAT"),
+    "date": ("DATE",),
+    "datetime": ("TIMESTAMP",),
+    "bool": ("BOOLEAN",),
+}
+
+
+def _check_columns(source: Source, schema: Schema, st: _State, where: str) -> None:
+    """`expect_columns`: a `required` one must match at least one column of the table."""
+    names = [c.name for c in schema]
+    folded = [n.casefold() for n in names]
+    for want in source.expect_columns:
+        if want.match is not None:
+            hit = [n for n, f in zip(names, folded, strict=True) if f == want.match.casefold()]
+            label = repr(want.match)
+        else:
+            rx = re.compile(want.match_regex or "")
+            hit = [n for n in names if rx.search(n)]
+            label = f"/{want.match_regex}/"
+        if not hit and want.required:
+            shown = ", ".join(names[:12]) + (", ..." if len(names) > 12 else "")
+            st.issue(where, f"required column {label} not found; columns: {shown}")
+    if any(c.type or c.group for c in source.expect_columns):
+        msg = f"{where}: expect_columns type and group are not checked yet (only presence)"
+        if msg not in st.warnings:
+            st.warnings.append(msg)
+
+
+def _load_sources(
+    spec: PipelineSpec, files: dict[str, FileRef] | None, con: duckdb.DuckDBPyConnection, st: _State
+) -> None:
+    books: dict[str, Workbook | None] = {}
+    for name, source in spec.sources.items():
+        where = f"sources.{name}"
+        if files is None:
+            continue
+        role = source.file_role
+        if role not in books:
+            if role not in files:
+                known = ", ".join(sorted(files)) or "none"
+                st.issue(where, f"no file for file_role {role!r}; files given: {known}")
+                books[role] = None
+            else:
+                try:
+                    books[role] = _open(files[role])
+                except WorkbookError as e:
+                    st.issue(where, f"file {role!r}: {e}")
+                    books[role] = None
+        wb = books[role]
+        if wb is None:
+            continue
+        t0 = time.perf_counter()
+        try:
+            rel = read_region(wb, source, con, name)
+        except (NodeError, WorkbookError) as e:
+            st.issue(where, str(e))
+            continue
+        schema = schema_of(rel)
+        st.schemas[name] = schema
+        _check_columns(source, schema, st, where)
+        st.counts[name] = _count(con, name)
+        st.stats.append(
+            NodeStat(
+                id=name,
+                kind="source",
+                node="read_region",
+                rows_in=0,
+                rows_out=st.counts[name],
+                columns=len(schema),
+                seconds=round(time.perf_counter() - t0, 4),
+            )
+        )
+
+
+def _count(con: duckdb.DuckDBPyConnection, table: str) -> int:
+    # fetchall, not fetchone: duckdb 2.0 keeps the result of fetchone() open on the connection
+    # and the next relation operation on it fails with "unfinished result"
+    return con.execute(f"SELECT count(*) FROM {quote(table)}").fetchall()[0][0]
+
+
+def _run_steps(
+    spec: PipelineSpec, con: duckdb.DuckDBPyConnection, st: _State, run_nodes: bool
+) -> None:
+    for step in spec.steps:
+        where = f"steps.{step.id}"
+        try:
+            n = build(step.node, step.config)
+        except NodeError as e:
+            st.issue(where, str(e))
+            continue
+        inputs = [st.schemas.get(i) for i in step.inputs]
+        if any(s is None for s in inputs):
+            continue  # an input is unknown or failed: that problem is already listed
+        t0 = time.perf_counter()
+        try:
+            inferred = infer(n, inputs)  # type: ignore[arg-type]
+        except NodeError as e:
+            st.issue(where, str(e))
+            continue
+        st.schemas[step.id] = inferred
+        if not run_nodes:
+            continue
+        try:
+            rels = [con.table(i) for i in step.inputs]
+            n.run(rels).create(step.id)
+        except (NodeError, duckdb.Error) as e:
+            st.issue(where, f"failed while running {step.node}: {str(e).splitlines()[0]}")
+            del st.schemas[step.id]
+            continue
+        actual = schema_of(con.table(step.id))
+        if actual != inferred:
+            st.issue(
+                where,
+                f"internal: {step.node} promised {[(c.name, c.type) for c in inferred]} but "
+                f"produced {[(c.name, c.type) for c in actual]}; this is a bug in the node",
+            )
+            del st.schemas[step.id]
+            continue
+        rows = _count(con, step.id)
+        st.counts[step.id] = rows
+        st.stats.append(
+            NodeStat(
+                id=step.id,
+                kind="step",
+                node=step.node,
+                rows_in=sum(st.counts[i] for i in step.inputs),
+                rows_out=rows,
+                columns=len(actual),
+                seconds=round(time.perf_counter() - t0, 4),
+            )
+        )
+
+
+def validate(spec: PipelineSpec, files: dict[str, FileRef] | None = None) -> ValidationReport:
+    """Check a spec. With `files` (file_role -> path, bytes or Workbook) the sources are found
+    and read, and every step's columns are worked out; no step is run. Without files only the
+    steps' own settings can be checked (node names, configs, number of inputs).
+    """
+    st = _State()
+    con = connect()
+    try:
+        _load_sources(spec, files, con, st)
+        _run_steps(spec, con, st, run_nodes=False)
+    finally:
+        con.close()
+    if files is None:
+        st.warnings.append("no files given: only node names and settings were checked")
+    return ValidationReport(
+        ok=not st.issues,
+        issues=tuple(st.issues),
+        warnings=tuple(st.warnings),
+        schemas={k: tuple(v) for k, v in st.schemas.items()},
+    )
+
+
+def _literal(path: Path) -> str:
+    return "'" + path.as_posix().replace("'", "''") + "'"
+
+
+def run(
+    spec: PipelineSpec, files: dict[str, FileRef], out_dir: str | os.PathLike[str]
+) -> RunReport:
+    """Run a spec: read the sources, run the steps in order, write each output to
+    `out_dir/<output name>.<format>`. Files are written under a temporary name and moved into
+    place only when every step and every output succeeded, so a failed run leaves no
+    half-written file. A failed run returns status "failed" with the issues; it raises
+    PipelineError only when it cannot start (bad `out_dir`, `files`).
+    """
+    if not isinstance(files, dict):
+        raise PipelineError(
+            [Issue(where="files", message="files must be a dict of file_role -> file")]
+        )
+    target = Path(out_dir)
+    try:
+        target.mkdir(parents=True, exist_ok=True)
+    except OSError as e:
+        raise PipelineError(
+            [Issue(where="out_dir", message=f"cannot use {str(out_dir)!r}: {e}")]
+        ) from None
+    t0 = time.perf_counter()
+    st = _State()
+    con = connect(target)
+    parts: list[tuple[Path, Path]] = []
+    outputs: list[OutputStat] = []
+    try:
+        _load_sources(spec, files, con, st)
+        _run_steps(spec, con, st, run_nodes=True)
+        if not st.issues:
+            _write_outputs(spec, con, target, st, parts, outputs)
+        if not st.issues:
+            for tmp, final in parts:
+                os.replace(tmp, final)
+    finally:
+        con.close()
+        for tmp, _ in parts:
+            if not tmp.is_dir():  # a directory in the way is not ours: leave it
+                tmp.unlink(missing_ok=True)
+    failed = bool(st.issues)
+    return RunReport(
+        status="failed" if failed else "ok",
+        issues=tuple(st.issues),
+        warnings=tuple(st.warnings),
+        nodes=tuple(st.stats),
+        outputs=() if failed else tuple(outputs),
+        seconds=round(time.perf_counter() - t0, 3),
+    )
+
+
+def _write_outputs(
+    spec: PipelineSpec,
+    con: duckdb.DuckDBPyConnection,
+    target: Path,
+    st: _State,
+    parts: list[tuple[Path, Path]],
+    outputs: list[OutputStat],
+) -> None:
+    for name, out in spec.outputs.items():
+        where = f"outputs.{name}"
+        schema = st.schemas.get(out.input)
+        final = target / f"{name}.{out.format}"
+        tmp = target / f"{name}.{out.format}.part"
+        if (
+            out.format == "parquet"
+            and schema
+            and any(c.type in ("HUGEINT", "UHUGEINT") for c in schema)
+        ):
+            st.warnings.append(
+                f"{where}: a HUGEINT column is stored as DOUBLE in parquet (precision is lost "
+                "past 2^53); cast it to BIGINT or DECIMAL first"
+            )
+        fmt = "PARQUET" if out.format == "parquet" else "CSV, HEADER"
+        try:
+            parts.append((tmp, final))
+            con.execute(
+                f"COPY (SELECT * FROM {quote(out.input)}) TO {_literal(tmp)} (FORMAT {fmt})"
+            )
+        except duckdb.Error as e:
+            st.issue(where, f"could not write {final.name}: {str(e).splitlines()[0]}")
+            return
+        outputs.append(
+            OutputStat(
+                name=name,
+                path=str(final),
+                format=out.format,
+                rows=st.counts[out.input],
+                columns=len(schema or ()),
+            )
+        )

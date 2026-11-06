@@ -268,8 +268,9 @@ class Sort(Node):
 class Dedupe(Node):
     """Drop repeated rows. `keys` = the columns that identify a row (default: all columns).
 
-    Of rows with the same keys the first in the table's current order is kept, so run it after
-    `sort` if "first" must mean something. Empty (NULL) keys count as equal to each other.
+    Of rows with the same keys the first in the table's current order is kept, and the rest
+    keep their order too; run `sort` first if "first" must mean something. Empty (NULL) keys
+    count as equal to each other.
     """
 
     class Config(NodeConfig):
@@ -286,10 +287,9 @@ class Dedupe(Node):
         (rel,) = inputs
         schema = schema_of(rel)
         self.infer_schema([schema])
-        if not self.config.keys:
-            return rel.distinct()
-        part = ", ".join(quote(k) for k in self.config.keys)
         cols = ", ".join(quote(c.name) for c in schema)
+        # no keys = the whole row is the key; rel.distinct() would return survivors in hash order
+        part = ", ".join(quote(k) for k in self.config.keys) if self.config.keys else cols
         # row_number() over () numbers rows in table order. Without it the "first" row of a key
         # is whichever a parallel scan reaches first (measured on 200k rows: not the first).
         return rel.query(
