@@ -424,6 +424,36 @@ def test_two_files_one_run(tmp_path) -> None:
         ]
 
 
+def test_two_files_with_the_same_layout_are_unioned(tmp_path) -> None:
+    jan = make_xlsx({"Data": [["k", "v"], ["a", 1], ["b", 2]]})
+    feb = make_xlsx({"Data": [["k", "v"], ["c", 3], ["d", 4]]})
+    spec = _spec(
+        sources={"m1": _src("Data", "k", role="jan"), "m2": _src("Data", "k", role="feb")},
+        steps=[
+            {
+                "id": "all",
+                "node": "union",
+                "inputs": ["m1", "m2"],
+                "config": {"source_column": "month"},
+            }
+        ],
+        outputs={"all": {"input": "all", "format": "csv"}},
+    )
+    files = {"jan": jan, "feb": feb}
+    assert validate(spec, files).ok
+    rep = run(spec, files, tmp_path)
+    assert rep.status == "ok"
+    with open(tmp_path / "all.csv", newline="", encoding="utf-8") as f:
+        assert list(csv.reader(f)) == [
+            ["k", "v", "month"],
+            ["a", "1", "0"],
+            ["b", "2", "0"],
+            ["c", "3", "1"],
+            ["d", "4", "1"],
+        ]
+    assert [n.id for n in rep.nodes if n.kind == "source"] == ["m1", "m2"]
+
+
 def test_row_order_survives_a_whole_pipeline_on_a_large_sheet(tmp_path) -> None:
     n = 20000
     rows = [["id", "grp", "v"], *[[i, i % 7, float(i)] for i in range(n)]]
