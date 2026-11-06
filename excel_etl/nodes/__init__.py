@@ -26,6 +26,7 @@ __all__ = [
     "schema_of",
 ]
 
-from excel_etl.nodes import excel as _excel  # noqa: E402,F401  (registers its nodes)
+from excel_etl.nodes import combine as _combine  # noqa: E402,F401  (registers its nodes)
+from excel_etl.nodes import excel as _excel  # noqa: E402,F401
 from excel_etl.nodes import general as _general  # noqa: E402,F401
 from excel_etl.nodes import labels as _labels  # noqa: E402,F401
