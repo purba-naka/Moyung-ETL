@@ -538,3 +538,66 @@ def test_sample_pipeline_runs_end_to_end(sample_path, tmp_path) -> None:
     assert validate(spec, {"b": wb}).ok
     rep = run(spec, {"b": wb}, tmp_path)
     assert rep.status == "ok" and rep.nodes[-1].rows_out == 730
+
+
+@pytest.mark.parametrize(
+    "head", [["Ton", "Ton", "Ton (2)"], ["Ton", "TON", "ton"], ["a", "A", "a (2)"]]
+)
+def test_duplicate_headers_in_any_case_load_with_unique_names(head, tmp_path) -> None:
+    f = make_xlsx({"S": [head, [1, 2, 3]]})
+    spec = _spec(
+        sources={"s": _src("S", head[0])},
+        outputs={"o": {"input": "s", "format": "csv"}},
+    )
+    rep = validate(spec, {"f": f})
+    assert rep.ok, rep.text()
+    assert len({c.casefold() for c in (c.name for c in rep.schemas["s"])}) == 3
+    assert run(spec, {"f": f}, tmp_path).status == "ok"
+
+
+def test_group_by_output_name_clashing_only_in_case_is_caught_by_validate() -> None:
+    f = make_xlsx({"S": [["Key", "Ton"], ["a", 1], ["a", 2]]})
+    spec = _spec(
+        sources={"s": _src("S", "Key")},
+        steps=[
+            {
+                "id": "g",
+                "node": "group_by",
+                "inputs": ["s"],
+                "config": {"by": ["Key"], "aggs": [{"name": "TON", "fn": "sum", "column": "Ton"}]},
+            },
+        ],
+    )
+    assert validate(spec, {"f": f}).ok  # TON vs Ton: not a clash, Ton is not an output
+    spec2 = _spec(
+        sources={"s": _src("S", "Key")},
+        steps=[
+            {
+                "id": "g",
+                "node": "group_by",
+                "inputs": ["s"],
+                "config": {"by": ["Key"], "aggs": [{"name": "key", "fn": "count_rows"}]},
+            },
+        ],
+    )
+    assert "twice" in validate(spec2, {"f": f}).text()
+
+
+def test_wrong_input_count_is_caught_even_without_known_schemas() -> None:
+    spec = _spec(
+        sources={"s": _src("S", "a")},
+        steps=[
+            {"id": "j", "node": "join", "inputs": ["s"], "config": {"on": ["a"], "how": "left"}}
+        ],
+    )
+    rep = validate(spec)
+    assert not rep.ok
+    assert "input" in rep.text()
+
+
+def test_validate_text_names_the_columns_and_bad_files_become_an_issue() -> None:
+    f = make_xlsx({"S": [["Key", "Ton"], ["a", 1]]})
+    spec = _spec(sources={"s": _src("S", "Key")})
+    assert "s: Key, Ton" in validate(spec, {"f": f}).text()
+    rep = validate(spec, ["x"])  # type: ignore[arg-type]
+    assert not rep.ok and rep.issues[0].where == "files"

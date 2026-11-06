@@ -123,3 +123,18 @@ def test_version_numbers_keep_counting() -> None:
     h = SpecHistory.start(_spec()).add(with_anchor("B"), "one").add(with_anchor("C"), "two")
     assert [v.number for v in h.versions] == [1, 2, 3]
     assert h.get(3).diff[0].before == '["B"]' and h.get(3).diff[0].after == '["C"]'
+
+
+def test_a_stored_history_with_wrong_numbers_or_diff_is_refused() -> None:
+    h = SpecHistory.start(_spec())
+    h = h.add(_spec(outputs={"o": {"input": "a"}}), "rewire")
+    data = json.loads(h.model_dump_json())
+    SpecHistory.model_validate(data)
+    bad = json.loads(h.model_dump_json())
+    bad["versions"][1]["number"] = 5
+    with pytest.raises(ValueError, match="numbers"):
+        SpecHistory.model_validate(bad)
+    bad = json.loads(h.model_dump_json())
+    bad["versions"][1]["diff"] = []
+    with pytest.raises(ValueError, match="diff"):
+        SpecHistory.model_validate(bad)

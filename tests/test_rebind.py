@@ -200,3 +200,15 @@ def test_sample_binds_and_shifts(sample_path) -> None:
     rep = rebind(spec, {"b": sample_path})
     assert rep.sources["pkg"].status == "exact"
     assert rebind(spec, {"b": sample_path}, rep.records()).sources["pkg"].status == "exact"
+
+
+def test_records_leave_out_drifted_sources() -> None:
+    spec = _spec(_src(expect=[{"match": "Gone"}]))
+    rep = _bind(_BASE, spec)
+    assert rep.sources["s"].status == "drift"
+    assert rep.records() == {}
+
+
+def test_files_that_is_not_a_dict_is_missing_not_a_crash() -> None:
+    rep = rebind(_spec(_src()), None)  # type: ignore[arg-type]
+    assert rep.sources["s"].status == "missing" and "dict" in rep.text()

@@ -1,7 +1,7 @@
 """rebind: find every source of a spec in new files and say whether the pipeline can run as is.
 
 The spec holds anchors, not cell addresses, so "shifted" needs something to compare with: the
-`BindRecord` a earlier bind returned. The host keeps the records (the library keeps no state).
+`BindRecord` an earlier bind returned. The host keeps the records (the library keeps no state).
 
   exact    contract holds, table is where it was (or there is no earlier record)
   shifted  contract holds, but the sheet name or the table's position moved: run as is
@@ -18,7 +18,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict
 
-from excel_etl.engine import FileRef, open_file
+from excel_etl.engine import FileInput, open_file
 from excel_etl.inspect.encode import _few, a1
 from excel_etl.nodes.base import NodeError
 from excel_etl.nodes.source import Location, expect_hits, expect_label, locate
@@ -57,8 +57,13 @@ class BindReport(_Model):
         return all(s.status in ("exact", "shifted") for s in self.sources.values())
 
     def records(self) -> dict[str, BindRecord]:
-        """The records to hand to the next `rebind` as `previous`."""
-        return {k: s.record for k, s in self.sources.items() if s.record is not None}
+        """The records to hand to the next `rebind` as `previous`. Sources that drifted or
+        are missing are left out: a drifted place is not one to remember."""
+        return {
+            k: s.record
+            for k, s in self.sources.items()
+            if s.record is not None and s.status in ("exact", "shifted")
+        }
 
     def text(self) -> str:
         lines = [f"rebind: {'ok' if self.ok else 'needs repair'}"]
@@ -111,7 +116,7 @@ def _judge(source: Source, loc: Location, old: BindRecord | None) -> SourceBind:
 
 def rebind(
     spec: PipelineSpec,
-    files: dict[str, FileRef],
+    files: dict[str, FileInput],
     previous: dict[str, BindRecord] | None = None,
 ) -> BindReport:
     """Find each source of `spec` in `files` (file_role -> path, bytes or Workbook).
@@ -121,6 +126,9 @@ def rebind(
     Nothing is run and nothing is raised for a bad file: it shows up as `missing`.
     """
     previous = previous or {}
+    bad_files = None if isinstance(files, dict) else "files must be a dict of file_role -> file"
+    if bad_files:
+        files = {}
     books: dict[str, Workbook | str] = {}  # a str is the reason a file cannot be used
     out: dict[str, SourceBind] = {}
     for name, source in spec.sources.items():
@@ -128,7 +136,7 @@ def rebind(
         if role not in books:
             if role not in files:
                 known = ", ".join(sorted(files)) or "none"
-                books[role] = f"no file for file_role {role!r}; files given: {known}"
+                books[role] = bad_files or f"no file for file_role {role!r}; files given: {known}"
             else:
                 try:
                     books[role] = open_file(files[role])

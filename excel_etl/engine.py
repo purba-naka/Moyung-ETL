@@ -1,6 +1,6 @@
 """Check a spec against real files (`validate`) and run it to parquet/csv files (`run`).
 
-Both go through `_execute`, one pass over sources and steps, so they cannot disagree: `validate`
+Both go through `_load_sources` and `_run_steps`, one pass, so they cannot disagree: `validate`
 stops short of running the steps, nothing more. A problem in one step does not hide problems
 in steps that do not depend on it; the report lists them all.
 
@@ -20,12 +20,12 @@ import duckdb
 from pydantic import BaseModel, ConfigDict
 
 from excel_etl.nodes import Column, NodeError, Schema, build, infer, quote, schema_of
-from excel_etl.nodes.base import connect
+from excel_etl.nodes.base import check_arity, connect
 from excel_etl.nodes.source import expect_hits, expect_label, read_region
 from excel_etl.pipeline import PipelineSpec, Source
 from excel_etl.workbook import Workbook, WorkbookError
 
-type FileRef = Workbook | str | os.PathLike[str] | bytes
+type FileInput = Workbook | str | os.PathLike[str] | bytes
 
 _MAX_MESSAGE = 400
 _MAX_ISSUES = 50
@@ -68,6 +68,11 @@ class OutputStat(_Report):
     columns: int
 
 
+def _columns(cols: tuple[Column, ...], limit: int = 40) -> str:
+    shown = ", ".join(c.name for c in cols[:limit])
+    return shown + (f", ... ({len(cols)} columns)" if len(cols) > limit else "")
+
+
 class ValidationReport(_Report):
     ok: bool
     issues: tuple[Issue, ...]
@@ -79,6 +84,7 @@ class ValidationReport(_Report):
     def text(self) -> str:
         head = "ok" if self.ok else f"{len(self.issues)} problem(s)"
         lines = [f"validate: {head}, {len(self.schemas)} tables known"]
+        lines += [f"  {name}: {_columns(cols)}" for name, cols in self.schemas.items()]
         lines += [f"  {i.where}: {i.message}" for i in self.issues]
         lines += [f"  warning: {w}" for w in self.warnings]
         return "\n".join(lines)
@@ -116,7 +122,7 @@ class _State:
             self.issues.append(Issue(where=where, message=message[:_MAX_MESSAGE]))
 
 
-def open_file(ref: FileRef) -> Workbook:
+def open_file(ref: FileInput) -> Workbook:
     if isinstance(ref, Workbook):
         return ref
     return Workbook.open(ref)
@@ -136,7 +142,10 @@ def _check_columns(source: Source, schema: Schema, st: _State, where: str) -> No
 
 
 def _load_sources(
-    spec: PipelineSpec, files: dict[str, FileRef] | None, con: duckdb.DuckDBPyConnection, st: _State
+    spec: PipelineSpec,
+    files: dict[str, FileInput] | None,
+    con: duckdb.DuckDBPyConnection,
+    st: _State,
 ) -> None:
     books: dict[str, Workbook | None] = {}
     for name, source in spec.sources.items():
@@ -161,7 +170,7 @@ def _load_sources(
         t0 = time.perf_counter()
         try:
             rel = read_region(wb, source, con, name)
-        except (NodeError, WorkbookError) as e:
+        except (NodeError, WorkbookError, duckdb.Error) as e:
             st.issue(where, str(e))
             continue
         schema = schema_of(rel)
@@ -194,6 +203,7 @@ def _run_steps(
         where = f"steps.{step.id}"
         try:
             n = build(step.node, step.config)
+            check_arity(n, len(step.inputs))
         except NodeError as e:
             st.issue(where, str(e))
             continue
@@ -240,12 +250,15 @@ def _run_steps(
         )
 
 
-def validate(spec: PipelineSpec, files: dict[str, FileRef] | None = None) -> ValidationReport:
+def validate(spec: PipelineSpec, files: dict[str, FileInput] | None = None) -> ValidationReport:
     """Check a spec. With `files` (file_role -> path, bytes or Workbook) the sources are found
     and read, and every step's columns are worked out; no step is run. Without files only the
     steps' own settings can be checked (node names, configs, number of inputs).
     """
     st = _State()
+    if files is not None and not isinstance(files, dict):
+        st.issue("files", "files must be a dict of file_role -> file")
+        files = None
     con = connect()
     try:
         _load_sources(spec, files, con, st)
@@ -267,7 +280,7 @@ def _literal(path: Path) -> str:
 
 
 def run(
-    spec: PipelineSpec, files: dict[str, FileRef], out_dir: str | os.PathLike[str]
+    spec: PipelineSpec, files: dict[str, FileInput], out_dir: str | os.PathLike[str]
 ) -> RunReport:
     """Run a spec: read the sources, run the steps in order, write each output to
     `out_dir/<output name>.<format>`. Files are written under a temporary name and moved into
@@ -298,7 +311,11 @@ def run(
             _write_outputs(spec, con, target, st, parts, outputs)
         if not st.issues:
             for tmp, final in parts:
-                os.replace(tmp, final)
+                try:
+                    os.replace(tmp, final)
+                except OSError as e:
+                    st.issue(f"outputs.{final.stem}", f"cannot write {final.name!r}: {e}")
+                    break
     finally:
         con.close()
         for tmp, _ in parts:
