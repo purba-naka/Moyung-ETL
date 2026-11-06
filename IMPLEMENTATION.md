@@ -5,12 +5,12 @@ Perbarui setiap selesai satu item (lihat AGENTS.md §7).
 
 ## Status
 
-- Fase: **1, 2 selesai (termasuk P6). Fase 3: 3.1, 3.2 selesai.**
-- Berikutnya: **Fase 3, item 3.3** (node Excel-spesifik). Temuan P6 Fase 1/2 yang ditunda: lihat §Temuan.
+- Fase: **1, 2 selesai (termasuk P6). Fase 3: 3.1, 3.2 selesai; 3.3 sebagian (`read_region` selesai).**
+- Berikutnya: **3.3 lanjut: node Excel-spesifik** (`flatten_header`, `fill_down`, `drop_rows`, `unpivot`, `unpivot_groups`, `parse_hierarchy`, `split_header_token`). Temuan P6 Fase 1/2 yang ditunda: lihat §Temuan.
 
 ## Berikutnya
 
-1. 3.3 node Excel-spesifik (`flatten_header`, `fill_down`, `parse_hierarchy`, `unpivot`, `unpivot_groups`, `drop_rows`, `split_header_token`) + `read_region`.
+1. 3.3 sisa node Excel-spesifik, mulai `drop_rows` (membuang label subtotal di kolom tanggal), `fill_down`, `unpivot`/`unpivot_groups`, lalu `parse_hierarchy`, `split_header_token`. `flatten_header` sudah terjadi di `read_region`: kolom sudah `PARENT|LEAF`, node terpisah hanya bila perlu.
 2. 3.4-3.6 node + registry + `validate`/`run` (lihat §Fase 3).
 3. Sambil jalan: temuan P6 yang ditunda (konversi WorkbookError ke dict di `tools.py`).
 
@@ -85,7 +85,7 @@ Selesai bila: semua test hijau, angka token dicatat di §Temuan.
 
 - [x] 3.1 `PipelineSpec` (pydantic) + parse dari JSON string (YAML ditunda, lihat §Keputusan).
 - [x] 3.2 Registry `@node`, kontrak `infer_schema` + `run` (duckdb relation).
-- [ ] 3.3 Node Excel-spesifik.
+- [ ] 3.3 Node Excel-spesifik. Selesai: `read_region` (source). Sisa: lihat Berikutnya.
 - [ ] 3.4 Node umum + validasi ekspresi SQL skalar.
 - [ ] 3.5 `validate(spec)` tanpa data; `run(spec)` -> output parquet/csv + RunReport.
 - [ ] 3.6 Multi-file per job (join/union antar `F1`, `F2`).
@@ -304,6 +304,22 @@ memuat `|`, spasi, kutip (`JANUARI|PKG`). duckdb 2.0.0: `rel.columns`/`rel.types
 skema; `enable_external_access=false` memblok `read_csv` (PermissionException) dan tak bisa
 dinyalakan lagi di koneksi yang sama.
 
+**read_region (3.3)** `nodes/source.py`: `read_region(wb, source, con, name) -> Relation`. Sheet:
+`name`, lalu `name_like` (cocok persis atau setelah normalisasi teks), lalu sheet yang memuat semua
+`fallback_contains`; lebih dari satu kandidat = `NodeError` (tidak menebak). Header: tabel pertama
+dari `detect_regions` yang baris headernya (dalam `_HEADER_SEARCH`=12 baris dari puncak tabel) memuat
+semua `header_anchor`; anchor dinilai per tabel karena teks yang sama berulang di tabel samping
+(`Phonska 1` ada di 4 tempat di `(N) PKG`). Nama kolom dari `_column_names(sep_safe=False)`:
+`PARENT|LEAF` dengan `|` asli dipertahankan (teks view memakai `/`); duplikat jadi `Ton (2)`.
+Akhir tabel = `until_blank_rows(N)` baris kosong berturut. Tipe kolom dari nilai: satu jenis
+dipertahankan (BIGINT/DOUBLE/DATE/...), campuran jadi VARCHAR dengan bentuk teks tiap nilai
+(tidak ada yang hilang atau ditebak); formula tanpa cache = NULL. Koneksi dari `connect()`
+(`enable_external_access=false`). BALANSITAS: `(N) PKG` 802 baris x 29 kolom 1,4 s, `Per Bulan` 49 x 76
+0,2 s. TANGGAL jadi VARCHAR karena memuat subtotal `JAN`, `FEB - 2025`, `.` di tengah tanggal
+(34 titik, 11 `FEB - 2025`); `drop_rows` yang membuangnya. Kolom `Formula` berisi teks `sub c` (724) =
+bukan angka, jadi VARCHAR. Per Bulan: dua kolom pertama tanpa nama header (`-`, `- (2)`).
+Ditunda: kontrak `expect_columns` (cek tipe/wajib) dan status exact/shifted/drift ke fase rebind.
+
 ## Pertanyaan terbuka
 
 - Batas jumlah dataset per job?
@@ -330,3 +346,4 @@ dinyalakan lagi di koneksi yang sama.
 | 2026-11-06 | P6 Fase 2: 3 subagent paralel (adversarial/auditor/agent-user) atas 2.1-2.5. 11 perbaikan di `encode.py`/`workbook.py`: limit=None -> WorkbookError (paged=True di `_paging`), guard localSheetId, truncated `compare_sheets`, gating seksi derived (cross di dalam box), hitungan baris data tanpa total, repr diff float, echo query 40 char, cap 5 nama sheet di error, sheet bernama id region, "has no regions", wording budget. +18 test; 153 unit + 11 sampel lulus. Temuan valid yang tidak diperbaiki dicatat di §Temuan. |
 | 2026-11-06 | 3.1 `pipeline.py`: `PipelineSpec` (sources/steps/outputs, pydantic v2, `extra="forbid"`), `parse_spec(json)` -> `SpecError` dengan path per masalah, `dump_spec`. `tests/test_pipeline.py` (31); mutasi (forbid off, cek input off) menjatuhkan tes. 184 unit lulus. |
 | 2026-11-06 | 3.2 `nodes/base.py` (`Node`, `@node`, `build`, `infer`, `schema_of`, `quote`, `NodeError`) + `nodes/general.py` (`select`). `tests/test_nodes.py` (10); 3 mutasi (forbid off, infer != run, arity off) tertangkap. `parse_spec` memakai `describe` bersama. 194 unit lulus. |
+| 2026-11-06 | 3.3a `nodes/source.py`: `read_region` (sheet via name/name_like/fallback, header via anchor per tabel, akhir via blank rows, tipe per kolom). `nodes/base.py`: `connect()` (duckdb tanpa akses file). `_column_names(sep_safe=)`. `tests/test_read_region.py` (12). Uji BALANSITAS menemukan bug: anchor yang berulang di tabel samping gagal (dinilai per workbook-wide) -> dinilai per tabel. 206 unit lulus. |

@@ -120,3 +120,13 @@ def infer(n: Node, inputs: list[Schema]) -> Schema:
     """Columns a node produces from the columns it reads. Raises NodeError, never a stack trace."""
     check_arity(n, len(inputs))
     return n.infer_schema(inputs)
+
+
+def connect() -> duckdb.DuckDBPyConnection:
+    """A fresh in-memory duckdb that cannot touch files or the network.
+
+    Every relation of one run must come from the same connection.
+    """
+    con = duckdb.connect()
+    con.execute("SET enable_external_access=false")
+    return con
