@@ -1,0 +1,57 @@
+"""The README snippets that do not need an agent framework must keep working."""
+
+from __future__ import annotations
+
+import re
+from pathlib import Path
+
+from conftest import make_xlsx
+
+from excel_etl.state import Job, new_state
+
+README = (Path(__file__).parent.parent / "README.md").read_text(encoding="utf-8")
+
+
+def _blocks() -> list[str]:
+    return re.findall(r"```python\n(.*?)```", README, re.S)
+
+
+def _fix(code: str, tmp: Path) -> str:
+    # forward slashes: a Windows path with backslashes would be read as escapes in the snippet
+    return (
+        code.replace("C:/uploads", tmp.as_posix())
+        .replace("C:/state", (tmp / "state").as_posix())
+        .replace("C:/out/job1", (tmp / "out").as_posix())
+    )
+
+
+def _run(code: str, name: str, ns: dict) -> dict:
+    exec(compile(code, name, "exec"), ns)  # noqa: S102 - our own README
+    return ns
+
+
+def test_store_snippet_runs_and_saves_at_once(tmp_path):
+    (tmp_path / "{file_id}.xlsx").parent.mkdir(exist_ok=True)
+    (tmp_path / "up-17.xlsx").write_bytes(make_xlsx({"S": [["a", "b"], [1, 2]]}))
+    ns = _run(_fix(_blocks()[0], tmp_path), "README block 1", {})
+    assert "F1|Balance Jan.xlsx|role main" in ns["tools"].list_files()["text"]
+    assert (tmp_path / "state" / "job-job1.json").exists()
+
+
+def test_stateless_snippet_round_trips(tmp_path):
+    ns = _run(_fix(_blocks()[0].split("job = Job.open")[0], tmp_path), "README head", {})
+    ns["saved_json"] = Job(new_state("job1")).state_json()
+    code = _fix(_blocks()[1], tmp_path).replace("...  ", "pass  # ")
+    ns = _run(code, "README block 2", ns)
+    assert ns["tools"].job.state.job_id == "job1"
+    assert Job.from_state(ns["saved_json"]).state.job_id == "job1"
+
+
+def test_tools_table_matches_the_code():
+    from excel_etl.tools import JobTools
+
+    t = JobTools(Job(new_state("j")), object())
+    table = README.split("## Tools")[1].split("\n\nA result")[0]
+    named = set(re.findall(r"`([a-z_]+)`", table))
+    exposed = {f.__name__ for f in t.agent_tools()} | {"add_file", "answer", "approve"}
+    assert named == exposed
