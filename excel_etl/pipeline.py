@@ -25,7 +25,7 @@ from excel_etl.quality import Check, tables_of
 # Letters, digits and `_`, up to 64 characters, not starting with `__` (helper columns and
 # views inside queries use that prefix). No lookahead: pydantic's regex engine has none.
 _IDENT = r"^(?:[A-Za-z]|_[A-Za-z0-9])[A-Za-z0-9_]{0,62}$"
-_END = re.compile(r"^until_blank_rows\(\d+\)$")
+_END = re.compile(r"until_blank_rows\([0-9]+\)")
 # Output names become file names; Windows cannot create these whatever the extension.
 _DEVICE_NAMES = frozenset(
     {
@@ -70,7 +70,7 @@ class RegionRef(_Model):
 
     @model_validator(mode="after")
     def _end_is_known(self) -> RegionRef:
-        if not _END.match(self.end):
+        if not _END.fullmatch(self.end):
             raise ValueError(f"end must look like until_blank_rows(2), got {self.end!r}")
         return self
 

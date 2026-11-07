@@ -98,3 +98,51 @@ def test_a_new_node_registers_and_runs() -> None:
     n = build("test_double", {"column": "a", "times": 3})
     assert n.name == "test_double"
     assert n.run([duckdb.connect().sql("select 2 as a")]).fetchall() == [(6,)]
+
+
+# --- catalog: what an agent reads to write a step ---------------------------------------------
+
+
+def test_catalog_lists_every_node_with_a_description():
+    from excel_etl.nodes import catalog, names
+
+    lines = catalog().splitlines()
+    assert [ln.split(":", 1)[0] for ln in lines] == names()
+    assert all(ln.split(":", 1)[1].strip() for ln in lines)  # none is blank
+
+
+def test_catalog_each_node_has_fields_and_required_marks():
+    from excel_etl.nodes import catalog, names
+
+    for n in names():
+        text = catalog(n)
+        assert text.startswith(f"{n} (inputs: ") and "\nconfig: " in text
+    gb = catalog("group_by")
+    assert "aggs*: [{name*, fn*, column, separator}]" in gb and "by: [string] = []" in gb
+    assert "inputs: 2)" in catalog("join") and "how: inner|left|right|full = 'inner'" in catalog(
+        "join"
+    )
+    assert "inputs: 2+)" in catalog("union")
+
+
+def test_catalog_unknown_node_lists_known_ones():
+    import pytest as _pytest
+
+    from excel_etl.nodes import NodeError, catalog
+
+    with _pytest.raises(NodeError, match="unknown node 'merge'; nodes: cast, dedupe"):
+        catalog("merge")
+
+
+def test_config_error_names_the_valid_fields():
+    import pytest as _pytest
+
+    from excel_etl.nodes import NodeError, build
+
+    with _pytest.raises(NodeError) as e:
+        build("group_by", {"aggs": [{"fn": "sum", "column": "Q", "as": "T"}]})
+    assert "aggs.0.name: Field required" in str(e.value)
+    assert (
+        "fields (* required): by: [string] = []; aggs*: [{name*, fn*, column, separator}]"
+        in str(e.value)
+    )

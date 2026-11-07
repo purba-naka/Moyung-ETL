@@ -305,6 +305,10 @@ def run(
     `after_spec` are checked first; `ref` names what is being run (e.g. a spec version) so an
     approval given for another one is refused.
     """
+    if hitl is not None and not isinstance(hitl, HitlState):
+        raise PipelineError(
+            [Issue(where="hitl", message=f"hitl must be a HitlState, got {type(hitl).__name__}")]
+        )
     if hitl is not None:
         blocked = [
             Issue(where=f"hitl.{c}", message=why)
@@ -316,6 +320,14 @@ def run(
     if not isinstance(files, dict):
         raise PipelineError(
             [Issue(where="files", message="files must be a dict of file_role -> file")]
+        )
+    if not isinstance(out_dir, str | os.PathLike):
+        raise PipelineError(
+            [
+                Issue(
+                    where="out_dir", message=f"out_dir must be a path, got {type(out_dir).__name__}"
+                )
+            ]
         )
     target = Path(out_dir)
     try:

@@ -8,6 +8,7 @@ from typing import Literal
 from pydantic import Field, model_validator
 
 from excel_etl.nodes.base import (
+    NUMERIC_TYPE,
     Column,
     Node,
     NodeConfig,
@@ -105,7 +106,6 @@ class FillDown(Node):
         return rel.project(f"* REPLACE ({fills})")
 
 
-_NUMERIC = re.compile(r"^(U?(TINY|SMALL|BIG|HUGE)?INT(EGER)?|FLOAT|DOUBLE|DECIMAL\(.*\))$")
 type ValueType = Literal["VARCHAR", "DOUBLE", "BIGINT", "DATE", "TIMESTAMP", "BOOLEAN"]
 
 
@@ -116,7 +116,7 @@ def _common_type(types: list[str], forced: str | None) -> str:
     kinds = set(types)
     if len(kinds) == 1:
         return types[0]
-    return "DOUBLE" if all(_NUMERIC.match(t) for t in kinds) else "VARCHAR"
+    return "DOUBLE" if all(NUMERIC_TYPE.match(t) for t in kinds) else "VARCHAR"
 
 
 def _pick(

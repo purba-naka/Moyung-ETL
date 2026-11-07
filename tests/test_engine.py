@@ -638,3 +638,17 @@ def test_run_refuses_stale_approval(book, tmp_path) -> None:
     assert run(_pipeline(), {"f": book}, tmp_path, hitl=s, ref="v1").status == "ok"
     with pytest.raises(PipelineError, match="approved for 'v1'"):
         run(_pipeline(), {"f": book}, tmp_path, hitl=s, ref="v2")
+
+
+def test_run_wrong_argument_types_raise_pipeline_error_not_attribute_error(book, tmp_path) -> None:
+    for kw, where in (
+        ({"hitl": "yes"}, "hitl"),
+        ({"hitl": {}}, "hitl"),
+    ):
+        with pytest.raises(PipelineError) as e:
+            run(_pipeline(), {"f": book}, tmp_path, **kw)
+        assert e.value.issues[0].where == where
+    for bad in (None, 5, b"x"):
+        with pytest.raises(PipelineError) as e:
+            run(_pipeline(), {"f": book}, bad)
+        assert e.value.issues[0].where == "out_dir"

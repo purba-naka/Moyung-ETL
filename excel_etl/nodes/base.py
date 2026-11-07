@@ -20,6 +20,7 @@ type Relation = duckdb.DuckDBPyRelation
 
 _MAX_ERRORS = 10
 INTEGER_TYPE = re.compile(r"^U?(TINY|SMALL|BIG|HUGE)?INT(EGER)?$")  # duckdb whole-number types
+NUMERIC_TYPE = re.compile(r"^(U?(TINY|SMALL|BIG|HUGE)?INT(EGER)?|FLOAT|DOUBLE|DECIMAL\(.*\))$")
 
 
 class NodeError(Exception):
@@ -99,6 +100,57 @@ def names() -> list[str]:
     return sorted(_REGISTRY)
 
 
+def _fields(cls: type[Node]) -> str:
+    """`name*: type = default` per config field of a node; `*` marks a required one."""
+    schema = cls.Config.model_json_schema()
+    defs, need = schema.get("$defs", {}), set(schema.get("required", []))
+
+    def kind(p: dict[str, Any]) -> str:
+        if "$ref" in p:
+            ref = defs[p["$ref"].rsplit("/", 1)[-1]]
+            inner = ", ".join(
+                f"{k}{'*' if k in ref.get('required', []) else ''}"
+                for k in ref.get("properties", {})
+            )
+            return "{" + inner + "}"
+        if "enum" in p:
+            return "|".join(map(str, p["enum"]))
+        if "anyOf" in p:
+            return " or ".join(kind(x) for x in p["anyOf"] if x.get("type") != "null")
+        if p.get("type") == "array":
+            return f"[{kind(p.get('items', {})) or 'any'}]"
+        if p.get("type") == "object":
+            return "object"
+        return str(p.get("type", "any"))
+
+    out = []
+    for key, p in schema.get("properties", {}).items():
+        default = "" if key in need or "default" not in p else f" = {p['default']!r}"
+        out.append(f"{key}{'*' if key in need else ''}: {kind(p)}{default}")
+    return "; ".join(out)
+
+
+def catalog(name: str | None = None) -> str:
+    """What an agent needs to write a step: each node's purpose and config fields.
+
+    Without `name`, one line per node. With a name, the full docstring and the fields
+    (`*` = required). An unknown name raises NodeError listing the known ones.
+    """
+    if name is None:
+        rows = []
+        for n in names():
+            first = (_REGISTRY[n].__doc__ or "").strip().split("\n\n")[0]
+            rows.append(f"{n}: {' '.join(first.split())[:110] or '(no description)'}")
+        return "\n".join(rows)
+    cls = _REGISTRY.get(name)
+    if cls is None:
+        raise NodeError(f"unknown node {name!r}; nodes: {', '.join(names())}")
+    lo, hi = cls.min_inputs, cls.max_inputs
+    n_in = f"{lo}" if lo == hi else f"{lo}+" if hi is None else f"{lo}-{hi}"
+    doc = "\n".join(line.strip() for line in (cls.__doc__ or "").strip().splitlines())
+    return f"{name} (inputs: {n_in})\n{doc}\nconfig: {_fields(cls)}"
+
+
 def build(name: str, config: dict[str, Any] | None = None) -> Node:
     """Make a node from a spec step (`node` + `config`). Raises NodeError with what to fix."""
     cls = _REGISTRY.get(name)
@@ -109,7 +161,9 @@ def build(name: str, config: dict[str, Any] | None = None) -> Node:
     try:
         return cls(cls.Config.model_validate(config or {}))
     except ValidationError as e:
-        raise NodeError(f"node {name!r} config:\n{describe(e)}") from None
+        raise NodeError(
+            f"node {name!r} config:\n{describe(e)}\nfields (* required): {_fields(cls)}"
+        ) from None
 
 
 def check_arity(n: Node, count: int) -> None:

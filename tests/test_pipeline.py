@@ -171,3 +171,27 @@ def test_config_stays_free_form_until_the_node_registry_exists() -> None:
         )
     )
     assert spec.steps[0].config == {"a": [1, {"b": 2}]}
+
+
+def test_end_must_be_exactly_until_blank_rows_with_ascii_digits():
+    import json
+
+    from excel_etl.pipeline import SpecError, parse_spec
+
+    def spec(end):
+        src = {
+            "file_role": "f",
+            "sheet": {"name": "D"},
+            "region": {"header_anchor": ["T"], "end": end},
+        }
+        return parse_spec(json.dumps({"sources": {"s": src}}))
+
+    assert spec("until_blank_rows(3)").sources["s"].region.end == "until_blank_rows(3)"
+    for bad in (
+        "until_blank_rows(2)\n",
+        "until_blank_rows(\u0662)",
+        "until_blank_rows()",
+        " until_blank_rows(2)",
+    ):
+        with pytest.raises(SpecError):
+            spec(bad)

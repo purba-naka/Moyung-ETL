@@ -300,3 +300,28 @@ def test_update_ignores_a_version_set_by_the_callback(tmp_path):
     assert job.state.version == 1  # the job counts, not the callback
     job.update(lambda s: s.model_copy(update={"version": 0}))
     assert Job.open("j", store).state.version == 2
+
+
+def test_update_callback_editing_its_argument_in_place_cannot_corrupt_the_job():
+    job = Job(new_state("j"))
+
+    def bad(s):
+        s.roles["r"] = "nope"  # in place, and the result is invalid
+        return s
+
+    with pytest.raises(StateError, match="not in files"):
+        job.update(bad)
+    assert job.state.roles == {} and job.state.version == 0
+
+
+@pytest.mark.parametrize("bad", ["abc\n", "a\n", "ab.\n"])
+def test_job_id_with_trailing_newline_refused(bad):
+    with pytest.raises(StateError):
+        new_state(bad)
+    with pytest.raises(StateError, match="bad job_id"):
+        FileStore("x").load(bad)
+
+
+def test_sha_with_trailing_newline_refused():
+    with pytest.raises(StateError, match="64 lower-case"):
+        add_file(new_state("j"), "a", "x", SHA + "\n")
