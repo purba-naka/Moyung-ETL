@@ -55,7 +55,7 @@ Menambah dependency = riset dulu (alasan, ukuran, alternatif stdlib), catat di
 - Return: `dict` JSON-serializable. Teks ringkas di field `text`; selalu ada
   `truncated` + `next_offset` bila dipaginasi.
 - Budget output default <= ~6k token per panggilan.
-- Error dikembalikan sebagai `{"error": "...", "hint": "..."}`, bukan exception.
+- Error dikembalikan sebagai `{"error": "..."}` (pesan sudah memuat apa yang harus diubah; tanpa `hint` terpisah), bukan exception.
   Exception hanya untuk bug internal.
 - ID & urutan deterministik: `F1`, `F1.S12`, `F1.S12.R2`.
 - Docstring tool = deskripsi untuk LLM: singkat, sebut kapan dipakai, arti field output.

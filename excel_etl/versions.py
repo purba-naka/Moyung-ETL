@@ -26,6 +26,9 @@ class _Model(BaseModel):
     model_config = ConfigDict(frozen=True)
 
 
+MAX_NOTE = 500
+
+
 class Change(_Model):
     where: str
     kind: Literal["added", "removed", "changed"]
@@ -79,7 +82,7 @@ def diff_specs(old: PipelineSpec, new: PipelineSpec) -> tuple[Change, ...]:
 class SpecVersion(_Model):
     number: int  # 1, 2, 3 ...
     spec: PipelineSpec
-    note: str  # why this version exists (what was repaired)
+    note: str = Field(max_length=MAX_NOTE)  # why this version exists (what was repaired)
     diff: tuple[Change, ...]  # against the previous version; empty for version 1
 
 

@@ -108,6 +108,8 @@ def _fields(cls: type[Node]) -> str:
     def kind(p: dict[str, Any]) -> str:
         if "$ref" in p:
             ref = defs[p["$ref"].rsplit("/", 1)[-1]]
+            if "enum" in ref:  # a named choice list is shown as its choices
+                return kind(ref)
             inner = ", ".join(
                 f"{k}{'*' if k in ref.get('required', []) else ''}"
                 for k in ref.get("properties", {})
@@ -118,6 +120,8 @@ def _fields(cls: type[Node]) -> str:
         if "anyOf" in p:
             return " or ".join(kind(x) for x in p["anyOf"] if x.get("type") != "null")
         if p.get("type") == "array":
+            if "prefixItems" in p:  # a fixed-size list, such as a pair
+                return "[" + ", ".join(kind(x) for x in p["prefixItems"]) + "]"
             return f"[{kind(p.get('items', {})) or 'any'}]"
         if p.get("type") == "object":
             return "object"

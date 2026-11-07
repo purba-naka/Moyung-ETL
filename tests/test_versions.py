@@ -138,3 +138,16 @@ def test_a_stored_history_with_wrong_numbers_or_diff_is_refused() -> None:
     bad["versions"][1]["diff"] = []
     with pytest.raises(ValueError, match="diff"):
         SpecHistory.model_validate(bad)
+
+
+def test_history_refuses_a_note_over_the_cap_however_it_is_built():
+    import pytest as _pytest
+    from pydantic import ValidationError
+
+    from excel_etl.versions import MAX_NOTE
+
+    with _pytest.raises(ValidationError):
+        SpecHistory.start(_spec(), "x" * (MAX_NOTE + 1))
+    h = SpecHistory.start(_spec(), "x" * MAX_NOTE)
+    with _pytest.raises(ValidationError):
+        h.add(_spec(outputs={"o": {"input": "a"}}), "y" * (MAX_NOTE + 1))

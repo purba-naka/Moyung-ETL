@@ -347,3 +347,67 @@ def test_missing_version_error_has_no_repr_quotes(tools):
 def test_agent_tools_include_every_documented_tool(tools):
     names = {f.__name__ for f in tools.agent_tools()}
     assert {"lookup_knowledge", "ask_human", "pending_questions", "run_pipeline"} <= names
+
+
+def test_a_provider_that_raises_anything_is_a_host_fault_not_a_library_bug(tmp_path):
+    class Broken:
+        def open(self, file_id):
+            raise RuntimeError("disk on fire")
+
+    t = JobTools(Job(new_state("j")), Broken(), tmp_path)
+    r = t.add_file("a", "x.xlsx", "f")
+    assert "disk on fire" in r["error"] and "internal error" not in r["error"]
+    t.provider = Provider({"a": make_xlsx({"Sales": SALES})})
+    t.add_file("a", "x.xlsx", "f")
+    t.provider = Broken()
+    assert "internal error" not in t.workbook_map("F1")["error"]
+    assert "disk on fire" in t.save_spec(spec_json())["error"]
+
+
+def test_spec_note_is_capped_with_a_clean_message(tools):
+    r = tools.save_spec(spec_json(), "n" * 501)
+    assert r["error"] == "the note is 501 characters; keep it under 500"
+    assert tools.save_spec(spec_json(), "n" * 500)["saved"]
+    assert "validation error" not in tools.save_spec(spec_json(), "")["error"]
+
+
+def test_a_pydantic_error_is_described_not_dumped(tools, monkeypatch):
+    from pydantic import BaseModel
+
+    import excel_etl.tools as mod
+
+    class M(BaseModel):
+        n: int
+
+    def refuse(*a, **k):
+        M(n="x")  # raises ValidationError
+
+    monkeypatch.setattr(mod, "catalog", refuse)
+    err = tools.node_catalog()["error"]
+    assert err.startswith("n: ") and "validation error" not in err and "pydantic" not in err
+
+
+def test_a_refused_checkpoint_tells_the_agent_what_to_do_instead(tools):
+    tools.save_spec(spec_json())
+    err = tools.run_pipeline()["error"]
+    assert "needs a person's approval" in err and "use ask_human" in err
+    tools.approve("after_propose_datasets", "dina", "v1")
+    assert "ok" in tools.run_pipeline()
+    other = dict(SPEC, outputs={})
+    tools.save_spec(json.dumps(other), "no output")
+    assert "use ask_human" in tools.run_pipeline()["error"]  # stale approval too
+
+
+def test_other_pipeline_errors_get_no_approval_hint(tools):
+    assert "ask_human" not in tools.run_pipeline()["error"]  # no spec yet
+
+
+def test_pipeline_error_not_about_approval_has_no_hint(blobs, tmp_path):
+    blocker = tmp_path / "file"
+    blocker.write_text("x", encoding="utf-8")
+    t = JobTools(Job(new_state("j")), Provider(blobs), blocker)  # out_dir is a file
+    t.add_file("a", "jan.xlsx", "f")
+    t.save_spec(spec_json())
+    t.approve("after_propose_datasets", "dina", "v1")
+    err = t.run_pipeline()["error"]
+    assert err.startswith("out_dir: cannot use") and "ask_human" not in err

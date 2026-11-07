@@ -146,3 +146,17 @@ def test_config_error_names_the_valid_fields():
         "fields (* required): by: [string] = []; aggs*: [{name*, fn*, column, separator}]"
         in str(e.value)
     )
+
+
+def test_catalog_shows_named_choices_not_empty_braces():
+    from excel_etl.nodes import catalog, names
+
+    assert "value_type: date|" in catalog("unpivot") or "value_type: " in catalog("unpivot")
+    assert "{}" not in "\n".join(catalog(n) for n in names())
+    assert "keep_type: date|timestamp|bigint|double|boolean" in catalog("drop_rows")
+
+
+def test_catalog_shows_a_fixed_size_list_as_its_parts():
+    from excel_etl.nodes import catalog
+
+    assert "suffixes: [string, string] = None" in catalog("join")
