@@ -5,7 +5,8 @@ tables, irregular shapes), build an ETL pipeline in duckdb, run it to parquet/cs
 the same pipeline again when the workbook changes. The library holds no state, starts no
 server and imports no agent framework. The host wraps it.
 
-Read `AGENTS.md` for the rules, `DESIGN.md` for the design, `IMPLEMENTATION.md` for status.
+Read `HANDOVER.md` first if you are connecting this to a host. `AGENTS.md` has the rules,
+`DESIGN.md` the design, `IMPLEMENTATION.md` the status.
 
 ## What the host provides
 
