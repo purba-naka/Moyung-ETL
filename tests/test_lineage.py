@@ -166,3 +166,41 @@ def test_sample_lineage(sample_path) -> None:
     assert sheet_role(wb, "Daftar Kapal") == "source"
     assert region_role(wb, "(N) PKG", (3, 0, 237, 28)) == "source"  # R1: typed daily tons
     assert region_role(wb, "Per Bulan", (3, 77, 55, 164)) == "derived"
+
+
+def test_a_block_of_texts_is_a_source_but_one_label_or_one_row_is_not():
+    from excel_etl.inspect.lineage import region_role
+    from excel_etl.workbook import Workbook
+
+    book = Workbook.open(
+        make_xlsx({"S": [["Kode", "Nama"], ["a", "x"], ["b", "y"], [None, None], ["solo", None]]})
+    )
+    assert region_role(book, "S", (0, 0, 2, 1)) == "source"  # 2 columns, 3 rows of text
+    assert region_role(book, "S", (0, 0, 0, 1)) == "empty"  # one row
+    assert region_role(book, "S", (0, 0, 2, 0)) == "empty"  # one column
+    assert region_role(book, "S", (4, 0, 4, 0)) == "empty"  # one label
+    assert region_role(book, "S", (0, 0, 1, 1)) == "source"  # 4 texts is the least
+    assert region_role(book, "S", (1, 0, 1, 1)) == "empty"
+
+
+def test_the_text_table_guard_needs_two_rows_two_columns_and_four_texts():
+    from excel_etl.inspect.lineage import region_role
+    from excel_etl.workbook import Workbook
+
+    book = Workbook.open(
+        make_xlsx(
+            {
+                "S": [
+                    ["a", "b", "c", "d", "e"],
+                    ["f", None, None, None, None],
+                    ["g", None, None, None, None],
+                    ["h", None, None, None, None],
+                    ["i", None, None, None, None],
+                ]
+            }
+        )
+    )
+    assert region_role(book, "S", (0, 0, 0, 4)) == "empty"  # 5 texts in one row: no
+    assert region_role(book, "S", (0, 0, 4, 0)) == "empty"  # 5 texts in one column: no
+    assert region_role(book, "S", (0, 0, 1, 1)) == "empty"  # a 2x2 box holding 3 texts: no
+    assert region_role(book, "S", (0, 0, 1, 2)) == "source"  # 2x3 holding 4 texts: yes

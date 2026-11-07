@@ -148,7 +148,7 @@ def test_approval_for_an_older_version_does_not_cover_the_next(tools):
     other = dict(SPEC, outputs={"t2": {"input": "by_item"}})
     assert tools.save_spec(json.dumps(other), "second output")["version"] == 2
     err = tools.run_pipeline()["error"]
-    assert "approved for 'v1', now it is 'v2'" in err
+    assert "approved for 'v1', but this is 'v2'" in err
 
 
 def test_save_spec_refuses_a_spec_that_does_not_validate(tools):
@@ -474,3 +474,37 @@ def test_cut_text_says_truncated_and_has_a_next_offset_key(tools, monkeypatch):
     assert r["truncated"] is True and "next_offset" in r
     ok = tools.pending_questions()
     assert "truncated" not in ok
+
+
+def test_approve_without_a_ref_covers_the_saved_spec_version(tools):
+    assert tools.save_spec(spec_json())["saved"]
+    r = tools.approve("after_propose_datasets", "dina")  # the host forgot the ref
+    assert r["text"] == "after_propose_datasets approved by dina for v1"
+    assert tools.run_pipeline()["ok"]
+    other = dict(SPEC, outputs={"t2": {"input": "by_item"}})
+    tools.save_spec(json.dumps(other), "second output")
+    assert "approved for 'v1', but this is 'v2'" in tools.run_pipeline()["error"]
+    assert "for v2" in tools.approve("after_propose_datasets", "dina")["text"]
+    assert tools.run_pipeline()["ok"]
+
+
+def test_approve_with_an_explicit_ref_is_kept_and_without_a_spec_stays_empty(tools):
+    assert "for v7" in tools.approve("after_spec", "dina", "v7")["text"]
+    assert tools.job.state.hitl.approvals["after_spec"].ref == "v7"
+    assert tools.approve("after_run", "dina")["text"] == "after_run approved by dina"
+    assert tools.job.state.hitl.approvals["after_run"].ref is None  # no spec saved yet
+
+
+def test_a_missing_ref_in_an_old_approval_is_named_plainly(tools):
+    tools.save_spec(spec_json())
+    tools.job.update(
+        lambda s: s.model_copy(
+            update={
+                "hitl": __import__("excel_etl.hitl", fromlist=["approve"]).approve(
+                    s.hitl, "after_propose_datasets", "dina"
+                )
+            }
+        )
+    )
+    err = tools.run_pipeline()["error"]
+    assert "approved for no version, but this is 'v1'" in err and "None" not in err

@@ -161,7 +161,9 @@ class FileStore:
         for attempt in range(50):
             try:
                 return path.read_text(encoding="utf-8-sig")  # a BOM from an editor is harmless
-            except FileNotFoundError:
+            except (FileNotFoundError, NotADirectoryError):
+                # Linux says NotADirectoryError where Windows says FileNotFoundError when a
+                # parent is a file; either way nothing was saved under this id
                 return None
             except PermissionError as e:
                 # Windows refuses a read for a few milliseconds while a save swaps the file

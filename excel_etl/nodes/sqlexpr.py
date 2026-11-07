@@ -59,8 +59,11 @@ _DENIED_FUNCTIONS = frozenset(
         "which_secret", "duckdb_secrets", "pragma_database_size", "current_database",
         "current_schema", "current_schemas", "current_catalog",
         # raise an error on demand, or take unbounded time or memory
-        "error", "sleep_ms", "repeat", "range", "generate_series", "list_resize",
-        "array_resize", "lpad", "rpad", "random_bytes",
+        "error", "sleep_ms", "pg_sleep", "pg_sleep_for", "pg_sleep_until", "sleep", "repeat",
+        "range", "generate_series", "list_resize", "array_resize", "lpad", "rpad",
+        "random_bytes",
+        # tell the caller about the machine or the server version
+        "version", "duckdb_version", "pg_backend_pid", "txid_current", "current_query",
         # not reproducible: a rerun of the same spec would give other data
         "random", "uuid", "gen_random_uuid", "uuidv4", "uuidv7", "now", "current_timestamp",
         "current_date", "current_time", "today", "get_current_timestamp",

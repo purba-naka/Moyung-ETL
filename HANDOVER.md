@@ -49,7 +49,7 @@ each one gives a flat schema (checked for all of them: no `anyOf`, `oneOf`, `$re
 |---|---|
 | `tools.add_file(file_id, filename, role)` | A person uploaded a file. Same id and role again = a new version of it. |
 | `tools.answer(question_id, reply)` | The person answered what the agent asked with `ask_human`. |
-| `tools.approve(checkpoint, by, ref)` | The person said "go". `ref` names what they approved, e.g. `v3`. |
+| `tools.approve(checkpoint, by, ref)` | The person said "go". `ref` names what they approved, e.g. `v3`; left empty it is the saved spec version at that moment. |
 | `tools.reload_job()` | After an error with `"conflict": true`: another writer saved first. Repeat the failed call after. |
 
 Do not give these four to the agent. If it could approve, the checkpoints would mean nothing.
@@ -71,7 +71,8 @@ Checkpoints (default policy):
 | `on_rebind_drift` | required | reminder in the `rebind_sources` text; does not block |
 
 Approvals are tied to `ref`: `run_pipeline` passes `v<N>` of the saved spec, so an approval given
-for `v1` does not cover `v2`. A question still waiting also blocks a required checkpoint.
+for `v1` does not cover `v2`. Approve after the spec is saved; an approval recorded before any spec
+exists has no version and is refused by `run_pipeline`. A question still waiting also blocks a required checkpoint.
 
 Change the policy and add context through `job.update`; there is no agent tool for it:
 

@@ -163,11 +163,14 @@ class JobTools:
     @_tool
     def approve(self, checkpoint: str, by: str, ref: str = "") -> dict:
         """Host: record that a person approved `checkpoint` (e.g. `after_propose_datasets`).
-        `ref` names what was approved, such as `v2` for a spec version."""
+        `ref` names what was approved, such as `v2` for a spec version. Left empty it is the
+        version of the spec saved now, because `run_pipeline` only accepts an approval given
+        for the version it runs (empty only when no spec is saved yet)."""
+        what = ref or (f"v{self._version()}" if self._state.history else "")
         self.job.update(
-            lambda s: s.model_copy(update={"hitl": approve(s.hitl, checkpoint, by, ref or None)})
+            lambda s: s.model_copy(update={"hitl": approve(s.hitl, checkpoint, by, what or None)})
         )
-        return {"text": f"{checkpoint} approved by {by}" + (f" for {ref}" if ref else "")}
+        return {"text": f"{checkpoint} approved by {by}" + (f" for {what}" if what else "")}
 
     @_tool
     def reload_job(self) -> dict:

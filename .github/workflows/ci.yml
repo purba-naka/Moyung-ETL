@@ -1,0 +1,24 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    # Windows and Linux both: a path that fails differently on the two (bug found in review)
+    # only shows up when both run.
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - run: uv sync --group dev
+      - run: uv run ruff check .
+      - run: uv run ruff format --check .
+      # -W error turns a bad escape such as "\d" into a failure even when a cached .pyc exists
+      - run: uv run python -W error -m compileall -q excel_etl tests
+      - run: uv run pytest -q

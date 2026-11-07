@@ -17,30 +17,40 @@ Perbarui setiap selesai satu item (lihat AGENTS.md §7).
 
 ## Struktur target
 
+Diperbarui 2026-11-08 agar sama dengan isi repo. Repo di GitHub bernama `Moyung-ETL`; paket Python
+dan folder kerjanya `excel-etl` (impor `excel_etl`).
+
 ```
 excel-etl/
-  AGENTS.md  IMPLEMENTATION.md  DESIGN.md
+  AGENTS.md  DESIGN.md  IMPLEMENTATION.md  README.md  HANDOVER.md
   pyproject.toml
+  .github/workflows/ci.yml   # ruff + pytest di Linux dan Windows
   excel_etl/
     __init__.py
-    workbook.py        # handle file: calamine + openpyxl lazy, cache sha256
+    workbook.py        # handle file: calamine + openpyxl lazy, cache sha256, sel error
     inspect/
-      __init__.py
-      regions.py       # deteksi region/header/total (port parse_excel/parser.py)
-      encode.py        # render teks untuk LLM (map, regions, compressed, raw, profile,
-                      #  find_text; compare_sheets menyusul di sini)
+      regions.py       # deteksi region/header/total (termasuk tabel semua-teks)
+      encode.py        # tampilan teks untuk LLM (map, regions, render, profile, find_text,
+                       #  compare_sheets, propose_datasets)
       lineage.py       # formula -> graf sheet, peran source/derived/mixed
     nodes/
-      __init__.py      # registry @node
-      excel.py         # flatten_header, fill_down, parse_hierarchy, unpivot(_groups), drop_rows, split_header_token
-      common.py        # select, rename, cast, filter, dedupe, sort, fill_missing, derive, join, union, group_by, pivot
-      io.py            # read_region, write_output
-    pipeline.py        # PipelineSpec, validate, run, rebind, BindReport
-    state.py           # JobState, Job, StateStore, FileStore, FileProvider
-    hitl.py            # HitlPolicy, PendingQuestion, ask_human, answer
+      base.py          # Node, @node, build, catalog, describe, NodeError
+      sqlexpr.py       # validasi ekspresi SQL skalar (daftar tolak fungsi)
+      source.py        # locate, read_location, read_region: tabel dari header anchor
+      general.py       # select, rename, cast, filter, derive, fill_missing, sort, dedupe
+      combine.py       # join, union, group_by, pivot
+      relops.py        # pembantu node multi-input (need, apply, shape)
+      excel.py         # drop_rows, fill_down, unpivot, unpivot_groups
+      labels.py        # parse_hierarchy, split_header_token
+    pipeline.py        # PipelineSpec, SheetRef/RegionRef/Source/Step/Output, parse_spec
+    engine.py          # validate, run, ValidationReport, RunReport, PipelineError
+    rebind.py          # rebind, BindRecord, BindReport
+    versions.py        # diff_specs, SpecHistory
+    hitl.py            # HitlPolicy, HitlState, ask_human, answer, approve, gate
     knowledge.py       # Knowledge, lookup_knowledge
-    quality.py         # assert + rekonsiliasi, RunReport
-    tools.py           # permukaan publik untuk agent
+    quality.py         # checks: not_null, unique, range, accepted_values, reconcile
+    state.py           # JobState, Job, StateStore, FileStore, FileProvider, open_files
+    tools.py           # JobTools: permukaan publik untuk agent dan host
   tests/
     conftest.py        # builder workbook sintetis, marker sample
     test_*.py
@@ -501,3 +511,4 @@ Tersisa:
 | 2026-11-07 | Bersihkan temuan P6 Fase 3-4. Pesan: `describe` menjelaskan nama tak valid dalam kata (bukan regex), list vs satu nama, key salah ('is not a setting here'). `RegionRef`/`Step`/`Output` didokumentasikan (header 2 baris `PARENT|LEAF`, `inputs` list vs `input` satu nama, `end`). `end` diparse satu tempat (`RegionRef.blank_gap`); `locate` menghitung `last` dan `below`, run memberi peringatan bila ada baris terisi setelah akhir tabel (grand total terpotong); `read_location` memuat dari lokasi yang sudah dicari (engine memanggil `locate` sekali). `ColumnExpect.type` aktif (`type_fits`: float menerima bilangan bulat) dan gagal sebagai issue, `group` dihapus (mati). Pesan drift memuat langkah berikut. `_State.counts` dibuang, `issue()` menghitung yang tak muat (`N more problem(s) not shown`) dan memotong dengan `...`; diff versi memotong di sekitar beda pertama (perubahan di ekor tak lagi tersembunyi). `missing_required` satu fungsi untuk engine dan rebind; helper privat lintas modul jadi publik. Contoh spec lengkap di README dijalankan oleh tes. Bug ditemukan sambil jalan: `lit` lokal menimpa fungsi saat rename (dipakai `sql_text`). 786 unit + 16 sampel; 13 mutasi mati. |
 | 2026-11-07 | Bersihkan temuan P6 Fase 3-5 dan 6. `state.py`: `FileStore.save` di bawah kunci `O_EXCL` (`_locked`; kunci basi 30 s diambil alih; menunggu 5 s lalu `StateError`), `_replace` dan `load` mengulang bila Windows menolak sesaat (tes banyak thread + pembaca serentak, 60x lari bersih), BOM diterima, `Job.reload`, `open_files(roles=)`. `tools.py`: tool host `reload_job`, `_open_all(spec)` hanya role yang dipakai, `per_version`, `_cap` selalu memberi `next_offset`. `quality.py`: `accepted_values` pada kolom angka dibanding sebagai angka (`_Bad` bila nilai spec bukan angka), `Side.where` (`check_expression` + `bind` seperti `filter`; `NodeError` diubah jadi `ValueError` agar `parse_spec` melapor `SpecError`). `engine.py`: `NodeStat.note` dari `Node.why_rows_change()` (filter, drop_rows, dedupe, join, union, group_by, pivot, unpivot), peringatan error cell (`Workbook.error_cells` dari XML `t="e"`, dihitung per tabel di `Location.errors`). Bug ditemukan sambil jalan: `\b` di string heredoc python menjadi karakter backspace (regex `_ERROR_CELL` rusak; tes menangkapnya); tes `open_files` memanggil `make_xlsx` dua kali sehingga hash beda (zip berisi timestamp). 33 tes baru; 29 mutasi mati. |
 | 2026-11-07 | `HANDOVER.md` (ringkasan serah): apa yang diberikan host, satu putaran agent, apa yang hanya boleh dipanggil host (`add_file`, `answer`, `approve`, `reload_job`), alur approval, tabel checkpoint dan siapa yang menegakkannya, jaminan, batasan, pertanyaan produk. `tests/test_handover.py` (9) menjaga klaimnya: tabel checkpoint = kode (default, `after_spec` hanya memblok bila `required`, `after_run` dan `on_rebind_drift` hanya mengingatkan, `after_workbook_map` belum dipakai), snippet pengaturan knowledge/policy dijalankan, jumlah tool dan angka batas (25 juta sel, 24000 char) cocok dengan kode. Tes menemukan satu kesalahan dokumen (mode `after_run` ditulis bebas, di kode `required_if_fail`); 7 mutasi dokumen/kode mati. |
+| 2026-11-08 | Perbaiki bug dari review AI eksternal (diverifikasi dulu satu per satu). (1) Tabel semua-teks (master/mapping) tak punya header terdeteksi karena `is_data` butuh angka: `regions._text_header` menerima baris atas sebagai header bila blok >= 4 baris, >= 2 kolom, tanpa angka dan tanpa formula, header teks unik, >= 3 dari 4 baris isi mostly terisi, dan header berhuruf tebal ATAU tak ada teks header yang berulang di bawah kolomnya; `lineage.region_role` memberi `source` pada blok teks >= 2x2 dengan >= 4 teks (satu label atau satu baris tetap `empty`). Diukur pada BALANSITAS: 3825 region, 0 sheet berubah. Awalnya 3 region berubah (potongan tabel angka: baris pengiriman) karena aturan tanpa syarat 'tanpa angka'; syarat itu ditambahkan setelah mengukur. (2) `FileStore.load` memperlakukan `NotADirectoryError` (Linux) sama dengan `FileNotFoundError` (Windows); tes `test_store_save_failure_keeps_job_state` tak lagi bergantung kode galat OS (mkdir ditolak lewat monkeypatch) + tes dua kode galat. (3) `JobTools.approve` tanpa `ref` memakai `v<N>` spec yang tersimpan; pesan 'approved for None' jadi 'approved for no version, but this is v1'. (4) `"^P\d$"` jadi raw string; `tests/test_source_hygiene.py` mengompilasi semua .py dengan peringatan terekam. Tambahan: sandbox menolak `pg_sleep`, `pg_sleep_for`, `pg_sleep_until`, `sleep`, `version`, `duckdb_version`, `pg_backend_pid`, `txid_current`, `current_query` (`pg_sleep(2)` terbukti menahan run 2 s; `current_date`/`current_user` adalah referensi kolom di parser, bukan fungsi, jadi tidak ditolak); `.github/workflows/ci.yml` (ruff, format, `compileall -W error`, pytest di ubuntu dan windows); 'Struktur target' disamakan dengan isi repo; README menyebut Moyung-ETL = excel-etl. 861 unit + 16 sampel; 24 mutasi mati (beberapa lolos dulu, dipertajam). Tes Linux sungguhan belum dijalankan (tak ada Linux di mesin ini): CI yang akan membuktikannya. |
