@@ -221,3 +221,82 @@ def test_two_row_header_is_named_parent_pipe_leaf_as_the_docs_say():
     ]
     doc = " ".join((RegionRef.__doc__ or "").split())
     assert "`Sales|Qty`" in doc and "PARENT|LEAF" in doc
+
+
+def _book_with_errors(cells: dict[str, str], rows):
+    """A workbook where the given cells hold Excel errors (t="e"), which openpyxl writes."""
+    import io
+
+    import openpyxl
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "S"
+    for r in rows:
+        ws.append(r)
+    for ref, err in cells.items():
+        ws[ref].value = err
+        ws[ref].data_type = "e"
+    buf = io.BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
+
+
+def _spec_for(sheet="S", anchor="Qty"):
+    import json
+
+    from excel_etl.pipeline import parse_spec
+
+    src = {"file_role": "f", "sheet": {"name": sheet}, "region": {"header_anchor": [anchor]}}
+    return parse_spec(json.dumps({"sources": {"s": src}}))
+
+
+def test_error_cells_in_the_table_are_counted_and_warned_about_not_silently_empty():
+    from excel_etl.engine import validate
+
+    rows = [["Item", "Qty"], ["a", 1], ["b", 2], ["c", 3]]
+    book = _book_with_errors({"B2": "#DIV/0!", "B4": "#N/A"}, rows)
+    rep = validate(_spec_for(), {"f": book})
+    assert rep.ok
+    (w,) = rep.warnings
+    assert "2 cell(s) hold an Excel error" in w and "fill_missing" in w
+
+
+def test_a_clean_table_and_errors_outside_the_table_give_no_warning():
+    from excel_etl.engine import validate
+
+    clean = _book_with_errors({}, [["Item", "Qty"], ["a", 1], ["b", 2]])
+    assert validate(_spec_for(), {"f": clean}).warnings == ()
+    rows = [["Item", "Qty"], ["a", 1], ["b", 2], [None, None], [None, None], ["x", None]]
+    outside = _book_with_errors({"B6": "#REF!"}, rows)  # below the table: the `below` warning
+    warns = validate(_spec_for(), {"f": outside}).warnings
+    assert not any("Excel error" in w for w in warns)
+    above = _book_with_errors({"A1": "#NAME?"}, [["Item", "Qty"], ["a", 1], ["b", 2]])
+    assert not any("Excel error" in w for w in validate(_spec_for(), {"f": above}).warnings)
+
+
+def test_error_cells_are_listed_by_the_workbook_and_formula_errors_are_not_confused_with_them():
+    from excel_etl.workbook import Workbook
+
+    book = _book_with_errors({"B2": "#DIV/0!"}, [["a", "b"], [1, 0], [2, 0]])
+    wb = Workbook.open(book)
+    assert wb.error_cells("S") == frozenset({(1, 1)})
+    with_formula = _book_with_errors({}, [["a", "b"], [1, "=1/0"], [2, 0]])
+    # a formula without a cached value is tracked as a formula, not as an error cell
+    assert Workbook.open(with_formula).error_cells("S") == frozenset()
+
+
+def test_an_error_cell_beside_the_table_is_not_counted():
+    from excel_etl.engine import validate
+
+    rows = [["Note", "Item", "Qty"], ["x", "a", 1], ["y", "b", 2]]
+    book = _book_with_errors({"A2": "#N/A"}, rows)  # column A is outside the table (Item, Qty)
+    spec = _spec_for(anchor="Qty")
+    # anchor Qty alone selects the table that holds Qty; Note is a neighbour column or part of it,
+    # so make the neighbour unambiguous with a gap column
+    rows = [["Note", None, "Item", "Qty"], ["x", None, "a", 1], ["y", None, "b", 2]]
+    book = _book_with_errors({"A2": "#N/A"}, rows)
+    rep = validate(spec, {"f": book})
+    assert rep.ok and not any("Excel error" in w for w in rep.warnings)
+    inside = _book_with_errors({"D2": "#N/A"}, rows)
+    assert any("1 cell(s) hold an Excel error" in w for w in validate(spec, {"f": inside}).warnings)

@@ -92,6 +92,11 @@ class Node:
     def __init__(self, config: Any) -> None:
         self.config = config
 
+    def why_rows_change(self) -> str:
+        """In a few words, why this node may return fewer (or more) rows than it read, for
+        the run report. Empty when it never changes the number of rows."""
+        return ""
+
     def infer_schema(self, inputs: list[Schema]) -> Schema:
         raise NotImplementedError
 

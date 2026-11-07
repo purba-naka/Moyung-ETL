@@ -19,9 +19,11 @@ compare-and-set (the `StateStore` protocol is two methods).
 
 from __future__ import annotations
 
+import contextlib
 import os
 import re
-from collections.abc import Callable
+import time
+from collections.abc import Callable, Iterable, Iterator
 from pathlib import Path
 from typing import Protocol
 
@@ -39,6 +41,8 @@ from excel_etl.workbook import Workbook
 _JOB_ID = re.compile(r"[a-z0-9](?:[a-z0-9_.-]{0,98}[a-z0-9_-])?")
 _SHA = re.compile(r"[0-9a-f]{64}")
 _MAX_FILES = 50
+_LOCK_WAIT = 5.0  # seconds a save waits for another writer before giving up
+_STALE = 30.0  # seconds after which a lock file is taken to be left by a dead process
 
 
 class StateError(ValueError):
@@ -128,6 +132,19 @@ class StateStore(Protocol):
         is not `expected_version`."""
 
 
+def _replace(tmp: Path, path: Path) -> None:
+    """`os.replace`, tried again for a moment: on Windows it fails with 'access denied' while
+    a reader has the target open, which is over in milliseconds."""
+    for attempt in range(50):
+        try:
+            os.replace(tmp, path)
+            return
+        except PermissionError:
+            if attempt == 49:
+                raise
+            time.sleep(0.01)
+
+
 class FileStore:
     """One JSON file per job in a directory, for development and tests."""
 
@@ -141,30 +158,76 @@ class FileStore:
 
     def load(self, job_id: str) -> str | None:
         path = self._path(job_id)
-        try:
-            return path.read_text(encoding="utf-8")
-        except FileNotFoundError:
-            return None
-        except OSError as e:
-            raise StateError(f"cannot read {path.name}: {e}") from None
+        for attempt in range(50):
+            try:
+                return path.read_text(encoding="utf-8-sig")  # a BOM from an editor is harmless
+            except FileNotFoundError:
+                return None
+            except PermissionError as e:
+                # Windows refuses a read for a few milliseconds while a save swaps the file
+                if attempt == 49:
+                    raise StateError(f"cannot read {path.name}: {e}") from None
+                time.sleep(0.01)
+            except OSError as e:
+                raise StateError(f"cannot read {path.name}: {e}") from None
+        return None  # unreachable: the loop returns or raises
 
     def save(self, job_id: str, state_json: str, expected_version: int) -> None:
         path = self._path(job_id)
-        stored = self.load(job_id)
-        have = 0 if stored is None else _version_of(stored, path.name)
-        if have != expected_version:
-            raise StateConflict(
-                f"job {job_id!r} is at version {have} in the store, not {expected_version}; "
-                "someone else changed it"
-            )
-        tmp = path.with_name(path.name + ".part")
         try:
             self.dir.mkdir(parents=True, exist_ok=True)
-            tmp.write_text(state_json, encoding="utf-8")
-            os.replace(tmp, path)
         except OSError as e:
-            tmp.unlink(missing_ok=True)
             raise StateError(f"cannot write {path.name}: {e}") from None
+        with self._locked(path):  # check and replace happen under one lock, across processes
+            stored = self.load(job_id)
+            have = 0 if stored is None else _version_of(stored, path.name)
+            if have != expected_version:
+                raise StateConflict(
+                    f"job {job_id!r} is at version {have} in the store, not {expected_version}; "
+                    "someone else changed it"
+                )
+            tmp = path.with_name(path.name + ".part")
+            try:
+                tmp.write_text(state_json, encoding="utf-8")
+                _replace(tmp, path)
+            except OSError as e:
+                tmp.unlink(missing_ok=True)
+                raise StateError(f"cannot write {path.name}: {e}") from None
+
+    @contextlib.contextmanager
+    def _locked(self, path: Path) -> Iterator[None]:
+        """A lock file made with O_EXCL (atomic on every OS). A lock older than `_STALE`
+        seconds belongs to a process that died and is taken over."""
+        lock = path.with_name(path.name + ".lock")
+        deadline = time.monotonic() + _LOCK_WAIT
+        while True:
+            try:
+                fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+                os.close(fd)
+                break
+            except FileExistsError:
+                try:
+                    if time.time() - lock.stat().st_mtime > _STALE:
+                        lock.unlink(missing_ok=True)
+                        continue
+                except OSError:
+                    continue  # it vanished between the two calls: try again
+                if time.monotonic() > deadline:
+                    raise StateError(
+                        f"{path.name} is locked by another writer; try again in a moment"
+                    ) from None
+                time.sleep(0.01)
+            except PermissionError:
+                # Windows: the holder is deleting the lock file right now; try again
+                if time.monotonic() > deadline:
+                    raise StateError(f"{path.name} is locked by another writer") from None
+                time.sleep(0.01)
+            except OSError as e:
+                raise StateError(f"cannot lock {path.name}: {e}") from None
+        try:
+            yield
+        finally:
+            lock.unlink(missing_ok=True)
 
 
 def _version_of(text: str, where: str) -> int:
@@ -205,6 +268,16 @@ class Job:
         if job.state.job_id != job_id:
             raise StateError(f"stored state is for job {job.state.job_id!r}, not {job_id!r}")
         return job
+
+    def reload(self) -> JobState:
+        """Read the stored state again (after a `StateConflict`). Without a store there is
+        nothing to read and the job is left as it is."""
+        if self._store is None:
+            return self.state
+        text = self._store.load(self._state.job_id)
+        if text is not None:
+            self._state = Job.from_state(text)._state
+        return self.state
 
     @property
     def state(self) -> JobState:
@@ -267,7 +340,11 @@ def open_ref(ref: FileRef, provider: FileProvider, role: str | None = None) -> W
     return wb
 
 
-def open_files(state: JobState, provider: FileProvider) -> dict[str, Workbook]:
-    """`file_role -> Workbook` for `run` / `validate` / `rebind`."""
+def open_files(
+    state: JobState, provider: FileProvider, roles: Iterable[str] | None = None
+) -> dict[str, Workbook]:
+    """`file_role -> Workbook` for `run` / `validate` / `rebind`. With `roles` only those are
+    opened (a spec that uses one role of a job with many files does not pay for the rest)."""
     by_id = {f.id: f for f in state.files}
-    return {role: open_ref(by_id[fid], provider, role) for role, fid in state.roles.items()}
+    want = state.roles if roles is None else {r: state.roles[r] for r in roles if r in state.roles}
+    return {role: open_ref(by_id[fid], provider, role) for role, fid in want.items()}

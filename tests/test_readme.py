@@ -53,7 +53,12 @@ def test_tools_table_matches_the_code():
     t = JobTools(Job(new_state("j")), object())
     table = README.split("## Tools")[1].split("\n\nA result")[0]
     named = set(re.findall(r"`([a-z_]+)`", table))
-    exposed = {f.__name__ for f in t.agent_tools()} | {"add_file", "answer", "approve"}
+    exposed = {f.__name__ for f in t.agent_tools()} | {
+        "add_file",
+        "answer",
+        "approve",
+        "reload_job",
+    }
     assert named == exposed
 
 

@@ -115,6 +115,16 @@ class Join(Node):
         unique([c.name for c in cols], "output column", self.name)
         return out, cols
 
+    def why_rows_change(self) -> str:
+        how = self.config.how
+        lost = {
+            "inner": "rows with no match on either side are dropped",
+            "left": "right rows with no match are dropped",
+            "right": "left rows with no match are dropped",
+            "full": "no row is dropped",
+        }[how]
+        return f"{how} join: {lost}; a key with several matches repeats the row"
+
     def infer_schema(self, inputs: list[Schema]) -> Schema:
         for s in inputs:
             check_reserved(s, self.name)
@@ -212,6 +222,9 @@ class Union(Node):
             )
         return out
 
+    def why_rows_change(self) -> str:
+        return "inputs stacked" + ("; repeated rows dropped" if self.config.distinct else "")
+
     def infer_schema(self, inputs: list[Schema]) -> Schema:
         for s in inputs:
             check_reserved(s, self.name)
@@ -294,6 +307,10 @@ class GroupBy(Node):
     class Config(NodeConfig):
         by: list[str] = []
         aggs: list[Agg] = Field(min_length=1)
+
+    def why_rows_change(self) -> str:
+        by = ", ".join(self.config.by) or "the whole table"
+        return f"one row per {by}"
 
     def _plan(self, schema: Schema) -> list[tuple[Agg, str, str]]:
         """(agg, sql expression over the column, output type)."""
@@ -442,6 +459,10 @@ class Pivot(Node):
         if by:
             sql += f" GROUP BY {', '.join(by)} ORDER BY min(__pos)"
         return sql
+
+    def why_rows_change(self) -> str:
+        by = ", ".join(self.config.by) or "the whole table"
+        return f"one row per {by}, values spread over columns"
 
     def infer_schema(self, inputs: list[Schema]) -> Schema:
         (schema,) = inputs

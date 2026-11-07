@@ -715,3 +715,73 @@ def test_a_long_issue_message_is_cut_with_dots(book) -> None:
     st2 = _State()
     st2.issue("x", "short")
     assert st2.issues[0].message == "short"
+
+
+def _stat_notes(spec, book, tmp_path):
+    rep = run(spec, {"f": book}, tmp_path)
+    assert rep.status == "ok", rep.text()
+    return {n.id: n.note for n in rep.nodes}, rep
+
+
+def test_run_report_says_why_rows_were_lost_only_where_the_count_changed(tmp_path) -> None:
+    book = make_xlsx(
+        {"S": [["Item", "Qty"], ["pen", 2], ["pen", 2], ["ink", None], ["Total", 9], ["pad", 0]]}
+    )
+    src = _src("S", "Qty")
+    steps = [
+        {
+            "id": "nolabel",
+            "node": "drop_rows",
+            "inputs": ["s"],
+            "config": {"blank": False, "column": "Item", "drop_regex": "^Total$"},
+        },
+        {"id": "pos", "node": "filter", "inputs": ["nolabel"], "config": {"where": "Qty > 0"}},
+        {"id": "uniq", "node": "dedupe", "inputs": ["pos"], "config": {"keys": ["Item"]}},
+        {"id": "same", "node": "select", "inputs": ["uniq"], "config": {"columns": ["Item"]}},
+    ]
+    notes, rep = _stat_notes(_spec(sources={"s": src}, steps=steps), book, tmp_path)
+    assert notes["s"] == "" and notes["same"] == ""  # a source and a pass-through say nothing
+    assert notes["nolabel"] == "dropped: Item matching /^Total$/"
+    assert notes["pos"] == "kept rows where Qty > 0"
+    assert notes["uniq"] == "repeated rows dropped (same Item)"
+    assert "    kept rows where Qty > 0" in rep.text()
+    assert "same|select" in rep.text() and rep.text().count("    ") >= 3
+
+
+def test_run_report_notes_for_join_group_pivot_union_unpivot(tmp_path) -> None:
+    book = make_xlsx(
+        {
+            "A": [["K", "V"], ["a", 1], ["b", 2], ["z", 3]],
+            "B": [["K", "W"], ["a", 10], ["b", 20]],
+            "Wide": [["Id", "Jan", "Feb"], ["x", 1, None], ["y", 2, 3]],
+        }
+    )
+    srcs = {"a": _src("A", "V"), "b": _src("B", "W"), "w": _src("Wide", "Jan")}
+    steps = [
+        {"id": "j", "node": "join", "inputs": ["a", "b"], "config": {"on": ["K"], "how": "inner"}},
+        {
+            "id": "g",
+            "node": "group_by",
+            "inputs": ["a"],
+            "config": {"by": [], "aggs": [{"name": "T", "fn": "sum", "column": "V"}]},
+        },
+        {
+            "id": "u",
+            "node": "unpivot",
+            "inputs": ["w"],
+            "config": {"keep": ["Id"], "columns": ["Jan", "Feb"]},
+        },
+        {"id": "un", "node": "union", "inputs": ["a", "a"], "config": {"distinct": True}},
+    ]
+    notes, _ = _stat_notes(_spec(sources=srcs, steps=steps), book, tmp_path)
+    assert "inner join: rows with no match on either side are dropped" in notes["j"]
+    assert notes["g"] == "one row per the whole table"
+    assert notes["u"] == "one row per value column; empty values give no row"
+    assert notes["un"] == "inputs stacked; repeated rows dropped"
+
+
+def test_a_step_that_kept_every_row_has_no_note(tmp_path) -> None:
+    book = make_xlsx({"S": [["Item", "Qty"], ["pen", 2], ["ink", 3]]})
+    steps = [{"id": "all", "node": "filter", "inputs": ["s"], "config": {"where": "Qty > 0"}}]
+    notes, rep = _stat_notes(_spec(sources={"s": _src("S", "Qty")}, steps=steps), book, tmp_path)
+    assert notes["all"] == "" and "kept rows" not in rep.text()

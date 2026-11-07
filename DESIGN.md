@@ -236,10 +236,11 @@ di mode mana pun.
 
 - Assert per tabel (`checks` di spec, dinamai seperti source): `not_null`, `unique`, `range`, `accepted_values`, `reconcile`. `severity: error` menggagalkan run sebelum file apa pun ditulis; `warn` hanya dilaporkan.
 - `reconcile`: satu agregat (sum/count/avg/min/max) tabel kiri vs tabel kanan atau angka, opsional
-  per grup (`by`), toleransi `abs_tol`/`rel_tol`. Agent menyusunnya sendiri; mengisi otomatis dari
-  baris TOTAL Excel / `formula_lineage` belum ada.
+  per grup (`by`), toleransi `abs_tol`/`rel_tol`. Tiap sisi boleh `where` (ekspresi SQL skalar, aturan
+  sama dengan node `filter`), mis. baris `Total` sebuah sheet vs jumlah baris di atasnya. Agent
+  menyusunnya sendiri; mengisi otomatis dari `formula_lineage` belum ada.
 - `RunReport`: baris in/out per node, hasil check (`checks`: lulus, jumlah baris buruk, pesan).
-  Belum ada: baris dibuang + alasan per node.
+  Tiap `NodeStat` punya `note`: alasan jumlah baris berubah (`Node.why_rows_change`), hanya bila berubah.
 
 ### Sheet sumber vs turunan
 

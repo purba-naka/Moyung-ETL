@@ -141,6 +141,7 @@ class Location:
     grid: SheetGrid
     last: int  # last row of the table (0-based), by the `end` rule of the source
     below: int  # filled rows after `last`: data the `end` rule cut off
+    errors: int  # cells of the table holding an Excel error; they are read as NULL
 
 
 def locate(wb: Workbook, source: Source) -> Location:
@@ -153,7 +154,9 @@ def locate(wb: Workbook, source: Source) -> Location:
     shape = Region(reg.box, hdr, hdr[-1] + 1, (), (), "rows", (), ())
     names = tuple(_unique(column_names(g, shape, sep_safe=False)))
     last, below = _table_end(g, hdr[-1], left, right, source.region.blank_gap)
-    return Location(sheet, how, top, left, right, names, g, last, below)
+    bad = wb.error_cells(sheet) or frozenset()
+    errors = sum(1 for r, c in bad if hdr[-1] < r <= last and left <= c <= right)
+    return Location(sheet, how, top, left, right, names, g, last, below, errors)
 
 
 def _table_end(g: SheetGrid, header_last: int, left: int, right: int, gap: int) -> tuple[int, int]:

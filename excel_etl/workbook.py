@@ -50,7 +50,8 @@ _NS_PKG = "{http://schemas.openxmlformats.org/package/2006/relationships}"
 # ponytail: assumes the default namespace (no "x:" prefix), which is what Excel and openpyxl
 # write, and that `r=` is the first attribute of <c>; upgrade: an iterparse scan if a
 # producer breaks either.
-_CELL = re.compile(rb'<c r="([A-Z]+)(\d+)"[^>]*><([fvi])')
+_CELL = re.compile(rb'<c r="([A-Z]+)(\d+)"([^>]*)><([fvi])')
+_ERROR_CELL = re.compile(rb't="e"')
 # A formula cell: group 3 = <f> attributes, group 4 = formula text (empty for a shared child).
 # Formula text never holds a raw `<` (it is written as &lt;), so [^<]* ends at </f> without the
 # backtracking a lazy `.*?` would do over 100 MB of XML.
@@ -95,11 +96,13 @@ class WorkbookError(ValueError):
 @dataclass(frozen=True, slots=True)
 class _Scan:
     formulas: frozenset[tuple[int, int]]
+    errors: frozenset[tuple[int, int]]  # cells holding #DIV/0!, #N/A ...; calamine shows ''
     cells: int  # size of the A1..last-cell rectangle, which is what calamine allocates
 
 
 def _scan_sheet(xml: bytes) -> _Scan:
     formulas: set[tuple[int, int]] = set()
+    errors: set[tuple[int, int]] = set()
     letters: dict[bytes, int] = {}
     max_row = max_col = 0
     for m in _CELL.finditer(xml):
@@ -107,10 +110,12 @@ def _scan_sheet(xml: bytes) -> _Scan:
         col = letters.get(m[1])
         if col is None:
             col = letters[m[1]] = col_index(m[1])
-        if m[3] == b"f":
+        if m[4] == b"f":
             formulas.add((row - 1, col))
+        if _ERROR_CELL.search(m[3]):
+            errors.add((row - 1, col))
         max_row, max_col = max(max_row, row), max(max_col, col + 1)
-    return _Scan(frozenset(formulas), max_row * max_col)
+    return _Scan(frozenset(formulas), frozenset(errors), max_row * max_col)
 
 
 def _formula_texts(xml: bytes):
@@ -234,7 +239,7 @@ class Workbook:
                     self._paths = _sheet_paths(self._data)
                 path = self._paths.get(sheet)
                 if path is None:  # chartsheet: no cells
-                    self._scans[sheet] = _Scan(frozenset(), 0)
+                    self._scans[sheet] = _Scan(frozenset(), frozenset(), 0)
                 else:
                     with zipfile.ZipFile(io.BytesIO(self._data)) as z:
                         self._scans[sheet] = _scan_sheet(_read_part(z, path))
@@ -251,6 +256,13 @@ class Workbook:
         """
         scan = self._scan(sheet)
         return None if scan is None else scan.formulas
+
+    def error_cells(self, sheet: str) -> frozenset[tuple[int, int]] | None:
+        """Positions of cells that hold an Excel error (#DIV/0!, #N/A, ...), from the sheet XML.
+        None for .xls. calamine shows them as empty text, so they read as NULL everywhere;
+        this is how a run can say that some of those NULLs were errors."""
+        scan = self._scan(sheet)
+        return None if scan is None else scan.errors
 
     def formulas(self, sheet: str) -> dict[tuple[int, int], str] | None:
         """Formula text per cell, straight from the sheet XML (no `=`). None for .xls.

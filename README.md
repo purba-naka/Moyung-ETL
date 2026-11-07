@@ -40,7 +40,8 @@ saved_json = tools.job.state_json()  # store this after every agent turn
 
 `file_role` in a spec is a free label ("main"); `add_file(..., role="main")` says which upload
 plays it. A new month's file: `add_file` again with the same id and the same role, then
-`rebind_sources`.
+`rebind_sources`. After a conflict error call `tools.reload_job()` and repeat the call.
+Pass `per_version=True` to `JobTools` to write each run into `out_dir/v<N>`.
 
 ## Give the tools to an agent
 
@@ -64,7 +65,7 @@ turn). The generated schema of all tools is flat: no `anyOf`, `oneOf` or `$ref`.
 the same functions work through its function-to-schema helper; `tests/test_tools.py` checks
 that argument types stay primitive, enum or list of strings.
 
-**Not for the agent**: `tools.add_file`, `tools.answer`, `tools.approve`. They are what a person
+**Not for the agent**: `tools.add_file`, `tools.answer`, `tools.approve`, `tools.reload_job`. They are what a person
 does through your UI. When the agent calls `ask_human` the tool returns a `question_id` and the
 agent must stop; show the question, then call `tools.answer(question_id, reply)` and start the
 next turn.
@@ -123,6 +124,11 @@ an output's `input` is one name. Column names are copied from a tool result, nev
 }
 ```
 
+To compare a sheet's own total row with the rows above it, give each side a `where`
+(`"where": "\"Item\" <> 'Total'"` on one side, `"\"Item\" = 'Total'"` on the other). Excel error
+cells (`#DIV/0!`) are read as empty and the run warns how many there were. A step that
+changes the row count says why in the run report.
+
 A two-row header (a `Sales` over `Qty`) needs `"header_rows": 2` and gives columns named
 `Sales|Qty`. A total row below a gap of two empty rows needs a larger `end`
 (`until_blank_rows(5)`); a run warns when filled rows lie below the end.
@@ -135,7 +141,7 @@ A two-row header (a `Sales` over `Qty`) needs `"header_rows": 2` and gives colum
 | Write a pipeline | `node_catalog`, `save_spec`, `get_spec`, `validate_spec`, `spec_history` |
 | Run and recycle | `run_pipeline`, `last_run`, `rebind_sources` |
 | People and context | `ask_human`, `pending_questions`, `lookup_knowledge`, `job_summary`, `list_files` |
-| Host only | `add_file`, `answer`, `approve` |
+| Host only | `add_file`, `answer`, `approve`, `reload_job` |
 
 A result is `{"text": ...}`, with `truncated` and `next_offset` when paged, or `{"error": ...}`.
 `save_spec` also returns `saved` and `version`; `validate_spec`, `rebind_sources` and

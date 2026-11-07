@@ -492,3 +492,163 @@ def test_range_valid_bounds_for_time_and_timestamp():
     assert r.bad_rows == 1
     (r,), _ = one({"c": chk(kind="range", table="t", column="ts", min="2026-01-02")}, con, sc)
     assert r.bad_rows == 1
+
+
+def test_accepted_values_on_numbers_compares_numbers_not_text():
+    con, sc = world(
+        i="CREATE TABLE i AS SELECT * FROM (VALUES (1),(2),(3),(NULL)) v(x)",
+        f="CREATE TABLE f AS SELECT * FROM (VALUES (1.0),(2.5),(3.0)) v(x)",
+        d="CREATE TABLE d AS SELECT * FROM (VALUES (1.50::DECIMAL(5,2)),(2.00::DECIMAL(5,2))) v(x)",
+    )
+    # 1.0 in the file, 1 in the spec (and the reverse): the same number
+    (r,), _ = one(
+        {"c": chk(kind="accepted_values", table="f", column="x", values=[1, 2.5, 3])}, con, sc
+    )
+    assert r.passed, r.message
+    (r,), _ = one(
+        {"c": chk(kind="accepted_values", table="i", column="x", values=[1.0, 2.0, 3.0])}, con, sc
+    )
+    assert r.passed, r.message
+    (r,), _ = one({"c": chk(kind="accepted_values", table="i", column="x", values=[1, 2])}, con, sc)
+    assert r.bad_rows == 1 and "3" in r.message
+    (r,), _ = one(
+        {"c": chk(kind="accepted_values", table="d", column="x", values=[1.5, 2])}, con, sc
+    )
+    assert r.passed, r.message
+    (r,), _ = one({"c": chk(kind="accepted_values", table="f", column="x", values=[1, 3])}, con, sc)
+    assert r.bad_rows == 1  # 2.5
+
+
+def test_accepted_values_text_in_the_spec_for_a_number_column_is_a_spec_mistake():
+    con, sc = world(t="CREATE TABLE t AS SELECT * FROM (VALUES (1),(2)) v(x)")
+    for bad in (["one"], [True], ["1", "x"]):
+        _, broken = run_checks(
+            {"c": chk(kind="accepted_values", table="t", column="x", values=bad)}, con, sc
+        )
+        assert "must be numbers" in broken["c"], bad
+    # a numeric string is fine: "1" is a number written as text
+    (r,), _ = one(
+        {"c": chk(kind="accepted_values", table="t", column="x", values=["1", "2"])}, con, sc
+    )
+    assert r.passed
+
+
+def test_accepted_values_on_text_still_compares_text_so_zero_padded_codes_stay_distinct():
+    con, sc = world(t="CREATE TABLE t AS SELECT * FROM (VALUES ('01'),('1'),('A')) v(code)")
+    (r,), _ = one(
+        {"c": chk(kind="accepted_values", table="t", column="code", values=["01", "A"])}, con, sc
+    )
+    assert r.bad_rows == 1 and "seen: 1" in r.message  # only the unpadded 1 is outside
+    (r,), _ = one(
+        {"c": chk(kind="accepted_values", table="t", column="code", values=[1, "01", "A"])}, con, sc
+    )
+    assert r.passed  # the number 1 listed for a text column is the text '1'
+
+
+def test_accepted_values_number_written_two_ways_is_one_number():
+    con, sc = world(t="CREATE TABLE t AS SELECT * FROM (VALUES (2.50::DECIMAL(5,2)),(10)) v(x)")
+    (r,), _ = one(
+        {"c": chk(kind="accepted_values", table="t", column="x", values=[2.5, 1e1])}, con, sc
+    )
+    assert r.passed, r.message  # as text this is '2.50' vs '2.5' and '10' vs '10.0'
+
+
+def test_reconcile_the_total_row_of_a_sheet_against_the_rows_above_it():
+    con, sc = world(
+        t="CREATE TABLE t AS SELECT * FROM (VALUES ('pen',2.0),('ink',1.0),('pad',3.0),('Total',6.0)) v(Item, Qty)"
+    )
+    c = rec(
+        left={"table": "t", "column": "Qty", "where": "\"Item\" <> 'Total'"},
+        right={"table": "t", "column": "Qty", "where": "\"Item\" = 'Total'"},
+    )
+    (r,), _ = one({"c": c}, con, sc)
+    assert r.passed, r.message
+    con.execute("UPDATE t SET Qty = 7 WHERE Item = 'Total'")
+    (r,), _ = one({"c": c}, con, sc)
+    assert not r.passed and "= 6.0 but" in r.message and "= 7.0" in r.message
+    assert "where \"Item\" <> 'Total'" in r.message  # the message says which rows were summed
+
+
+def test_reconcile_where_per_group_with_a_different_total_marker_per_table():
+    con, sc = world(
+        d="CREATE TABLE d AS SELECT * FROM (VALUES ('jan','x',1.0),('jan','y',2.0),('feb','x',4.0),('JUMLAH','',3.0)) v(m,k,v)",
+        s="CREATE TABLE s AS SELECT * FROM (VALUES ('jan',3.0),('feb',4.0)) v(m,total)",
+    )
+    c = rec(
+        left={"table": "d", "column": "v", "where": "m <> 'JUMLAH'"},
+        right={"table": "s", "column": "total"},
+        by=["m"],
+    )
+    (r,), _ = one({"c": c}, con, sc)
+    assert r.passed, r.message
+
+
+def test_reconcile_where_that_matches_no_row_sums_to_zero_and_count_is_zero():
+    con, sc = world(t="CREATE TABLE t AS SELECT * FROM (VALUES ('a',1.0)) v(k,v)")
+    c = rec(left={"table": "t", "column": "v", "where": "k = 'none'"}, value=0)
+    assert one({"c": c}, con, sc)[0][0].passed
+    c = rec(left={"table": "t", "agg": "count", "where": "k = 'none'"}, value=0)
+    assert one({"c": c}, con, sc)[0][0].passed
+
+
+@pytest.mark.parametrize(
+    "where,msg",
+    [
+        ("nope = 1", "where of 't'"),  # unknown column
+        ("v + 1", "not true/false"),  # not a boolean
+    ],
+)
+def test_reconcile_where_mistakes_are_planning_errors(where, msg):
+    con, sc = world(t="CREATE TABLE t AS SELECT 'a' AS k, 1.0 AS v")
+    c = rec(left={"table": "t", "column": "v", "where": where}, value=1)
+    assert msg in check_schema({"c": c}, sc)["c"]
+    _, broken = run_checks({"c": c}, con, sc)
+    assert msg in broken["c"]
+
+
+@pytest.mark.parametrize(
+    "where,msg",
+    [
+        ("(SELECT 1) = 1", "subquery is not allowed"),
+        ("read_text('x') = 'a'", "function 'read_text' is not allowed"),
+    ],
+)
+def test_reconcile_where_unsafe_expressions_are_refused_when_the_spec_is_read(where, msg):
+    with pytest.raises(ValidationError, match=msg):
+        rec(left={"table": "t", "column": "v", "where": where}, value=1)
+    spec = json.dumps(
+        {
+            "sources": {},
+            "checks": {
+                "c": {
+                    "kind": "reconcile",
+                    "value": 1,
+                    "left": {"table": "t", "agg": "count", "where": where},
+                }
+            },
+        }
+    )
+    with pytest.raises(SpecError):  # parse_spec turns it into its own error type
+        parse_spec(spec)
+
+
+def test_reconcile_where_that_is_not_an_expression_is_refused_when_the_spec_is_read():
+    for bad in ("", "   ", "a; DROP TABLE t", "SELECT 1"):
+        with pytest.raises(ValidationError):
+            rec(left={"table": "t", "column": "v", "where": bad}, value=1)
+
+
+def test_reconcile_where_through_the_engine_with_the_total_row_of_a_workbook(tmp_path):
+    book = make_xlsx({"S": [["Item", "Qty"], ["pen", 2], ["ink", 1], ["pad", 3], ["Total", 6]]})
+    src = {"file_role": "f", "sheet": {"name": "S"}, "region": {"header_anchor": ["Qty"]}}
+    check = {
+        "kind": "reconcile",
+        "left": {"table": "s", "column": "Qty", "where": "\"Item\" <> 'Total'"},
+        "right": {"table": "s", "column": "Qty", "where": "\"Item\" = 'Total'"},
+    }
+    spec = parse_spec(json.dumps({"sources": {"s": src}, "checks": {"total_ok": check}}))
+    rep = run(spec, {"f": book}, tmp_path)
+    assert rep.status == "ok" and rep.checks[0].passed, rep.text()
+    bad = make_xlsx({"S": [["Item", "Qty"], ["pen", 2], ["ink", 1], ["Total", 9]]})
+    rep = run(spec, {"f": bad}, tmp_path)
+    assert rep.status == "failed" and "checks.total_ok" in rep.issues[0].where
