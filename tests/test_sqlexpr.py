@@ -99,6 +99,14 @@ def test_shapes_and_forms_that_are_refused(expr: str, needle: str) -> None:
         "coalesce(a, read_blob('f'))",
         "CASE WHEN a THEN read_csv('x') END",
         "upper(repeat('x', 5))",
+        "pg_sleep(60) = true",
+        "pg_sleep_for(60) = true",
+        "sleep(60) = 1",
+        "coalesce(a, pg_sleep(60))",
+        "version() = 'v1'",
+        "duckdb_version() = 'v1'",
+        "txid_current() = 1",
+        "pg_backend_pid() = 1",
     ],
 )
 def test_dangerous_functions_are_refused_wherever_they_hide(expr: str) -> None:
@@ -222,3 +230,14 @@ def test_parser_behaviour_the_shape_check_leans_on() -> None:
     for escape in ["1) UNION SELECT 2 --", "1) AS x FROM t --"]:
         with pytest.raises(NodeError, match="nothing around"):
             check_expression(escape)
+
+
+def test_a_sleep_cannot_hold_a_run_even_when_it_reaches_the_engine() -> None:
+    import time
+
+    from excel_etl.nodes import build
+
+    start = time.perf_counter()
+    with pytest.raises(NodeError, match="not allowed"):
+        build("filter", {"where": "pg_sleep(30) = true"})
+    assert time.perf_counter() - start < 5  # refused when the spec is read, nothing slept

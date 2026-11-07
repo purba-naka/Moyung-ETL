@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
 from typing import Literal
 
-from excel_etl.workbook import Cell, Workbook
+from excel_etl.workbook import Cell, Workbook, WorkbookError
 
 type Box = tuple[int, int, int, int]  # (row0, col0, row1, col1), 0-based, inclusive
 type Orientation = Literal["rows", "columns", "matrix"]
@@ -54,6 +54,7 @@ class SheetGrid:
     """One sheet seen as sets of positions, built once and shared by every view of it."""
 
     def __init__(self, wb: Workbook, sheet: str) -> None:
+        self._wb, self._sheet = wb, sheet
         self.values = wb.values(sheet)
         self.merged = wb.merged(sheet)
         self.formulas = wb.formula_cells(sheet) or frozenset()
@@ -100,6 +101,16 @@ class SheetGrid:
             return None
         row = self.values[r]
         return row[c] if c < len(row) else None
+
+    def is_bold(self, r: int, c0: int, c1: int) -> bool:
+        """Whether every filled cell of the row in c0..c1 is bold. Reads the styles with
+        openpyxl, which is slow, so ask only when the other signals did not settle it."""
+        try:
+            meta = self._wb.meta(self._sheet)
+        except WorkbookError:
+            return False
+        cells = [c for c in range(c0, c1 + 1) if (r, c) in self.cells]
+        return bool(cells) and all((m := meta.get((r, c))) is not None and m.bold for c in cells)
 
     def label(self, r: int, c: int) -> str | None:
         v = self.cover.get((r, c), self.get(r, c))
@@ -215,10 +226,51 @@ def _split_rows(g: SheetGrid, box: Box, first: int, header: tuple[int, ...]) -> 
     return splits
 
 
+_MIN_TEXT_ROWS = 4  # header + 3 records, so two lines of prose are not a table
+
+
+def _text_header(g: SheetGrid, box: Box) -> bool:
+    """Whether the top row of a block with no number in it is a header: a master or mapping
+    table (code, name, category), where nothing numeric tells the header from the records.
+
+    The top row must be all different texts; the rows below must be mostly full; and the top
+    row must set itself apart: bold, or none of its texts is repeated lower in its column
+    (a header names a column, a record is one of many in it).
+    """
+    top, left, bottom, right = box
+    width = right - left + 1
+    if bottom - top + 1 < _MIN_TEXT_ROWS or width < 2:
+        return False
+    # a block that holds any number is a slice of a numeric table (shipments, a total), whose
+    # header is somewhere else: not a master table
+    if any(
+        isinstance(g.get(r, c), _NUMERIC)
+        for r in range(top, bottom + 1)
+        for c in range(left, right + 1)
+    ):
+        return False
+    if any((r, c) in g.formulas for r in range(top, bottom + 1) for c in range(left, right + 1)):
+        return False
+    head = [g.label(top, c) for c in range(left, right + 1)]
+    if None in head or len(set(head)) != width:
+        return False
+    body = range(top + 1, bottom + 1)
+    full = sum(
+        sum(g.label(r, c) is not None for c in range(left, right + 1)) * 2 >= width for r in body
+    )
+    if full * 4 < len(body) * 3:  # fewer than 3 of 4 body rows are mostly full
+        return False
+    if g.is_bold(top, left, right):
+        return True
+    return not any(g.label(r, c) == head[c - left] for r in body for c in range(left, right + 1))
+
+
 def _analyze(g: SheetGrid, box: Box, split: bool = True) -> list[Region]:
     top, left, bottom, right = box
     data = [r for r in range(top, bottom + 1) if g.is_data(r, box)]
     if not data:
+        if _text_header(g, box):
+            return [Region(box, (top,), top + 1, (), (), "rows", (), ())]
         return [Region(box, (), top, (), (), "columns", (), ())]
     # a dashboard row of numbers above the header is not where the data starts: take the
     # first run of _RUN data rows (or the first data row in a tiny table)

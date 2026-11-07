@@ -212,4 +212,15 @@ def sheet_role(wb: Workbook, sheet: str) -> Role:
 def region_role(wb: Workbook, sheet: str, box: tuple[int, int, int, int]) -> Role:
     """Role of one table block, from the cells inside its box."""
     r0, c0, r1, c1 = box
-    return classify(*votes(wb, sheet).count(range(r0, r1 + 1), range(c0, c1 + 1)))
+    role = classify(*votes(wb, sheet).count(range(r0, r1 + 1), range(c0, c1 + 1)))
+    # no number and no formula: a table of texts (master, mapping) that people typed. A single
+    # label or a single row is not a table, so it stays empty.
+    return "source" if role == "empty" and _is_text_table(wb, sheet, box) else role
+
+
+def _is_text_table(wb: Workbook, sheet: str, box: tuple[int, int, int, int]) -> bool:
+    r0, c0, r1, c1 = box
+    if r1 <= r0 or c1 <= c0:
+        return False
+    rows = wb.values(sheet)[r0 : r1 + 1]
+    return sum(isinstance(v, str) for row in rows for v in row[c0 : c1 + 1]) >= 4

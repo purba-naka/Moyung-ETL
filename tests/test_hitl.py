@@ -150,7 +150,7 @@ def test_gate_stale_ref_and_pending():
     s = approve(HitlState(), "on_rebind_drift", "dina", ref="v3")
     assert gate(s, "on_rebind_drift", ref="v3") is None
     assert gate(s, "on_rebind_drift") is None  # caller gave no ref: nothing to compare
-    assert "approved for 'v3', now it is 'v4'" in gate(s, "on_rebind_drift", ref="v4")
+    assert "approved for 'v3', but this is 'v4'" in gate(s, "on_rebind_drift", ref="v4")
     _, s = ask(s)
     assert "1 question(s) still waiting" in gate(s, "on_rebind_drift", ref="v3")
     assert gate(s, "after_spec") is None  # optional never blocks

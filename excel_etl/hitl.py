@@ -205,7 +205,8 @@ def gate(
     if ok is None:
         why = f"{checkpoint} needs a person's approval; none given yet"
     elif ref is not None and ok.ref != ref:
-        why = f"{checkpoint} was approved for {ok.ref!r}, now it is {ref!r}; ask again"
+        given = "no version" if ok.ref is None else repr(ok.ref)
+        why = f"{checkpoint} was approved for {given}, but this is {ref!r}; ask again"
     elif state.pending:
         ids = ", ".join(p.id for p in state.pending[:5])
         why = f"{len(state.pending)} question(s) still waiting for the person ({ids})"

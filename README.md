@@ -1,5 +1,8 @@
 # excel-etl
 
+The GitHub repository is `Moyung-ETL`; the Python package and the working folder are
+`excel-etl` (`import excel_etl`).
+
 Pure Python library of tools for LLM agents: understand a raw Excel file (many sheets, many
 tables, irregular shapes), build an ETL pipeline in duckdb, run it to parquet/csv, and bind
 the same pipeline again when the workbook changes. The library holds no state, starts no

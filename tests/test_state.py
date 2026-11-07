@@ -236,13 +236,34 @@ def test_device_like_job_id_is_a_normal_file(tmp_path):
     assert Job.open("con", store).state.version == 1
 
 
-def test_store_save_failure_keeps_job_state(tmp_path):
-    blocker = tmp_path / "file"
-    blocker.write_text("x", encoding="utf-8")
-    job = Job.open("j", FileStore(blocker / "sub"))  # a directory cannot be made under a file
+def test_store_save_failure_keeps_job_state(tmp_path, monkeypatch):
+    """A save that cannot write must leave the job as it was. The failure is made the same
+    way on every OS: mkdir is refused, instead of relying on how an OS reports a path under
+    a file (Windows says FileNotFoundError, Linux NotADirectoryError)."""
+    import pathlib
+
+    job = Job.open("j", FileStore(tmp_path / "deep"))
+
+    def refuse(self, *a, **k):
+        raise PermissionError("read-only disk")
+
+    monkeypatch.setattr(pathlib.Path, "mkdir", refuse)
     with pytest.raises(StateError, match="cannot write"):
         job.update(lambda s: add_file(s, "f1", "a.xlsx", SHA))
     assert job.state.version == 0 and not job.state.files
+
+
+@pytest.mark.parametrize("error", [FileNotFoundError, NotADirectoryError])
+def test_a_path_under_a_file_reads_as_never_saved_on_every_os(tmp_path, monkeypatch, error):
+    import pathlib
+
+    def fail(self, *a, **k):
+        raise error(2, "no such path", str(self))
+
+    monkeypatch.setattr(pathlib.Path, "read_text", fail)
+    store = FileStore(tmp_path / "file" / "sub")
+    assert store.load("j") is None
+    assert Job.open("j", store).state.version == 0
 
 
 # --- files -----------------------------------------------------------------------------------

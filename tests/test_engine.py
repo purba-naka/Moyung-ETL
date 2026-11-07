@@ -177,7 +177,7 @@ def test_expect_columns_type_is_checked_for_each_kind_of_column(value, want, ok)
 def test_expect_columns_type_failure_blocks_run_and_applies_to_every_regex_hit(tmp_path) -> None:
     book = make_xlsx({"T": [["Key", "P1", "P2"], ["a", 1, "x"], ["b", 2, "y"]]})
     src = _src("T", "Key")
-    src["expect_columns"] = [{"match_regex": "^P\d$", "type": "float"}]
+    src["expect_columns"] = [{"match_regex": r"^P\d$", "type": "float"}]
     spec = _spec(sources={"t": src}, outputs={"o": {"input": "t"}})
     rep = run(spec, {"f": book}, tmp_path)
     assert rep.status == "failed" and "'P2' is VARCHAR" in rep.issues[0].message
