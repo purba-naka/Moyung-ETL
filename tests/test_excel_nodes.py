@@ -356,3 +356,24 @@ def test_unpivot_groups_missing_measure_is_typed_null() -> None:
     out = _run("unpivot_groups", {"pattern": "^(?P<group>.)[|](?P<measure>.+)$"}, rel)
     assert [c.type for c in schema_of(out)] == ["VARCHAR", "INTEGER", "VARCHAR"]
     assert sorted(out.fetchall(), key=str) == [("A", 1, "x"), ("B", 2, None)]
+
+
+def test_drop_regex_and_keep_type_keep_a_row_whose_column_is_empty():
+    import duckdb
+
+    from excel_etl.nodes import build
+
+    con = duckdb.connect()
+    con.execute(
+        "CREATE TABLE t AS SELECT * FROM (VALUES ('pen'),(NULL),('Total'),('ink')) v(\"Item\")"
+    )
+    out = build("drop_rows", {"blank": False, "column": "Item", "drop_regex": "^Total$"}).run(
+        [con.table("t")]
+    )
+    assert sorted(r[0] or "" for r in out.fetchall()) == ["", "ink", "pen"]  # the NULL stays
+    ci = build("drop_rows", {"blank": False, "column": "Item", "drop_regex": "(?i)^total$"})
+    con.execute("CREATE TABLE u AS SELECT * FROM (VALUES ('TOTAL'),('pen')) v(\"Item\")")
+    assert [r[0] for r in ci.run([con.table("u")]).fetchall()] == ["pen"]
+    from excel_etl.nodes import catalog
+
+    assert "A row whose `column` is empty is kept" in " ".join(catalog("drop_rows").split())

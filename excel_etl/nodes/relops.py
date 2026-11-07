@@ -13,7 +13,7 @@ from collections.abc import Callable
 import duckdb
 
 from excel_etl.nodes.base import Column, NodeError, Relation, Schema, connect, quote
-from excel_etl.nodes.sqlexpr import _reason
+from excel_etl.nodes.sqlexpr import reason
 
 type MakeSql = Callable[[list[str]], str]
 
@@ -46,7 +46,7 @@ def shape(schemas: list[Schema], make_sql: MakeSql, who: str) -> Schema:
         rel = con.sql(make_sql(names))
         return tuple(Column(n, str(t)) for n, t in zip(rel.columns, rel.types, strict=True))
     except duckdb.Error as e:
-        raise NodeError(f"{who}: {_reason(e)}") from None
+        raise NodeError(f"{who}: {reason(e)}") from None
 
 
 def check_reserved(schema: Schema, who: str) -> None:

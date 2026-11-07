@@ -55,3 +55,23 @@ def test_tools_table_matches_the_code():
     named = set(re.findall(r"`([a-z_]+)`", table))
     exposed = {f.__name__ for f in t.agent_tools()} | {"add_file", "answer", "approve"}
     assert named == exposed
+
+
+def test_the_complete_spec_in_the_readme_parses_and_runs(tmp_path):
+    import json
+
+    from excel_etl.engine import run
+    from excel_etl.pipeline import parse_spec
+
+    block = re.findall(r"```json\n(.*?)```", README, re.S)[0]
+    spec = parse_spec(block)
+    book = make_xlsx(
+        {
+            "Sales": [["Item", "Qty"], ["pen", 2], ["ink", 1], ["pen", 5]],
+            "Items": [["Item", "Group"], ["pen", "write"], ["ink", "write"]],
+        }
+    )
+    rep = run(spec, {"main": book}, tmp_path)
+    assert rep.status == "ok", rep.text()
+    assert [c.name for c in rep.checks] == ["no_lost_qty", "groups_known"]
+    assert all(c.passed for c in rep.checks) and json.loads(block)["outputs"]

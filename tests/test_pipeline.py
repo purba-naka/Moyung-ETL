@@ -19,7 +19,7 @@ _SPEC = {
             },
             "expect_columns": [
                 {"match": "TANGGAL", "type": "date"},
-                {"match_regex": "^Phonska \\d+$", "group": "pabrik", "required": False},
+                {"match_regex": "^Phonska \\d+$", "required": False},
             ],
         }
     },
@@ -195,3 +195,39 @@ def test_end_must_be_exactly_until_blank_rows_with_ascii_digits():
     ):
         with pytest.raises(SpecError):
             spec(bad)
+
+
+def _spec_error(**parts) -> str:
+    import json
+
+    from excel_etl.pipeline import SpecError, parse_spec
+
+    try:
+        parse_spec(json.dumps(parts))
+    except SpecError as e:
+        return str(e)
+    raise AssertionError("the spec was accepted")
+
+
+_SRC = {"file_role": "f", "sheet": {"name": "S"}, "region": {"header_anchor": ["A"]}}
+
+
+@pytest.mark.parametrize("name", ["my source", "a-b", "1x", "a.b", "", "x" * 65, "é"])
+def test_bad_names_are_explained_in_words_not_as_a_regex(name):
+    msg = _spec_error(sources={name: _SRC})
+    assert "letters, digits and _ only" in msg and "^(?:" not in msg and "pattern" not in msg
+
+
+def test_list_where_one_name_belongs_and_the_reverse_say_what_to_write():
+    one = _spec_error(sources={"s": _SRC}, outputs={"o": {"input": ["s"]}})
+    assert "outputs.o.input: must be one piece of text (a single name), not a list" in one
+    many = _spec_error(
+        sources={"s": _SRC},
+        steps=[{"id": "a", "node": "select", "inputs": "s", "config": {}}],
+    )
+    assert 'steps.0.inputs: must be a list, such as ["a"] (even for one item)' in many
+
+
+def test_misspelled_key_says_it_is_not_a_setting():
+    msg = _spec_error(sources={"s": _SRC}, output={})
+    assert msg.startswith("output: is not a setting here") and "node_catalog" in msg

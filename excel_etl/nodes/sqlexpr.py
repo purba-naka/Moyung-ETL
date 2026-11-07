@@ -204,7 +204,7 @@ def check_type(name: str) -> str:
         raise NodeError(f"type {name!r} is not a duckdb type") from None
 
 
-def _reason(e: Exception) -> str:
+def reason(e: Exception) -> str:
     msg = str(e).strip().splitlines()[0] if str(e).strip() else type(e).__name__
     if "GROUP BY" in msg:
         return "aggregate functions are not allowed here; use the group_by node"
@@ -225,4 +225,4 @@ def bind(schema: Schema, select_list: str, who: str) -> Schema:
         rel = con.sql(f"SELECT {select_list} FROM __s")
         return tuple(Column(n, str(t)) for n, t in zip(rel.columns, rel.types, strict=True))
     except duckdb.Error as e:
-        raise NodeError(f"{who}: {_reason(e)}") from None
+        raise NodeError(f"{who}: {reason(e)}") from None

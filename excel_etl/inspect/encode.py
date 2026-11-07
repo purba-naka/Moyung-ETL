@@ -42,7 +42,7 @@ def _box(b: Box) -> str:
     return f"{a1(b[0], b[1])}:{a1(b[2], b[3])}"
 
 
-def _few(items: list[str], n: int = 3) -> str:
+def few(items: list[str], n: int = 3) -> str:
     return ",".join(items[:n]) + (f",+{len(items) - n}" if len(items) > n else "")
 
 
@@ -175,7 +175,7 @@ def _resolve(wb: Workbook, file_id: str, sheet: str) -> tuple[str, str]:
     for i, s in enumerate(wb.sheets, start=1):
         if sheet == s.name:
             return f"{file_id}.S{i}", s.name
-    names = _few([s.name for s in wb.sheets], 5)
+    names = few([s.name for s in wb.sheets], 5)
     raise WorkbookError(
         f"no sheet {sheet!r}; use a sheet name or id like {file_id}.S1. Sheets: {names}"
     )
@@ -188,16 +188,16 @@ def _region_line(rid: str, r: Region, role: Role) -> str:
         parts.append(f"hdr {h[0] + 1}" + (f"-{h[-1] + 1}" if len(h) > 1 else ""))
     parts.append(f"{r.orientation}/{role}")
     if r.total_rows:
-        parts.append("total " + _few([str(t + 1) for t in r.total_rows], 5))
+        parts.append("total " + few([str(t + 1) for t in r.total_rows], 5))
     for g in r.groups:
         parents = [_fmt(p) for p in g.parents if p]
         span = f" ({parents[0]}..{parents[-1]})" if parents else ""
         labels = ",".join(_fmt(x) for x in g.labels)
         parts.append(f"group {col_letters(g.start)}:[{labels}]x{g.count}{span}")
     if r.merged_header:
-        parts.append("merged " + _few([_box(m) for m in r.merged_header]))
+        parts.append("merged " + few([_box(m) for m in r.merged_header]))
     if r.noise:
-        parts.append("noise " + _few([_box(n) for n in r.noise]))
+        parts.append("noise " + few([_box(n) for n in r.noise]))
     return _clip("|".join(parts))
 
 
@@ -230,8 +230,7 @@ def sheet_regions(wb: Workbook, file_id: str, sheet: str, offset: int = 0, limit
         # ponytail: headerless blocks (notes, KPIs, side calcs) get one summary line;
         # upgrade: a `kind` filter if the agent needs to page through them.
         lines.append(
-            "headerless: "
-            + _few([f"{rid.rsplit('.', 1)[1]} {_box(r.box)}" for rid, r in small], 10)
+            "headerless: " + few([f"{rid.rsplit('.', 1)[1]} {_box(r.box)}" for rid, r in small], 10)
         )
     return _page(lines, offset, len(page), len(tables))
 
@@ -412,7 +411,7 @@ def _compressed(g: SheetGrid, box: Box) -> list[str]:
                 col_runs[-1][2] = r
             else:
                 col_runs.append([c, r, r])
-        lines.append(f'"{text}": ' + _few(_rects([tuple(x) for x in col_runs]), 3))
+        lines.append(f'"{text}": ' + few(_rects([tuple(x) for x in col_runs]), 3))
 
     groups: dict[tuple[str, int, int, bool], list] = {}
     for kind, r0, r1, c, lo, hi, uncached in runs:
@@ -434,9 +433,9 @@ def _compressed(g: SheetGrid, box: Box) -> list[str]:
             lo_s, hi_s = _fmt(lo, 3), _fmt(hi, 3)  # a range only needs the scale
             span = "" if kind == "bool" else f" {lo_s}" + ("" if lo == hi else f"..{hi_s}")
             desc = kind + span + (" +=?" if uncached else "")
-        lines.append(f"{_few(_rects(cols), 6)} {desc}")
+        lines.append(f"{few(_rects(cols), 6)} {desc}")
     if zeros:
-        lines.append("all 0: " + _few(zeros, 12))
+        lines.append("all 0: " + few(zeros, 12))
     return [_clip(x) for x in lines]
 
 
@@ -518,7 +517,7 @@ def _fit(head: str, body: list[str], offset: int, budget: int) -> dict:
     return _page(lines, offset, len(lines) - 1, len(body))
 
 
-def _column_names(g: SheetGrid, region: Region, sep_safe: bool = True) -> list[str]:
+def column_names(g: SheetGrid, region: Region, sep_safe: bool = True) -> list[str]:
     """One name per column, header rows joined top to bottom: `JANUARI|PKG`.
 
     `sep_safe` writes each label as `_name` does (no `|` inside a label), for text views.
@@ -549,7 +548,7 @@ def _column_names(g: SheetGrid, region: Region, sep_safe: bool = True) -> list[s
 
 
 def _rows(rows: list[int], n: int = 4) -> str:
-    return _few([f"r{r + 1}" for r in rows], n)
+    return few([f"r{r + 1}" for r in rows], n)
 
 
 def _profile_column(g: SheetGrid, c: int, rows: list[int]) -> str:
@@ -617,7 +616,7 @@ def profile_region(
         + (f", totals left out: {_rows(sorted(totals), 6)}" if totals else "")
         + ". col name: type range|e.g. distinct null =? odd"
     )
-    names = _column_names(g, region)
+    names = column_names(g, region)
     body = [
         _clip(f"{col_letters(c)} {names[i]}: {_profile_column(g, c, rows) if rows else 'no data'}")
         for i, c in enumerate(range(left, right + 1))
@@ -628,7 +627,7 @@ def profile_region(
 _WS = re.compile(r"\s+")
 
 
-def _text_key(s: str) -> str:
+def text_key(s: str) -> str:
     """Text ready to match: one casefolded line, unicode look-alikes folded (ﬀ = ff)."""
     return _WS.sub(" ", unicodedata.normalize("NFKC", s).casefold()).strip()
 
@@ -649,7 +648,7 @@ def find_text(
     _check_budget(budget)
     if not isinstance(query, str):
         raise WorkbookError(f"query must be a string, got {query!r}")
-    key = _text_key(query)
+    key = text_key(query)
     if not key:
         raise WorkbookError(f"query {query!r} is empty once whitespace is trimmed")
     # values() is cached per sheet and the normalized texts are kept on the workbook, so
@@ -658,7 +657,7 @@ def find_text(
 
     def _key(v: str) -> str:
         k = norm.get(v)
-        return k if k is not None else norm.setdefault(v, _text_key(v))
+        return k if k is not None else norm.setdefault(v, text_key(v))
 
     body = []
     cells = 0
@@ -781,7 +780,7 @@ def compare_sheets(wb: Workbook, file_id: str, a: str, b: str, budget: int = 24_
     if differ:
         cells = ", ".join(f"{a1(r, c)} {_d(va)}|{_d(vb)}" for r, c, va, vb in first)
         more = f" (+{differ - 6})" if differ > 6 else ""
-        rows_txt = _few([f"r{r + 1}" for r in first_rows], 6)
+        rows_txt = few([f"r{r + 1}" for r in first_rows], 6)
         lines.append(_clip(f"diffs: {cells}{more}; rows: {diff_rows} of {rows} ({rows_txt})"))
     text = "\n".join(lines)
     return {
@@ -817,7 +816,7 @@ def _proposals(wb: Workbook, file_id: str) -> tuple[list[str], list[str], int, i
                     derived[s.name] = derived.get(s.name, 0) + 1
                 continue
             counts[role] += 1
-            names = _column_names(g, r)
+            names = column_names(g, r)
             shown = ", ".join(names[:2])
             more = f" (+{len(names) - 2})" if len(names) > 2 else ""
             flag = "" if s.visible == "visible" else f" [{s.visible}]"

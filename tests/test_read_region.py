@@ -161,3 +161,63 @@ def test_sample_read_region(sample_path) -> None:
     assert rel.columns[:3] == ["TANGGAL", "Phonska 1|Ton", "Phonska 1|Formula"]
     assert len(rel.columns) == 29
     assert con.sql("select count(*) from pkg").fetchall()[0][0] > 700
+
+
+def test_a_grand_total_below_a_gap_is_warned_about_not_silently_dropped():
+    import json
+
+    from conftest import make_xlsx
+
+    from excel_etl.engine import validate
+    from excel_etl.pipeline import parse_spec
+
+    rows = [["Item", "Qty"], ["pen", 2], ["ink", 1], [None, None], [None, None], ["Grand total", 3]]
+    book = make_xlsx({"S": rows})
+
+    def spec(end):
+        src = {
+            "file_role": "f",
+            "sheet": {"name": "S"},
+            "region": {"header_anchor": ["Qty"], "end": end},
+        }
+        return parse_spec(json.dumps({"sources": {"s": src}}))
+
+    short = validate(spec("until_blank_rows(2)"), {"f": book})
+    assert short.ok and any("1 more filled row(s) lie below the table" in w for w in short.warnings)
+    assert any("until_blank_rows(N)" in w for w in short.warnings)
+    wide = validate(spec("until_blank_rows(5)"), {"f": book})
+    assert wide.ok and not wide.warnings  # nothing left below: no noise
+    clean = validate(spec("until_blank_rows(2)"), {"f": make_xlsx({"S": rows[:3]})})
+    assert not clean.warnings
+
+
+def test_blank_gap_is_the_one_reading_of_end():
+    from excel_etl.pipeline import RegionRef
+
+    assert RegionRef(header_anchor=["a"], end="until_blank_rows(7)").blank_gap == 7
+    assert RegionRef(header_anchor=["a"]).blank_gap == 2
+
+
+def test_two_row_header_is_named_parent_pipe_leaf_as_the_docs_say():
+    import json
+
+    from conftest import make_xlsx
+
+    from excel_etl.engine import validate
+    from excel_etl.pipeline import RegionRef, parse_spec
+
+    rows = [["Sales", None, "Cost", None], ["Qty", "Value", "Qty", "Value"], [1, 2, 3, 4]]
+    src = {
+        "file_role": "f",
+        "sheet": {"name": "S"},
+        "region": {"header_anchor": ["Sales"], "header_rows": 2},
+    }
+    rep = validate(parse_spec(json.dumps({"sources": {"s": src}})), {"f": make_xlsx({"S": rows})})
+    assert [c.name for c in rep.schemas["s"]] == [
+        "Sales|Qty",
+        "Sales|Value",
+        "Cost|Qty",
+        "Cost|Value",
+    ]
+    doc = " ".join((RegionRef.__doc__ or "").split())
+    assert "`Sales|Qty`" in doc and "PARENT|LEAF" in doc

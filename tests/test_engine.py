@@ -145,7 +145,44 @@ def test_validate_expect_columns_presence(book) -> None:
     ]
     rep = validate(_spec(sources={"orders": src}), {"f": book})
     assert [i.message[:34] for i in rep.issues] == ["required column 'Weight' not found"]
-    assert any("type is not checked yet" in w for w in rep.warnings)
+    assert not rep.warnings  # `type: float` on a price column holds, nothing to say
+
+
+@pytest.mark.parametrize(
+    "value,want,ok",
+    [
+        (7, "int", True),
+        (7, "float", True),  # whole numbers are numbers either way
+        (7.5, "float", True),
+        (7.5, "int", False),
+        ("x", "text", True),
+        ("x", "float", False),
+        (7, "text", False),
+        (date(2026, 1, 2), "date", True),
+        (date(2026, 1, 2), "datetime", False),
+        (True, "bool", True),
+        (True, "int", False),
+    ],
+)
+def test_expect_columns_type_is_checked_for_each_kind_of_column(value, want, ok) -> None:
+    book = make_xlsx({"T": [["Key", "V"], ["a", value], ["b", value]]})
+    src = _src("T", "Key")
+    src["expect_columns"] = [{"match": "V", "type": want}]
+    rep = validate(_spec(sources={"t": src}), {"f": book})
+    assert rep.ok is ok, rep.text()
+    if not ok:
+        assert f"expect_columns 'V' says {want}" in rep.issues[0].message
+
+
+def test_expect_columns_type_failure_blocks_run_and_applies_to_every_regex_hit(tmp_path) -> None:
+    book = make_xlsx({"T": [["Key", "P1", "P2"], ["a", 1, "x"], ["b", 2, "y"]]})
+    src = _src("T", "Key")
+    src["expect_columns"] = [{"match_regex": "^P\d$", "type": "float"}]
+    spec = _spec(sources={"t": src}, outputs={"o": {"input": "t"}})
+    rep = run(spec, {"f": book}, tmp_path)
+    assert rep.status == "failed" and "'P2' is VARCHAR" in rep.issues[0].message
+    assert len(rep.issues) == 1  # P1 is fine
+    assert list(tmp_path.iterdir()) == []
 
 
 def test_validate_catches_sandbox_and_unsafe_config(book) -> None:
@@ -652,3 +689,29 @@ def test_run_wrong_argument_types_raise_pipeline_error_not_attribute_error(book,
         with pytest.raises(PipelineError) as e:
             run(_pipeline(), {"f": book}, bad)
         assert e.value.issues[0].where == "out_dir"
+
+
+def test_issues_beyond_the_cap_are_counted_not_dropped_silently(book) -> None:
+    from excel_etl.engine import _MAX_ISSUES
+
+    steps = [
+        {"id": f"f{i}", "node": "filter", "inputs": ["orders"], "config": {"where": "nope > 1"}}
+        for i in range(_MAX_ISSUES + 7)
+    ]
+    rep = validate(_spec(sources={"orders": _src("Orders", "Order")}, steps=steps), {"f": book})
+    assert len(rep.issues) == _MAX_ISSUES + 1
+    assert (
+        rep.issues[-1].where == "report" and "7 more problem(s) not shown" in rep.issues[-1].message
+    )
+    assert "7 more problem(s)" in rep.text()
+
+
+def test_a_long_issue_message_is_cut_with_dots(book) -> None:
+    from excel_etl.engine import _MAX_MESSAGE, _State
+
+    st = _State()
+    st.issue("x", "y" * 1000)
+    assert len(st.issues[0].message) == _MAX_MESSAGE and st.issues[0].message.endswith("...")
+    st2 = _State()
+    st2.issue("x", "short")
+    assert st2.issues[0].message == "short"

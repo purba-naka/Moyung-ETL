@@ -18,7 +18,7 @@ from excel_etl.nodes.base import (
     quote,
     schema_of,
 )
-from excel_etl.nodes.excel import _lit, _need
+from excel_etl.nodes.excel import check_column, sql_text
 
 
 def _clash(schema: Schema, new: list[str], dropped: str | None, who: str) -> None:
@@ -52,7 +52,7 @@ class ParseHierarchy(Node):
 
     def _check(self, schema: Schema) -> None:
         cfg = self.config
-        _need(schema, cfg.column, self.name)
+        check_column(schema, cfg.column, self.name)
         kind = next(c.type for c in schema if c.name == cfg.column)
         if kind != "VARCHAR" and not INTEGER_TYPE.match(kind):
             raise NodeError(
@@ -75,7 +75,7 @@ class ParseHierarchy(Node):
         self._check(schema_of(rel))
         cfg = self.config
         code = f"trim(CAST({quote(cfg.column)} AS VARCHAR))"
-        sep = _lit(cfg.separator)
+        sep = sql_text(cfg.separator)
         parts = f"string_split({code}, {sep})"
         ok = f"({code} IS NOT NULL AND NOT list_contains({parts}, ''))"
         level = f"CASE WHEN {ok} THEN len({parts}) END AS {quote(cfg.level_column)}"
@@ -124,7 +124,7 @@ class SplitHeaderToken(Node):
 
     def _check(self, schema: Schema) -> None:
         cfg = self.config
-        _need(schema, cfg.column, self.name)
+        check_column(schema, cfg.column, self.name)
         _clash(schema, cfg.into, cfg.column if cfg.drop_source else None, self.name)
 
     def infer_schema(self, inputs: list[Schema]) -> Schema:
@@ -143,14 +143,14 @@ class SplitHeaderToken(Node):
         exprs = []
         for i, name in enumerate(cfg.into):
             if cfg.separator is not None:
-                sep = _lit(cfg.separator)
+                sep = sql_text(cfg.separator)
                 parts = f"string_split({text}, {sep})"
                 if i < n - 1:
                     raw = f"{parts}[{i + 1}]"
                 else:  # the last column takes everything that is left
                     raw = f"array_to_string(list_slice({parts}, {n}, len({parts})), {sep})"
             else:
-                pat = _lit(cfg.pattern or "")
+                pat = sql_text(cfg.pattern or "")
                 # no match gives '' from regexp_extract, which nullif below turns into NULL
                 raw = f"regexp_extract({text}, {pat}, {i + 1})"
             exprs.append(f"nullif(trim({raw}), '') AS {quote(name)}")

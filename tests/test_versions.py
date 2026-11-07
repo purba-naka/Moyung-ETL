@@ -151,3 +151,32 @@ def test_history_refuses_a_note_over_the_cap_however_it_is_built():
     h = SpecHistory.start(_spec(), "x" * MAX_NOTE)
     with _pytest.raises(ValidationError):
         h.add(_spec(outputs={"o": {"input": "a"}}), "y" * (MAX_NOTE + 1))
+
+
+@pytest.mark.parametrize("where", ["head", "middle", "tail"])
+def test_long_values_show_the_part_that_differs_not_a_shared_beginning(where):
+    base = "a" * 60 + "m" * 60 + "z" * 60
+    other = {
+        "head": "H" + base[1:],
+        "middle": base[:90] + "M" + base[91:],
+        "tail": base[:-1] + "T",
+    }[where]
+    old = _spec(sources={"s": _src_for(base)})
+    new = _spec(sources={"s": _src_for(other)})
+    (c,) = diff_specs(old, new)
+    mark = {"head": "H", "middle": "M", "tail": "T"}[where]
+    assert mark in c.after and mark not in c.before
+    assert len(c.before) <= 80 and len(c.after) <= 80
+
+
+def test_short_values_are_shown_whole():
+    (c,) = diff_specs(_spec(sources={"s": _src_for("abc")}), _spec(sources={"s": _src_for("abd")}))
+    assert c.before == '["abc"]' and c.after == '["abd"]'
+
+
+def _src_for(anchor):
+    return {
+        "file_role": "f",
+        "sheet": {"name": "D"},
+        "region": {"header_anchor": [anchor]},
+    }

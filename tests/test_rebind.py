@@ -96,7 +96,8 @@ def test_a_sheet_found_only_by_content_is_drift() -> None:
 def test_a_missing_required_column_is_drift_and_names_it() -> None:
     spec = _spec(_src(expect=[{"match": "Qty"}, {"match": "Weight"}, {"match_regex": "^Pri"}]))
     s = _first(_BASE, spec)
-    assert s.status == "drift" and s.diff == ("required column 'Weight' not found",)
+    assert s.status == "drift" and len(s.diff) == 1
+    assert s.diff[0].startswith("required column 'Weight' not found: find the new header text")
     assert not _bind(_BASE, spec).ok
 
 
@@ -106,7 +107,7 @@ def test_an_optional_column_may_be_missing() -> None:
 
 
 def test_columns_added_or_removed_matter_only_when_the_spec_does_not_cover_them() -> None:
-    group = [{"match_regex": r"^Plant \d+$", "group": "plant"}]
+    group = [{"match_regex": r"^Plant \d+$"}]
     spec = _spec(_src(expect=[{"match": "Item"}, *group]))
     old = [["Item", "Plant 1", "Plant 2"], ["a", 1, 2]]
     prev = _bind(old, spec).records()
@@ -212,3 +213,18 @@ def test_records_leave_out_drifted_sources() -> None:
 def test_files_that_is_not_a_dict_is_missing_not_a_crash() -> None:
     rep = rebind(_spec(_src()), None)  # type: ignore[arg-type]
     assert rep.sources["s"].status == "missing" and "dict" in rep.text()
+
+
+def test_every_drift_message_ends_with_what_to_do_next() -> None:
+    spec = _spec(_src(expect=[{"match": "Weight"}]))
+    assert "then change expect_columns and the steps that use it" in _first(_BASE, spec).diff[0]
+    spec = _spec(_src(expect=[{"match": "Item"}]))
+    prev = _bind(_BASE, spec).records()
+    wider = [["Item", "Qty", "Price", "Rework"], ["a", 1, 2.0, 3]]
+    drift = _bind(wider, spec, prev).sources["s"].diff[0]
+    assert "decide for each: add it to the steps that need it" in drift
+    gone = _spec(_src(sheet={"name": "Gone", "fallback_contains": ["Price"]}))
+    s = _first(_BASE, gone)
+    assert s.status == "drift" and any(
+        "compare_sheets" in d and "set sheet.name" in d for d in s.diff
+    )

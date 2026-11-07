@@ -162,7 +162,7 @@ def test_save_spec_refuses_a_spec_that_does_not_validate(tools):
 
 def test_save_spec_errors_are_dicts_with_a_reason(tools):
     assert "Invalid JSON" in tools.save_spec("sources: {}")["error"]
-    assert "Extra inputs" in tools.save_spec('{"output": {}}')["error"]
+    assert "output: is not a setting here" in tools.save_spec('{"output": {}}')["error"]
     tools.save_spec(spec_json())
     assert "same as the current version" in tools.save_spec(spec_json(), "again")["error"]
     other = dict(SPEC, outputs={})
