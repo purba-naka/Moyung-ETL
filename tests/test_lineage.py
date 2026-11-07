@@ -204,3 +204,25 @@ def test_the_text_table_guard_needs_two_rows_two_columns_and_four_texts():
     assert region_role(book, "S", (0, 0, 4, 0)) == "empty"  # 5 texts in one column: no
     assert region_role(book, "S", (0, 0, 1, 1)) == "empty"  # a 2x2 box holding 3 texts: no
     assert region_role(book, "S", (0, 0, 1, 2)) == "source"  # 2x3 holding 4 texts: yes
+
+
+def test_a_sheet_of_texts_only_is_a_source_in_the_map_like_its_region():
+    from excel_etl.inspect.encode import workbook_map
+    from excel_etl.inspect.lineage import region_role, sheet_role
+    from excel_etl.workbook import Workbook
+
+    book = Workbook.open(
+        make_xlsx(
+            {
+                "Master": [["Kode", "Nama"]] + [[f"K{i}", f"Nama {i}"] for i in range(5)],
+                "Note": [["Catatan"], ["hanya satu kolom"], ["dua baris"]],
+                "Blank": [[None]],
+                "Numbers": [["a", "b"], [1, 2], [3, 4]],
+            }
+        )
+    )
+    assert sheet_role(book, "Master") == region_role(book, "Master", (0, 0, 5, 1)) == "source"
+    assert sheet_role(book, "Note") == "empty"  # one column of text is a list, not a table
+    assert sheet_role(book, "Blank") == "empty"
+    assert sheet_role(book, "Numbers") == "source"
+    assert "Master|A1:B6|12|1|0|source" in workbook_map(book, "F1")["text"]

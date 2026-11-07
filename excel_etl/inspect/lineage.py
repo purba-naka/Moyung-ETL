@@ -206,7 +206,21 @@ def votes(wb: Workbook, sheet: str) -> Votes:
 def sheet_role(wb: Workbook, sheet: str) -> Role:
     # Excel has at most 1,048,576 rows and 16,384 columns. Formulas with no cached value are
     # missing from `values`, so the row count cannot come from there.
-    return classify(*votes(wb, sheet).count(range(1 << 20), range(1 << 14)))
+    role = classify(*votes(wb, sheet).count(range(1 << 20), range(1 << 14)))
+    if role != "empty":
+        return role
+    # a sheet of texts only (a master list) is typed data too, the same rule as a region
+    rows = wb.values(sheet)
+    cells = [(r, c) for r, row in enumerate(rows) for c, v in enumerate(row) if v is not None]
+    if not cells:
+        return role
+    box = (
+        min(r for r, _ in cells),
+        min(c for _, c in cells),
+        max(r for r, _ in cells),
+        max(c for _, c in cells),
+    )
+    return "source" if _is_text_table(wb, sheet, box) else role
 
 
 def region_role(wb: Workbook, sheet: str, box: tuple[int, int, int, int]) -> Role:
