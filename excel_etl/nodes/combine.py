@@ -12,6 +12,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from excel_etl.nodes.base import (
     INTEGER_TYPE,
+    NUMERIC_TYPE,
     Column,
     Node,
     NodeConfig,
@@ -23,7 +24,7 @@ from excel_etl.nodes.base import (
     quote,
     schema_of,
 )
-from excel_etl.nodes.excel import _NUMERIC, _common_type, _lit
+from excel_etl.nodes.excel import _common_type, _lit
 from excel_etl.nodes.relops import apply, check_reserved, need, shape, unique
 
 
@@ -305,7 +306,7 @@ class GroupBy(Node):
         plan = []
         for a in self.config.aggs:
             kind = need(schema, a.column, self.name).type if a.column else "BIGINT"
-            if a.fn in ("sum", "avg") and not _NUMERIC.match(kind):
+            if a.fn in ("sum", "avg") and not NUMERIC_TYPE.match(kind):
                 raise NodeError(
                     f"{self.name}: {a.fn} of {a.name!r} needs a number column, but "
                     f"{a.column!r} is {kind}; cast it first"
@@ -401,7 +402,7 @@ class Pivot(Node):
         vc = need(schema, cfg.value, self.name)
         if cfg.column in cfg.by or cfg.value in cfg.by or cfg.column == cfg.value:
             raise NodeError(f"{self.name}: by, column and value must be different columns")
-        if cfg.fn in ("sum", "avg") and not _NUMERIC.match(vc.type):
+        if cfg.fn in ("sum", "avg") and not NUMERIC_TYPE.match(vc.type):
             raise NodeError(
                 f"{self.name}: {cfg.fn} needs a number column, but {cfg.value!r} is {vc.type}"
             )

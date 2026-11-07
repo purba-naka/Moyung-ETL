@@ -10,14 +10,12 @@ Perbarui setiap selesai satu item (lihat AGENTS.md §7).
 - Fase 4 selesai: 4.1-4.4 (`rebind.py`, `versions.py`).
 - 3.4 selesai: validator ekspresi SQL + 18 node (`select rename cast filter derive fill_missing sort dedupe join union group_by pivot` + 6 node Excel).
 - P6 Fase 3-4 selesai (perbaikan di Log; sisa di §Temuan P6 Fase 3-4).
-- Fase 5 item selesai: 5.1-5.4 (`knowledge.py`, `hitl.py`, `quality.py`, `state.py`). Berikutnya: **P6 Fase 5 (3 subagent) + ulang adversarial Fase 3-4, lalu Fase 6.**
-- **TERTUNDA: ulang P6 adversarial Fase 3-4 (subagent sebelumnya dibatalkan/gagal). Ingatkan user saat lanjut.**
+- Fase 5 selesai: 5.1-5.4 + P6 Fase 3-5 (dikerjakan sendiri, tanpa subagent; temuan di Log dan §Temuan P6 Fase 5). Berikutnya: **Fase 6 (`tools.py` + serah ke host).**
 - **Aturan kerja (dari user): BALANSITAS hanya satu contoh, bukan patokan bentuk.** Node berbasis pola umum dan config eksplisit; tes memakai beberapa bentuk sintetis berbeda; sampel hanya sanity. Temuan P6 Fase 1/2 yang ditunda: lihat §Temuan.
 
 ## Berikutnya
 
-0. Ulang P6 adversarial Fase 3-4 (belum pernah menghasilkan temuan).
-1. P6 Fase 5 (adversarial/auditor/agent-user) bersama adversarial Fase 3-4 yang tertunda (P1 review plan dulu tiap item).
+1. Fase 6 `tools.py`: konversi `PipelineError`/`HitlError`/`StateError`/`StateConflict`/`NodeError`/`SpecError`/`WorkbookError`/`KeyError` (versions) jadi dict; satu tool `node_catalog`. (P1 review plan dulu tiap item).
 2. 3.4-3.6 node + registry + `validate`/`run` (lihat §Fase 3).
 3. Sambil jalan: temuan P6 yang ditunda (konversi WorkbookError ke dict di `tools.py`).
 
@@ -115,6 +113,16 @@ Selesai bila: semua test hijau, angka token dicatat di §Temuan.
 - [x] 5.4 `state.py`: `JobState`, `Job.from_state` / `Job.open(store=)`,
       `StateStore` protocol, `FileStore` (optimistic lock `expected_version`),
       `FileProvider`.
+
+## Temuan P6 Fase 3-5 (ditunda ke Fase 6 atau lebih)
+
+- `tools.py` harus mengubah jadi dict: `PipelineError` (punya `.issues`), `SpecError`, `NodeError`, `HitlError`, `StateError`/`StateConflict`, `WorkbookError`, `KeyError` (`SpecHistory.get`), `ValueError` (`SpecHistory.add`).
+- Tool yang dibutuhkan agent tapi belum ada sebagai fungsi: daftar pertanyaan menunggu (`state.hitl.pending`), ringkasan state (`JobState` -> teks), teks `last_run`, `node_catalog` (pakai `nodes.catalog`).
+- Tidak dipasang: `after_run` dan `on_rebind_drift` (`gate` ada, host/`tools.py` yang memanggil); `lookup_knowledge` belum dibungkus tool.
+- `FileStore.save` cek-lalu-ganti tidak atomik antar proses (ponytail); `Job.open` file BOM UTF-8 ditolak (pesan "Invalid JSON").
+- `reconcile` otomatis dari baris TOTAL Excel / `formula_lineage` belum ada; RunReport belum mencatat baris dibuang + alasan per node.
+- Import privat lintas modul tersisa: `_lit`, `_need`, `_common_type` (excel -> combine/labels), `_reason` (sqlexpr -> relops), `_column_names`, `_few`, `_text_key`, `a1` (inspect.encode -> source/rebind). Aman tapi sebaiknya jadi publik saat modul dirapikan.
+- Pesan error `accepted_values` membandingkan teks: `1.0` tidak sama dengan `1` (ponytail).
 
 ## Fase 6 — Serah ke host
 
@@ -489,3 +497,4 @@ NULL) dan dihapus.
 | 2026-11-06 | 5.2 `hitl.py`: `HitlPolicy` (default sesuai DESIGN §7), `HitlState` (policy, pending, approvals, next_id; semua fungsi murni state -> state baru), `ask_human(state, kind, question, options, ref)` (clarify/confirm/choose; choose >= 2 opsi unik; pertanyaan terbuka yang sama tidak digandakan; maks 20 menunggu), `answer(state, knowledge, id, reply)` -> `qa_log` (choose dicocokkan tanpa beda huruf dan disimpan bentuk kanonik; confirm yes/no/ya/tidak), `approve(state, checkpoint, by, ref)`, `gate(state, checkpoint, failed, ref)` -> None atau alasan (required / required_if_fail / ref basi / pertanyaan masih menunggu), `should_ask(policy, confidence, unknown_term)`. `engine.run(..., hitl=None, ref=None)`: bila `hitl` diberikan, `after_propose_datasets` + `after_spec` dicek sebelum menyentuh disk; ditolak -> `PipelineError` (satu Issue `hitl.<cp>` per checkpoint). Error input -> `HitlError` (ValueError; dikonversi ke dict di `tools.py` Fase 6). ponytail: approval dicek lewat teks `ref`, bukan hash spec. 41+3 tes; 19 mutasi mati. |
 | 2026-11-06 | 5.3 `quality.py` + `checks` di spec: `not_null`, `unique`, `range` (angka/tanggal, NULL dilewati, batas dibanding sebagai DOUBLE untuk angka), `accepted_values` (dibanding sebagai teks), `reconcile` (satu agregat sum/count/avg/min/max dari tabel kiri vs tabel kanan atau angka; `by` per grup, FULL OUTER JOIN, grup yang hilang = 0 hanya untuk sum/count; `abs_tol`, `rel_tol` = pecahan sisi terbesar). `severity` error|warn. `validate` menyaring tabel/kolom/tipe tak valid (`checks.<nama>`); `run` menjalankan sesudah semua step, error -> status failed tanpa file ditulis, warn -> `warnings`; `RunReport.checks` (CheckResult: passed, bad_rows, message) tampil di `.text()`. Check pada tabel dari step yang gagal dilewati (tidak dilaporkan dua kali). Bug ditemukan tes: reconcile tanpa `by` yang lolos mengembalikan 0 baris dan judge memakai `rows[0]`. 32 tes; 26 mutasi, semua mati (5 selamat -> tes ditambah, 1 kode mati dihapus). ponytail: accepted_values dibanding teks; satu agregat per reconcile. |
 | 2026-11-06 | 5.4 `state.py`: `JobState` (job_id, version, files [FileRef id/filename/sha256, tanpa bytes], roles file_role->file id, knowledge, hitl, history, binds, last_run; `extra=forbid`, konsisten: role menunjuk file ada, id unik), `Job.from_state(json)` / `Job.open(job_id, store)` / `job.update(fn)` (fn(state)->state baru; version dinaikkan oleh job; hasil di-round-trip JSON sebelum disimpan; error apa pun -> state lama tetap), `StateStore` protocol (load/save dengan `expected_version`), `FileStore(dir)` (satu file `job-<id>.json`, tulis `.part` lalu `os.replace`, `StateConflict` bila versi tersimpan beda, file korup ditolak dan tidak ditimpa), `FileProvider` protocol + `open_files(state, provider)` -> `{role: Workbook}` dengan cek sha256. job_id huruf kecil/angka/`_.-` (aman di Windows). `Job.state` dan hasil `update` berupa salinan. ponytail: FileStore cek-lalu-ganti tidak atomik antar proses; production pakai compare-and-set DB host. 45 tes; 22 mutasi, semua mati (1 selamat -> tes ditambah, 1 ekuivalen). |
+| 2026-11-07 | P6 Fase 3-5, dikerjakan sendiri (tanpa subagent): adversarial lewat ~70 probe skrip, auditor lewat grep aturan keras + baca DESIGN vs kode, agent-user lewat menulis spec dari dokumen + 16 kesalahan tipikal. DIPERBAIKI: (1) regex `$` menerima newline di akhir (`job_id`, `sha256`) dan `\d` menerima digit non-ASCII (`until_blank_rows(٢)` lolos validasi lalu `int()` gagal) -> `fullmatch` + `[0-9]`; (2) `Job.update(fn)` memberi `fn` objek state asli, mutasi di tempat merusak state walau update ditolak -> `fn` menerima salinan dalam; (3) `engine.run` dengan `hitl`/`out_dir` bertipe salah melempar AttributeError/TypeError -> `PipelineError`; (4) `range` dengan batas tak terbaca (`'abc'`, `nan`, `'2026-13-45'`) baru gagal saat run dengan pesan duckdb mentah -> `_Bad` terdeteksi di `validate` dengan contoh bentuk yang benar; (5) `_NUMERIC` digandakan di excel.py dan quality.py -> `NUMERIC_TYPE` di `nodes/base.py`; (6) agent tidak bisa menemukan field config node -> `nodes.catalog(name=None)` (satu baris per node, atau docstring + field `nama*: tipe = default` per node) dan pesan error config node memuat `fields (* required): ...`; (7) DESIGN §7/§9/§10 diselaraskan dengan kode. Dibuang: guard bool di `_check_bound` (pydantic sudah mengubah `True` jadi 1). 24 tes baru; 17 mutasi mati. |

@@ -457,3 +457,38 @@ def test_reconcile_missing_group_equals_a_zero_group_for_sum_and_count_only():
         by=["k"],
     )
     assert one({"c": c}, con, sc)[0][0].bad_rows == 1
+
+
+@pytest.mark.parametrize(
+    "kw,col,msg",
+    [
+        ({"min": "abc"}, "n", "not a finite number"),
+        ({"max": "nan"}, "n", "not a finite number"),
+        ({"min": "inf"}, "n", "not a finite number"),
+        ({"min": "2026-13-45"}, "d", "not a DATE"),
+        ({"min": "yesterday"}, "d", "not a DATE"),
+        ({"max": 5}, "d", "not a DATE"),
+        ({"min": "10:99:00"}, "t", "not a TIME"),
+        ({"min": "nope"}, "ts", "not a TIMESTAMP"),
+    ],
+)
+def test_range_bound_that_cannot_be_read_is_a_planning_error(kw, col, msg):
+    con, sc = world(
+        t="CREATE TABLE t AS SELECT 1 AS n, DATE '2026-01-01' AS d, TIME '10:00' AS t, "
+        "TIMESTAMP '2026-01-01 10:00' AS ts"
+    )
+    c = chk(kind="range", table="t", column=col, **kw)
+    assert msg in check_schema({"c": c}, sc)["c"]
+    results, broken = run_checks({"c": c}, con, sc)
+    assert results == [] and msg in broken["c"]
+
+
+def test_range_valid_bounds_for_time_and_timestamp():
+    con, sc = world(
+        t="CREATE TABLE t AS SELECT * FROM (VALUES (TIME '09:00', TIMESTAMP '2026-01-01 09:00'),"
+        "(TIME '11:00', TIMESTAMP '2026-01-02 11:00')) v(t, ts)"
+    )
+    (r,), _ = one({"c": chk(kind="range", table="t", column="t", max="10:00:00")}, con, sc)
+    assert r.bad_rows == 1
+    (r,), _ = one({"c": chk(kind="range", table="t", column="ts", min="2026-01-02")}, con, sc)
+    assert r.bad_rows == 1

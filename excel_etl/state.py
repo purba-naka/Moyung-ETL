@@ -36,8 +36,8 @@ from excel_etl.versions import SpecHistory
 from excel_etl.workbook import Workbook, WorkbookError
 
 # lower case only: on Windows `Job1` and `job1` would be the same file
-_JOB_ID = re.compile(r"^[a-z0-9](?:[a-z0-9_.-]{0,98}[a-z0-9_-])?$")
-_SHA = re.compile(r"^[0-9a-f]{64}$")
+_JOB_ID = re.compile(r"[a-z0-9](?:[a-z0-9_.-]{0,98}[a-z0-9_-])?")
+_SHA = re.compile(r"[0-9a-f]{64}")
 _MAX_FILES = 50
 
 
@@ -60,7 +60,7 @@ class FileRef(_Model):
 
     @model_validator(mode="after")
     def _hash(self) -> FileRef:
-        if not _SHA.match(self.sha256):
+        if not _SHA.fullmatch(self.sha256):
             raise ValueError("sha256 must be 64 lower-case hex characters")
         return self
 
@@ -78,7 +78,7 @@ class JobState(_Model):
 
     @model_validator(mode="after")
     def _consistent(self) -> JobState:
-        if not _JOB_ID.match(self.job_id):
+        if not _JOB_ID.fullmatch(self.job_id):
             raise ValueError(
                 "job_id must be 1-100 characters: a-z, 0-9, _ . - (lower case, "
                 "starting with a letter or digit, not ending with a dot)"
@@ -135,7 +135,7 @@ class FileStore:
         self.dir = Path(directory)
 
     def _path(self, job_id: str) -> Path:
-        if not isinstance(job_id, str) or not _JOB_ID.match(job_id):
+        if not isinstance(job_id, str) or not _JOB_ID.fullmatch(job_id):
             raise StateError(f"bad job_id {job_id!r}")
         return self.dir / f"job-{job_id}.json"  # the prefix keeps `con` and friends legal
 
@@ -221,7 +221,7 @@ class Job:
         keeps its old state. After a `StateConflict` reload with `Job.open` and try again.
         """
         old = self._state
-        new = fn(old)
+        new = fn(old.model_copy(deep=True))  # `fn` may edit its argument in place
         if not isinstance(new, JobState):
             raise StateError(f"the update must return a JobState, got {type(new).__name__}")
         if new.job_id != old.job_id:

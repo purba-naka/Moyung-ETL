@@ -6,6 +6,7 @@ from excel_etl.nodes.base import (
     NodeError,
     Schema,
     build,
+    catalog,
     infer,
     names,
     node,
@@ -14,6 +15,7 @@ from excel_etl.nodes.base import (
 )
 
 __all__ = [
+    "catalog",
     "Column",
     "Node",
     "NodeError",

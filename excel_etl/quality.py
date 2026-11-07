@@ -17,17 +17,18 @@ ponytail: `accepted_values` compares text, so a DOUBLE 1.0 does not equal the va
 
 from __future__ import annotations
 
+import math
 import re
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import date, datetime, time
 from typing import Annotated, Any, Literal
 
 import duckdb
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from excel_etl.nodes.base import Schema, quote
+from excel_etl.nodes.base import NUMERIC_TYPE, Schema, quote
 
-_NUMERIC = re.compile(r"^(U?(TINY|SMALL|BIG|HUGE)?INT(EGER)?|FLOAT|DOUBLE|DECIMAL\(.*\))$")
 _ORDERED = re.compile(r"^(DATE|TIME|TIMESTAMP.*)$")
 _EXAMPLES = 5
 
@@ -189,16 +190,39 @@ def _plan_unique(c: Unique, schemas: dict[str, Schema]) -> _Plan:
     return _Plan(sql, [], judge)
 
 
+def _check_bound(bound: Scalar, kind: str, col: str) -> None:
+    """A bound that cannot be read as the column's kind is a spec error, not a run failure."""
+    if NUMERIC_TYPE.match(kind):
+        try:
+            ok = math.isfinite(float(bound))
+        except ValueError:
+            ok = False
+        if not ok:
+            raise _Bad(f"range bound {bound!r} is not a finite number; {col!r} is {kind}")
+        return
+    parse = time if kind == "TIME" else date if kind == "DATE" else datetime
+    try:
+        if isinstance(bound, bool | int | float):
+            raise ValueError
+        parse.fromisoformat(bound)
+    except ValueError:
+        shape = {"TIME": "10:30:00", "DATE": "2026-01-31"}.get(kind, "2026-01-31 10:30:00")
+        raise _Bad(
+            f"range bound {bound!r} is not a {kind} such as '{shape}'; column {col!r}"
+        ) from None
+
+
 def _plan_range(c: Range, schemas: dict[str, Schema]) -> _Plan:
     (col,) = _cols(schemas, c.table, [c.column])
     kind = _type(schemas, c.table, col)
-    if not (_NUMERIC.match(kind) or _ORDERED.match(kind)):
+    if not (NUMERIC_TYPE.match(kind) or _ORDERED.match(kind)):
         raise _Bad(f"range needs a number or date column; {col!r} is {kind}")
     q, bad, params, bounds = quote(col), [], [], []
     for sign, bound in (("<", c.min), (">", c.max)):
         if bound is not None:
+            _check_bound(bound, kind, col)
             # numbers compare as DOUBLE so min=2.5 on an integer column is not rounded
-            bad.append(f"{q} {sign} CAST(? AS {'DOUBLE' if _NUMERIC.match(kind) else kind})")
+            bad.append(f"{q} {sign} CAST(? AS {'DOUBLE' if NUMERIC_TYPE.match(kind) else kind})")
             params.append(str(bound))
             bounds.append(f"{'min' if sign == '<' else 'max'} {bound}")
     cond = " OR ".join(bad)
@@ -241,7 +265,7 @@ def _side_sql(schemas: dict[str, Schema], side: Side, by: list[str]) -> tuple[st
     else:
         (col,) = _cols(schemas, side.table, [side.column or ""])
         kind = _type(schemas, side.table, col)
-        if side.agg != "count" and not _NUMERIC.match(kind):
+        if side.agg != "count" and not NUMERIC_TYPE.match(kind):
             raise _Bad(f"{side.agg} needs a number column; {side.table}.{col} is {kind}")
         agg = f"{side.agg}({quote(col)})"
         if side.agg == "sum":

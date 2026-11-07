@@ -146,25 +146,29 @@ Spec diberi versi; repair menghasilkan versi baru + diff, bukan menimpa (`SpecHi
 
 Library tidak memblok. Dua bagian:
 
-**`ask_human(kind, question, options, ref)`** -> mengembalikan `PendingQuestion`
-(`clarify` | `confirm` | `choose`). Host yang menyampaikan ke user lalu memanggil
-`answer(question_id, answer)`. Jawaban otomatis masuk `Knowledge.qa_log`.
+Semua fungsi murni: `fn(HitlState, ...) -> state baru` (modul `hitl.py`).
 
-**`HitlPolicy`** (config per job/tenant):
+**`ask_human(state, kind, question, options, ref)`** -> `(PendingQuestion, state baru)`
+(`clarify` | `confirm` | `choose`; `choose` butuh >= 2 opsi berbeda; pertanyaan terbuka yang
+sama tidak digandakan; maks 20 menunggu). Host menyampaikan ke user lalu memanggil
+`answer(state, knowledge, question_id, reply)` -> `(state, knowledge)`: jawaban `choose`
+dicocokkan tanpa beda huruf, `confirm` yes/no (ya/tidak), lalu masuk `Knowledge.qa_log`.
 
-```yaml
-checkpoints:
-  after_workbook_map: off
-  after_propose_datasets: required     # manusia memilih dataset
-  after_spec: optional
-  after_run: required_if_fail
-  on_rebind_drift: required
-auto_ask_when:
-  confidence_below: 0.7
-  unknown_term: true
+**`HitlPolicy`** (config per job/tenant, bagian dari `HitlState`):
+
+```json
+{"checkpoints": {"after_workbook_map": "off", "after_propose_datasets": "required",
+                 "after_spec": "optional", "after_run": "required_if_fail",
+                 "on_rebind_drift": "required"},
+ "confidence_below": 0.7, "unknown_term": true}
 ```
 
-`run()` menolak jalan bila checkpoint `required` belum di-approve.
+Mode: `off`, `optional` (tidak pernah memblok), `required`, `required_if_fail`.
+`approve(state, checkpoint, by, ref)` mencatat persetujuan; `gate(state, checkpoint,
+failed, ref)` -> `None` atau alasan menolak (belum approve, approve untuk `ref` lain,
+pertanyaan masih menunggu). `should_ask(policy, confidence, unknown_term)`.
+`run(spec, files, out_dir, hitl=, ref=)` menolak (`PipelineError`) bila `after_propose_datasets`
+atau `after_spec` belum di-approve; `after_run` dan `on_rebind_drift` dipanggil host/`tools.py`.
 
 ## 8. Knowledge (konteks manusia)
 
@@ -185,16 +189,18 @@ Semua state berbentuk satu objek pydantic, `model_dump_json()` / `model_validate
 
 ```
 JobState
-  job_id, version
+  job_id, version                          # version = kunci optimistic lock
   files: [FileRef(id, filename, sha256)]   # bukan bytes
+  roles: {file_role: file id}
   knowledge: Knowledge
-  spec: PipelineSpec + versions
-  pending: [PendingQuestion]
-  approvals: {checkpoint: who/when}
-  last_run: RunReport
+  hitl: HitlState (policy, pending, approvals, next_id)
+  history: SpecHistory | None              # spec + versi
+  binds: {source: BindRecord}              # hasil rebind terakhir
+  last_run: RunReport | None
 ```
 
-Inti library selalu fungsi murni: `fn(state, args) -> (result, new_state)`.
+Inti library: fungsi murni atas bagian state (`hitl.py`, `knowledge.py`). `Job.update(fn)` memanggil
+`fn(salinan state) -> state baru`, menaikkan `version`, round-trip JSON, lalu menyimpan.
 Mode persistensi dipilih saat membuat `Job`, bukan di inti:
 
 | Mode | Cara pakai | Siapa menyimpan |
@@ -215,16 +221,18 @@ class StateStore(Protocol):
   (dua tab user, dua worker), mencegah jawaban HITL tertimpa.
 
 File tidak pernah masuk state. Host memberi `FileProvider`:
-`open(file_id) -> path | bytes`. Cache parsing berbasis `sha256`, aman diulang
+`open(file_id) -> path | bytes`; `open_files(state, provider)` -> `{file_role: Workbook}` dan menolak
+file yang sha256-nya beda dari yang terdaftar. Cache parsing berbasis `sha256`, aman diulang
 di mode mana pun.
 
 ## 10. Kualitas dan rekonsiliasi
 
 - Assert per tabel (`checks` di spec, dinamai seperti source): `not_null`, `unique`, `range`, `accepted_values`, `reconcile`. `severity: error` menggagalkan run sebelum file apa pun ditulis; `warn` hanya dilaporkan.
-- Rekonsiliasi: total dari data bersih dibandingkan dengan baris/kolom TOTAL Excel
-  atau sheet turunan (lihat `formula_lineage`), dengan toleransi.
-- `RunReport`: baris in/out per node, baris dibuang + alasan, hasil assert,
-  hasil rekonsiliasi.
+- `reconcile`: satu agregat (sum/count/avg/min/max) tabel kiri vs tabel kanan atau angka, opsional
+  per grup (`by`), toleransi `abs_tol`/`rel_tol`. Agent menyusunnya sendiri; mengisi otomatis dari
+  baris TOTAL Excel / `formula_lineage` belum ada.
+- `RunReport`: baris in/out per node, hasil check (`checks`: lulus, jumlah baris buruk, pesan).
+  Belum ada: baris dibuang + alasan per node.
 
 ### Sheet sumber vs turunan
 
