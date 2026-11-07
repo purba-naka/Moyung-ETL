@@ -411,3 +411,66 @@ def test_pipeline_error_not_about_approval_has_no_hint(blobs, tmp_path):
     t.approve("after_propose_datasets", "dina", "v1")
     err = t.run_pipeline()["error"]
     assert err.startswith("out_dir: cannot use") and "ask_human" not in err
+
+
+def test_a_spec_that_reads_one_role_opens_only_that_file(blobs, tmp_path):
+    opened: list[str] = []
+
+    class Spy(Provider):
+        def open(self, file_id):
+            opened.append(file_id)
+            return super().open(file_id)
+
+    blobs["b"] = make_xlsx({"Other": [["x"], [1]]})
+    t = JobTools(Job(new_state("j")), Spy(blobs), tmp_path)
+    t.add_file("a", "jan.xlsx", "f")
+    t.add_file("b", "other.xlsx", "g")
+    opened.clear()
+    assert t.save_spec(spec_json())["saved"]
+    assert set(opened) == {"a"}  # role g belongs to no source of the spec
+    opened.clear()
+    t.validate_spec()
+    t.rebind_sources()
+    assert set(opened) == {"a"}
+
+
+def test_per_version_output_keeps_older_files(blobs, tmp_path):
+    t = JobTools(Job(new_state("j")), Provider(blobs), tmp_path / "out", per_version=True)
+    t.add_file("a", "jan.xlsx", "f")
+    t.save_spec(spec_json())
+    t.approve("after_propose_datasets", "dina", "v1")
+    assert t.run_pipeline()["ok"]
+    assert (tmp_path / "out" / "v1" / "totals.parquet").exists()
+    other = dict(SPEC, outputs={"t2": {"input": "by_item"}})
+    t.save_spec(json.dumps(other), "second output")
+    t.approve("after_propose_datasets", "dina", "v2")
+    assert t.run_pipeline()["ok"]
+    assert (tmp_path / "out" / "v1" / "totals.parquet").exists()  # still there
+    assert (tmp_path / "out" / "v2" / "t2.parquet").exists()
+    flat = JobTools(Job(new_state("k")), Provider(blobs), tmp_path / "flat")
+    flat.add_file("a", "jan.xlsx", "f")
+    flat.save_spec(spec_json())
+    flat.approve("after_propose_datasets", "dina", "v1")
+    flat.run_pipeline()
+    assert (tmp_path / "flat" / "totals.parquet").exists()
+
+
+def test_reload_job_after_a_conflict_lets_the_retry_work(blobs, tmp_path):
+    store = FileStore(tmp_path / "store")
+    a = JobTools(Job.open("j", store), Provider(blobs), tmp_path)
+    b = JobTools(Job.open("j", store), Provider(blobs), tmp_path)
+    a.add_file("a", "jan.xlsx", "f")
+    assert b.save_spec(spec_json())["conflict"] is True
+    assert "reloaded job j at version 1" in b.reload_job()["text"]
+    assert b.save_spec(spec_json())["saved"]
+    assert "reload_job" not in [f.__name__ for f in b.agent_tools()]  # host only
+
+
+def test_cut_text_says_truncated_and_has_a_next_offset_key(tools, monkeypatch):
+    import excel_etl.tools as mod
+
+    monkeypatch.setattr(mod, "_MAX_TEXT", 50)
+    r = tools.node_catalog()
+    assert r["truncated"] is True and "next_offset" in r
+    ok = tools.pending_questions()
+    assert "truncated" not in ok

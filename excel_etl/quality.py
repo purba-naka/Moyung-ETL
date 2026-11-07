@@ -27,7 +27,8 @@ from typing import Annotated, Any, Literal
 import duckdb
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from excel_etl.nodes.base import NUMERIC_TYPE, Schema, quote
+from excel_etl.nodes.base import NUMERIC_TYPE, NodeError, Schema, quote
+from excel_etl.nodes.sqlexpr import bind, check_expression
 
 _ORDERED = re.compile(r"^(DATE|TIME|TIMESTAMP.*)$")
 _EXAMPLES = 5
@@ -77,9 +78,23 @@ class AcceptedValues(_OnTable):
 
 
 class Side(_Model):
+    """One side of a reconcile: an aggregate of a column, over all rows or the rows that pass
+    `where` (a scalar SQL expression such as `"Item" = 'Total'`; this is how the total row of
+    a sheet is compared with the sum of the rows above it)."""
+
     table: str = Field(min_length=1)
     agg: Literal["sum", "count", "avg", "min", "max"] = "sum"
     column: str | None = None  # not needed for `count` (counts rows)
+    where: str | None = None
+
+    @model_validator(mode="after")
+    def _where_is_safe(self) -> Side:
+        if self.where is not None:
+            try:
+                self.where = check_expression(self.where)  # same rules as the filter node
+            except NodeError as e:
+                raise ValueError(str(e)) from None  # a spec error, not a raw node error
+        return self
 
 
 class Reconcile(_Base):
@@ -241,13 +256,23 @@ def _plan_range(c: Range, schemas: dict[str, Schema]) -> _Plan:
 def _plan_accepted(c: AcceptedValues, schemas: dict[str, Schema]) -> _Plan:
     (col,) = _cols(schemas, c.table, [c.column])
     q = quote(col)
+    kind = _type(schemas, c.table, col)
     marks = ", ".join("?" * len(c.values))
-    cond = f"CAST({q} AS VARCHAR) NOT IN ({marks})"  # NULL is skipped, as in range
+    if NUMERIC_TYPE.match(kind):
+        # numbers compare as numbers, so a listed 1 accepts 1.0 and 1; a value that is not
+        # a number can never match, which is a mistake in the spec, not a data problem
+        bad = [v for v in c.values if isinstance(v, bool) or not _is_number(v)]
+        if bad:
+            raise _Bad(f"{col!r} is {kind}; accepted_values must be numbers, got {bad[0]!r}")
+        want: list[Any] = [float(v) for v in c.values]
+        cond = f"CAST({q} AS DOUBLE) NOT IN ({marks})"
+    else:
+        want = [str(v).lower() if isinstance(v, bool) else str(v) for v in c.values]
+        cond = f"CAST({q} AS VARCHAR) NOT IN ({marks})"  # NULL is skipped, as in range
     sql = (
         f"SELECT count(*) FILTER (WHERE {cond}), "
         f"list(DISTINCT CAST({q} AS VARCHAR)) FILTER (WHERE {cond}) FROM {quote(c.table)}"
     )
-    want = [str(v).lower() if isinstance(v, bool) else str(v) for v in c.values]
 
     def judge(rows: list[tuple]) -> tuple[int, str]:
         n, seen = rows[0]
@@ -255,6 +280,13 @@ def _plan_accepted(c: AcceptedValues, schemas: dict[str, Schema]) -> _Plan:
         return n, f"{n} row(s) of {col!r} not among the accepted values; seen: {_list(shown)}"
 
     return _Plan(sql, want * 2, judge)
+
+
+def _is_number(v: object) -> bool:
+    try:
+        return math.isfinite(float(v))  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return False
 
 
 def _side_sql(schemas: dict[str, Schema], side: Side, by: list[str]) -> tuple[str, list[str], str]:
@@ -274,7 +306,18 @@ def _side_sql(schemas: dict[str, Schema], side: Side, by: list[str]) -> tuple[st
     selects = [f"{quote(k)} AS k{i}" for i, k in enumerate(keys)]
     group = f" GROUP BY {', '.join(quote(k) for k in keys)}" if keys else ""
     cols = ", ".join([*selects, f"CAST({agg} AS DOUBLE) AS v"])
-    sql = f"SELECT {cols} FROM {quote(side.table)}{group}"
+    if side.where is not None:
+        try:  # the same binding the filter node does: unknown columns and non-booleans fail here
+            (kind,) = bind(schemas[side.table], f"({side.where}) AS __e", "reconcile")
+        except NodeError as e:
+            raise _Bad(f"where of {side.table!r}: {e}") from None
+        if kind.type not in ("BOOLEAN", "NULL"):
+            raise _Bad(f"where {side.where!r} gives {kind.type}, not true/false")
+        label += f" where {side.where}"
+        where = f" WHERE ({side.where})"
+    else:
+        where = ""
+    sql = f"SELECT {cols} FROM {quote(side.table)}{where}{group}"
     return sql, keys, label
 
 

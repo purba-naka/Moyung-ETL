@@ -128,6 +128,9 @@ class Filter(Node):
             self.where = check_expression(self.where)
             return self
 
+    def why_rows_change(self) -> str:
+        return f"kept rows where {self.config.where}"
+
     def infer_schema(self, inputs: list[Schema]) -> Schema:
         (schema,) = inputs
         (kind,) = bind(schema, f"({self.config.where}) AS __e", self.name)
@@ -276,6 +279,10 @@ class Dedupe(Node):
 
     class Config(NodeConfig):
         keys: list[str] | None = Field(default=None, min_length=1)
+
+    def why_rows_change(self) -> str:
+        keys = ", ".join(self.config.keys) if self.config.keys else "all columns"
+        return f"repeated rows dropped (same {keys})"
 
     def infer_schema(self, inputs: list[Schema]) -> Schema:
         (schema,) = inputs

@@ -23,6 +23,7 @@ import functools
 import inspect
 import os
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any, Literal
 
 from pydantic import ValidationError
@@ -33,7 +34,7 @@ from excel_etl.inspect import encode
 from excel_etl.knowledge import lookup_knowledge
 from excel_etl.nodes import NodeError, catalog
 from excel_etl.nodes.base import describe
-from excel_etl.pipeline import SpecError, dump_spec, parse_spec
+from excel_etl.pipeline import PipelineSpec, SpecError, dump_spec, parse_spec
 from excel_etl.rebind import rebind
 from excel_etl.state import (
     FileProvider,
@@ -54,9 +55,13 @@ _ERRORS = (SpecError, NodeError, HitlError, StateError, WorkbookError, ValueErro
 
 
 def _cap(result: dict) -> dict:
+    """Cut a text result at the budget. `truncated` says it, and `next_offset` is the first
+    cut character, so a tool that has an `offset` argument can be called again from there."""
     text = result.get("text")
     if isinstance(text, str) and len(text) > _MAX_TEXT:
-        result = {**result, "text": text[: _MAX_TEXT - 3] + "...", "truncated": True}
+        cut = _MAX_TEXT - 3
+        result = {**result, "text": text[:cut] + "...", "truncated": True}
+        result.setdefault("next_offset", None)  # paged tools set their own; others cannot resume
     return result
 
 
@@ -103,10 +108,12 @@ class JobTools:
         job: Job,
         provider: FileProvider,
         out_dir: str | os.PathLike[str] | None = None,
+        per_version: bool = False,
     ) -> None:
         self.job = job
         self.provider = provider
         self.out_dir = out_dir
+        self.per_version = per_version  # write into out_dir/v<N> so a rerun keeps older files
 
     # --- helpers -----------------------------------------------------------------------------
 
@@ -161,6 +168,13 @@ class JobTools:
             lambda s: s.model_copy(update={"hitl": approve(s.hitl, checkpoint, by, ref or None)})
         )
         return {"text": f"{checkpoint} approved by {by}" + (f" for {ref}" if ref else "")}
+
+    @_tool
+    def reload_job(self) -> dict:
+        """Host: read the saved state again. Call it after a conflict error, then repeat the
+        call that failed. Without a store there is nothing to read."""
+        s = self.job.reload()
+        return {"text": f"reloaded job {s.job_id} at version {s.version}"}
 
     # --- the agent's tools -------------------------------------------------------------------
 
@@ -330,7 +344,7 @@ class JobTools:
         if isinstance(note, str) and len(note) > MAX_NOTE:
             raise ValueError(f"the note is {len(note)} characters; keep it under {MAX_NOTE}")
         spec = parse_spec(spec_json)
-        files = self._open_all()
+        files = self._open_all(spec)
         report = validate(spec, files)
         if not report.ok:
             return {"saved": False, "text": "not saved\n" + report.text()}
@@ -350,9 +364,12 @@ class JobTools:
             "text": f"saved v{self._version()}\n" + report.text() + warn,
         }
 
-    def _open_all(self) -> dict[str, Workbook] | None:
+    def _open_all(self, spec: PipelineSpec) -> dict[str, Workbook] | None:
+        """The files the spec reads (its `file_role`s), or None when no file is registered."""
         s = self._state
-        return open_files(s, self.provider) if s.roles else None
+        if not s.roles:
+            return None
+        return open_files(s, self.provider, {src.file_role for src in spec.sources.values()})
 
     @_tool
     def get_spec(self, version: int = 0) -> dict:
@@ -374,7 +391,7 @@ class JobTools:
             spec = h.current.spec
         else:
             spec = parse_spec(spec_json)
-        report = validate(spec, self._open_all())
+        report = validate(spec, self._open_all(spec))
         return {"ok": report.ok, "text": report.text()}
 
     @_tool
@@ -384,10 +401,11 @@ class JobTools:
         s = self._state
         if s.history is None:
             raise StateError("no spec saved yet; use save_spec")
-        files = self._open_all()
+        spec = s.history.current.spec
+        files = self._open_all(spec)
         if files is None:
             raise StateError("no files registered with a role; the host must add_file first")
-        report = rebind(s.history.current.spec, files, s.binds)
+        report = rebind(spec, files, s.binds)
         self.job.update(
             lambda st: st.model_copy(update={"binds": {**st.binds, **report.records()}})
         )
@@ -405,12 +423,14 @@ class JobTools:
             raise StateError("no spec saved yet; use save_spec")
         if self.out_dir is None:
             raise StateError("the host gave no out_dir; it cannot write outputs")
-        files = self._open_all()
+        spec = s.history.current.spec
+        files = self._open_all(spec)
         if files is None:
             raise StateError("no files registered with a role; the host must add_file first")
-        rep = run(
-            s.history.current.spec, files, self.out_dir, hitl=s.hitl, ref=f"v{self._version()}"
-        )
+        target = Path(self.out_dir)
+        if self.per_version:
+            target = target / f"v{self._version()}"
+        rep = run(spec, files, target, hitl=s.hitl, ref=f"v{self._version()}")
         self.job.update(lambda st: st.model_copy(update={"last_run": rep}))
         text = rep.text()
         if why := gate(self._state.hitl, "after_run", failed=rep.status != "ok"):

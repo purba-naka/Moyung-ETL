@@ -67,6 +67,8 @@ class NodeStat(_Report):
     rows_out: int
     columns: int
     seconds: float
+    # why the row count may differ from the rows read; shown only when it did
+    note: str = ""
 
 
 class OutputStat(_Report):
@@ -113,6 +115,8 @@ class RunReport(_Report):
         for n in self.nodes:
             rows = f"{n.rows_in}->{n.rows_out} rows"
             lines.append(f"  {n.id}|{n.node}|{rows}|{n.columns} cols|{n.seconds:.2f}s")
+            if n.note:
+                lines.append(f"    {n.note}")
         for c in self.checks:
             mark = "pass" if c.passed else ("FAIL" if c.severity == "error" else "warn")
             lines.append(
@@ -211,6 +215,11 @@ def _load_sources(
         schema = schema_of(rel)
         st.schemas[name] = schema
         _check_columns(source, schema, st, where)
+        if loc.errors:
+            st.warnings.append(
+                f"{where}: {loc.errors} cell(s) hold an Excel error (#DIV/0!, #N/A ...) and are "
+                f"read as empty; fix them in the workbook, or use fill_missing after the read"
+            )
         if (below := loc.below) > 0:
             st.warnings.append(
                 f"{where}: {below} more filled row(s) lie below the table after "
@@ -282,10 +291,11 @@ def _run_steps(
                 id=step.id,
                 kind="step",
                 node=step.node,
-                rows_in=sum(st.rows(i) for i in step.inputs),
+                rows_in=(rows_in := sum(st.rows(i) for i in step.inputs)),
                 rows_out=rows,
                 columns=len(actual),
                 seconds=round(time.perf_counter() - t0, 4),
+                note=n.why_rows_change() if rows != rows_in else "",
             )
         )
 

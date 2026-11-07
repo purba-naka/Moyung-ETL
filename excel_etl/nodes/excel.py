@@ -61,6 +61,14 @@ class DropRows(Node):
                     raise ValueError(f"drop_regex {self.drop_regex!r} is not a regex: {e}") from e
             return self
 
+    def why_rows_change(self) -> str:
+        parts = ["blank rows"] if self.config.blank else []
+        if self.config.keep_type:
+            parts.append(f"{self.config.column} not a {self.config.keep_type}")
+        if self.config.drop_regex:
+            parts.append(f"{self.config.column} matching /{self.config.drop_regex}/")
+        return "dropped: " + ", ".join(parts)
+
     def infer_schema(self, inputs: list[Schema]) -> Schema:
         (schema,) = inputs
         if self.config.column:
@@ -190,6 +198,11 @@ class Unpivot(Node):
         by_name = {c.name: c.type for c in schema}
         return picked, common_type([by_name[c] for c in picked], cfg.value_type), by_name
 
+    def why_rows_change(self) -> str:
+        return "one row per value column" + (
+            "; empty values give no row" if self.config.drop_nulls else ""
+        )
+
     def infer_schema(self, inputs: list[Schema]) -> Schema:
         (schema,) = inputs
         _, vtype, by_name = self._plan(schema)
@@ -267,6 +280,9 @@ class UnpivotGroups(Node):
         if clash := [m for m in measures if m in cfg.keep or m == cfg.group_column]:
             raise NodeError(f"{self.name}: measure {clash[0]!r} clashes with another output column")
         return found, measures, by_name
+
+    def why_rows_change(self) -> str:
+        return "one row per column block; blocks with no value give no row"
 
     def infer_schema(self, inputs: list[Schema]) -> Schema:
         (schema,) = inputs

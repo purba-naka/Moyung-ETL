@@ -325,3 +325,129 @@ def test_job_id_with_trailing_newline_refused(bad):
 def test_sha_with_trailing_newline_refused():
     with pytest.raises(StateError, match="64 lower-case"):
         add_file(new_state("j"), "a", "x", SHA + "\n")
+
+
+def test_a_state_file_saved_with_a_bom_loads(tmp_path):
+    store = FileStore(tmp_path)
+    Job.open("j", store).update(lambda s: add_file(s, "f1", "a.xlsx", SHA))
+    path = tmp_path / "job-j.json"
+    path.write_text(path.read_text(encoding="utf-8"), encoding="utf-8-sig")  # an editor's BOM
+    assert path.read_bytes().startswith(b"\xef\xbb\xbf")
+    assert [f.id for f in Job.open("j", store).state.files] == ["f1"]
+
+
+def test_reload_picks_up_what_another_writer_saved_and_keeps_state_without_a_store(tmp_path):
+    store = FileStore(tmp_path)
+    a, b = Job.open("j", store), Job.open("j", store)
+    a.update(lambda s: add_file(s, "f1", "a.xlsx", SHA))
+    with pytest.raises(StateConflict):
+        b.update(lambda s: add_file(s, "f2", "b.xlsx", SHA))
+    assert b.state.version == 0
+    assert b.reload().version == 1 and [f.id for f in b.state.files] == ["f1"]
+    b.update(lambda s: add_file(s, "f2", "b.xlsx", SHA))  # the retry now works
+    assert Job.open("j", store).state.version == 2
+    plain = Job(new_state("p"))
+    plain.update(lambda s: add_file(s, "f1", "a.xlsx", SHA))
+    assert plain.reload().version == 1  # nothing to read: left as it is
+
+
+def test_reload_of_a_job_never_saved_keeps_the_empty_state(tmp_path):
+    job = Job.open("fresh", FileStore(tmp_path))
+    assert job.reload().version == 0
+
+
+def test_two_threads_saving_at_once_one_wins_and_none_is_lost(tmp_path):
+    import threading
+
+    store = FileStore(tmp_path)
+    Job.open("j", store).update(lambda s: s)
+    results: list[str] = []
+
+    def writer(name):
+        job = Job.open("j", store)
+        try:
+            job.update(lambda s: add_file(s, name, f"{name}.xlsx", SHA))
+            results.append("ok")
+        except StateConflict:
+            results.append("conflict")
+
+    threads = [threading.Thread(target=writer, args=(f"f{i}",)) for i in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    final = Job.open("j", store).state
+    # every save that said ok is in the file, and the version counts exactly those saves
+    assert results.count("ok") == len(final.files) == final.version - 1
+    assert results.count("ok") >= 1 and not list(tmp_path.glob("*.lock"))
+
+
+def test_a_lock_left_by_a_dead_writer_is_taken_over_and_a_live_one_is_waited_for(
+    tmp_path, monkeypatch
+):
+    import os
+    import time
+
+    import excel_etl.state as mod
+
+    store = FileStore(tmp_path)
+    lock = tmp_path / "job-j.json.lock"
+    lock.write_text("", encoding="utf-8")
+    old = time.time() - 3600
+    os.utime(lock, (old, old))
+    Job.open("j", store).update(lambda s: s)  # stale: taken over
+    assert not lock.exists()
+    monkeypatch.setattr(mod, "_LOCK_WAIT", 0.05)
+    lock.write_text("", encoding="utf-8")  # fresh: somebody is writing
+    with pytest.raises(StateError, match="locked by another writer"):
+        Job.open("j", store).update(lambda s: add_file(s, "f1", "a.xlsx", SHA))
+    assert lock.exists()  # not ours, not removed
+
+
+def test_open_files_opens_only_the_roles_asked_for():
+    opened: list[str] = []
+    data = make_xlsx({"D": [["a"], [1]]})  # built once: the zip holds a timestamp
+
+    class Spy:
+        def open(self, file_id):
+            opened.append(file_id)
+            return data
+
+    from excel_etl.workbook import Workbook
+
+    sha = Workbook.open(data).sha256
+    s = new_state("j")
+    for i, role in enumerate(("x", "y", "z")):
+        s = add_file(s, f"f{i}", f"{role}.xlsx", sha, role=role)
+    assert set(open_files(s, Spy(), ["y"])) == {"y"} and opened == ["f1"]
+    assert set(open_files(s, Spy())) == {"x", "y", "z"}
+    assert open_files(s, Spy(), ["nope"]) == {}  # a role with no file is the engine's to report
+
+
+def test_readers_during_writes_never_see_a_torn_file(tmp_path):
+    import threading
+
+    store = FileStore(tmp_path)
+    Job.open("j", store).update(lambda s: s)
+    stop = threading.Event()
+    seen: list[str] = []
+
+    def reader():
+        while not stop.is_set():
+            try:
+                text = store.load("j")
+                if text is not None:
+                    JobState.model_validate_json(text)
+            except PermissionError:
+                continue  # Windows may refuse a read while the file is swapped
+            except Exception as e:
+                seen.append(f"{type(e).__name__}: {e}")
+
+    t = threading.Thread(target=reader)
+    t.start()
+    job = Job.open("j", store)
+    for i in range(30):
+        job.update(lambda s, i=i: add_file(s, f"f{i % 5}", f"{i}.xlsx", SHA))
+    stop.set()
+    t.join()
+    assert seen == []
