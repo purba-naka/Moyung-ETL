@@ -33,7 +33,7 @@ from excel_etl.knowledge import Knowledge
 from excel_etl.nodes.base import describe
 from excel_etl.rebind import BindRecord
 from excel_etl.versions import SpecHistory
-from excel_etl.workbook import Workbook, WorkbookError
+from excel_etl.workbook import Workbook
 
 # lower case only: on Windows `Job1` and `job1` would be the same file
 _JOB_ID = re.compile(r"[a-z0-9](?:[a-z0-9_.-]{0,98}[a-z0-9_-])?")
@@ -245,14 +245,20 @@ class FileProvider(Protocol):
         """The file as a path or its bytes."""
 
 
+def read_file(file_id: str, provider: FileProvider, label: str = "") -> Workbook:
+    """Ask the host's provider for a file and open it. Whatever the provider raises (a disk
+    error, a missing id) is the host's problem and comes back as a StateError, not a bug."""
+    try:
+        return Workbook.open(provider.open(file_id))
+    except Exception as e:  # the provider is host code: any exception is a host fault
+        raise StateError(f"{label or repr(file_id)} cannot be opened: {e}") from None
+
+
 def open_ref(ref: FileRef, provider: FileProvider, role: str | None = None) -> Workbook:
     """Open one registered file. Refused when its hash differs from the registered one: the
     spec and the checks were made for the other file."""
     label = f"file {ref.filename!r}" + (f" (role {role!r})" if role else "")
-    try:
-        wb = Workbook.open(provider.open(ref.id))
-    except (WorkbookError, OSError, KeyError, ValueError) as e:
-        raise StateError(f"{label} cannot be opened: {e}") from None
+    wb = read_file(ref.id, provider, label)
     if wb.sha256 != ref.sha256:
         raise StateError(
             f"{label} is not the one registered: "

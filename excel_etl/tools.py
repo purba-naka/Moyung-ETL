@@ -25,11 +25,14 @@ import os
 from collections.abc import Callable
 from typing import Any, Literal
 
+from pydantic import ValidationError
+
 from excel_etl.engine import PipelineError, run, validate
 from excel_etl.hitl import HitlError, answer, approve, ask_human, gate
 from excel_etl.inspect import encode
 from excel_etl.knowledge import lookup_knowledge
 from excel_etl.nodes import NodeError, catalog
+from excel_etl.nodes.base import describe
 from excel_etl.pipeline import SpecError, dump_spec, parse_spec
 from excel_etl.rebind import rebind
 from excel_etl.state import (
@@ -41,8 +44,9 @@ from excel_etl.state import (
     add_file,
     open_files,
     open_ref,
+    read_file,
 )
-from excel_etl.versions import SpecHistory
+from excel_etl.versions import MAX_NOTE, SpecHistory
 from excel_etl.workbook import Workbook, WorkbookError
 
 _MAX_TEXT = 24_000
@@ -72,12 +76,19 @@ def _tool(fn: Callable[..., dict]) -> Callable[..., dict]:
             return _cap(fn(self, *args, **kwargs))
         except PipelineError as e:
             shown = "\n".join(f"{i.where}: {i.message}" for i in e.issues[:10])
+            if any(i.where.startswith("hitl.") for i in e.issues):
+                shown += (
+                    "\nYou cannot approve this yourself: use ask_human (confirm, or choose for "
+                    "which tables) and stop. The host approves after the person answers."
+                )
             return {"error": shown}
         except StateConflict as e:
             return {
                 "error": f"{e}. Nothing was changed; reload the job and repeat.",
                 "conflict": True,
             }
+        except ValidationError as e:  # a model refused its input; keep pydantic's noise out
+            return {"error": describe(e, "input")}
         except _ERRORS as e:
             return {"error": str(e.args[0]) if isinstance(e, KeyError) and e.args else str(e)}
         except Exception as e:  # a bug must not end the agent's turn
@@ -124,7 +135,7 @@ class JobTools:
     def add_file(self, file_id: str, filename: str, role: str = "") -> dict:
         """Host: register a file the provider can open under `file_id`; `role` is the
         `file_role` the spec uses for it. Re-registering an id replaces it (a new upload)."""
-        wb = Workbook.open(self.provider.open(file_id))
+        wb = read_file(file_id, self.provider, f"file {file_id!r}")
         self.job.update(lambda s: add_file(s, file_id, filename, wb.sha256, role or None))
         return {
             "text": f"registered {filename!r} as {file_id!r} sha {wb.sha256[:12]}"
@@ -316,6 +327,8 @@ class JobTools:
     def save_spec(self, spec_json: str, note: str = "") -> dict:
         """Save a pipeline spec (JSON text) as the next version. It is checked against the
         files first; a spec with problems is not saved. `note` says why (needed from v2)."""
+        if isinstance(note, str) and len(note) > MAX_NOTE:
+            raise ValueError(f"the note is {len(note)} characters; keep it under {MAX_NOTE}")
         spec = parse_spec(spec_json)
         files = self._open_all()
         report = validate(spec, files)
