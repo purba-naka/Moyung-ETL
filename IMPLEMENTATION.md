@@ -10,7 +10,7 @@ Perbarui setiap selesai satu item (lihat AGENTS.md §7).
 - Fase 4 selesai: 4.1-4.4 (`rebind.py`, `versions.py`).
 - 3.4 selesai: validator ekspresi SQL + 18 node (`select rename cast filter derive fill_missing sort dedupe join union group_by pivot` + 6 node Excel).
 - P6 Fase 3-4 selesai (perbaikan di Log; sisa di §Temuan P6 Fase 3-4).
-- Fase 5 selesai: 5.1-5.4 + P6 Fase 3-5 (dikerjakan sendiri, tanpa subagent; temuan di Log dan §Temuan P6 Fase 5). Berikutnya: **Fase 6 (`tools.py` + serah ke host).**
+- Fase 5 selesai: 5.1-5.4 + P6 Fase 3-5 (dikerjakan sendiri, tanpa subagent; temuan di Log dan §Temuan P6 Fase 3-5). Berikutnya: **Fase 6 (`tools.py` + serah ke host).**
 - **Aturan kerja (dari user): BALANSITAS hanya satu contoh, bukan patokan bentuk.** Node berbasis pola umum dan config eksplisit; tes memakai beberapa bentuk sintetis berbeda; sampel hanya sanity. Temuan P6 Fase 1/2 yang ditunda: lihat §Temuan.
 
 ## Berikutnya
