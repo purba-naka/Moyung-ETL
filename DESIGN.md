@@ -4,8 +4,9 @@ Library Python murni: tools untuk agent LLM membangun, menjalankan, dan me-recyc
 pipeline ETL dari file Excel raw (multi-sheet, multi-tabel, bentuk tak seragam)
 sampai menghasilkan data bersih. Load ke Snowflake di luar scope (fase berikut).
 
-Status: Fase 1-4 sudah berkode (inspect, spec, node, engine, rebind, versi). Bagian lain
-(HITL, knowledge, quality, tools.py) masih desain. Lihat IMPLEMENTATION.md untuk yang berlaku.
+Status: Fase 1-6 sudah berkode (inspect, spec, node, engine, rebind, versi, HITL, knowledge,
+quality, state, tools.py). Yang belum: uji skema lewat LiteLLM (6.3) dan load ke Snowflake.
+Lihat IMPLEMENTATION.md untuk yang berlaku dan HANDOVER.md untuk menyambungkan ke host.
 
 ## 1. Batasan
 
@@ -88,7 +89,8 @@ ID stabil: `F1` (file), `F1.S12` (sheet), `F1.S12.R2` (region).
 | `save_spec`, `get_spec`, `validate_spec`, `spec_history` | simpan (divalidasi dulu), baca, cek, riwayat versi |
 | `rebind_sources`, `run_pipeline`, `last_run` | bind ulang, jalankan (butuh approval), laporan terakhir |
 
-Semua ada di `tools.py` sebagai method `JobTools`; `add_file`, `answer`, `approve` khusus host.
+Semua ada di `tools.py` sebagai method `JobTools`; `add_file`, `answer`, `approve`, `reload_job`
+khusus host.
 
 Deteksi region: generalisasi `pinter-be-refactor/modules/parse_excel/parser.py`
 (header bertingkat, merged vertikal, total row, multi-tabel satu sheet) +
