@@ -72,6 +72,7 @@ ID stabil: `F1` (file), `F1.S12` (sheet), `F1.S12.R2` (region).
 
 | Tool | Output ringkas |
 |---|---|
+| `job_summary()` | ringkasan job: file, versi spec, pertanyaan menunggu, approval, run terakhir |
 | `list_files()` | file dalam job |
 | `workbook_map(file)` | per sheet: nama, visible, ukuran terpakai, jumlah region, % formula, tebakan peran (`source`/`derived`/`dashboard`/`chart_data`/`form`/`empty`) |
 | `sheet_regions(sheet)` | blok tabel: range, baris header (bisa >1), merged di header, orientasi, baris total terdeteksi, noise di atas |
@@ -81,7 +82,13 @@ ID stabil: `F1` (file), `F1.S12` (sheet), `F1.S12.R2` (region).
 | `find_text(file, query)` | lokasi sel yang cocok (label, istilah glossary) |
 | `compare_sheets(a, b)` | kemiripan struktur + nilai (deteksi duplikat/versi seperti `REKAP BALANS (2)`) |
 | `propose_datasets(file)` | tabel layak jadi dataset (source/mixed), untuk dipilih manusia; derived = target rekonsiliasi |
-| `lookup_knowledge(term)` | arti istilah dari Knowledge |
+| `lookup_knowledge(query)` | arti istilah dari Knowledge |
+| `node_catalog(node)` | daftar node, atau deskripsi + field config satu node |
+| `ask_human`, `pending_questions` | tanya manusia (tidak memblok), daftar yang menunggu |
+| `save_spec`, `get_spec`, `validate_spec`, `spec_history` | simpan (divalidasi dulu), baca, cek, riwayat versi |
+| `rebind_sources`, `run_pipeline`, `last_run` | bind ulang, jalankan (butuh approval), laporan terakhir |
+
+Semua ada di `tools.py` sebagai method `JobTools`; `add_file`, `answer`, `approve` khusus host.
 
 Deteksi region: generalisasi `pinter-be-refactor/modules/parse_excel/parser.py`
 (header bertingkat, merged vertikal, total row, multi-tabel satu sheet) +

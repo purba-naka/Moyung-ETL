@@ -245,24 +245,23 @@ class FileProvider(Protocol):
         """The file as a path or its bytes."""
 
 
+def open_ref(ref: FileRef, provider: FileProvider, role: str | None = None) -> Workbook:
+    """Open one registered file. Refused when its hash differs from the registered one: the
+    spec and the checks were made for the other file."""
+    label = f"file {ref.filename!r}" + (f" (role {role!r})" if role else "")
+    try:
+        wb = Workbook.open(provider.open(ref.id))
+    except (WorkbookError, OSError, KeyError, ValueError) as e:
+        raise StateError(f"{label} cannot be opened: {e}") from None
+    if wb.sha256 != ref.sha256:
+        raise StateError(
+            f"{label} is not the one registered: "
+            f"hash {wb.sha256[:12]} instead of {ref.sha256[:12]}; register it again"
+        )
+    return wb
+
+
 def open_files(state: JobState, provider: FileProvider) -> dict[str, Workbook]:
-    """`file_role -> Workbook` for `run` / `validate` / `rebind`. A file whose hash differs
-    from the one registered is refused: the spec and the checks were made for the other one.
-    """
+    """`file_role -> Workbook` for `run` / `validate` / `rebind`."""
     by_id = {f.id: f for f in state.files}
-    out: dict[str, Workbook] = {}
-    for role, fid in state.roles.items():
-        ref = by_id[fid]
-        try:
-            wb = Workbook.open(provider.open(fid))
-        except (WorkbookError, OSError, KeyError, ValueError) as e:
-            raise StateError(
-                f"file {ref.filename!r} (role {role!r}) cannot be opened: {e}"
-            ) from None
-        if wb.sha256 != ref.sha256:
-            raise StateError(
-                f"file {ref.filename!r} (role {role!r}) is not the one registered: "
-                f"hash {wb.sha256[:12]} instead of {ref.sha256[:12]}; register it again"
-            )
-        out[role] = wb
-    return out
+    return {role: open_ref(by_id[fid], provider, role) for role, fid in state.roles.items()}
