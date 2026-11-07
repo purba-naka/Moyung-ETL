@@ -24,7 +24,7 @@ from excel_etl.nodes.base import (
     quote,
     schema_of,
 )
-from excel_etl.nodes.excel import _common_type, _lit
+from excel_etl.nodes.excel import common_type, sql_text
 from excel_etl.nodes.relops import apply, check_reserved, need, shape, unique
 
 
@@ -34,7 +34,7 @@ def _value_lit(v: str | int | float | bool) -> str:
         return "TRUE" if v else "FALSE"
     if isinstance(v, int | float):
         return repr(v)
-    return _lit(v)
+    return sql_text(v)
 
 
 class _Part(BaseModel):
@@ -203,7 +203,7 @@ class Union(Node):
                 for s, src in zip(schemas, srcs, strict=True)
                 if src is not None
             ]
-            out.append((name, _common_type(types, None), srcs))
+            out.append((name, common_type(types, None), srcs))
         if self.config.source_column and self.config.source_column.casefold() in {
             n.casefold() for n, _, _ in out
         }:
@@ -333,7 +333,7 @@ class GroupBy(Node):
                 expr = f"{pick}({col}, __pos) FILTER (WHERE {col} IS NOT NULL)"
                 out = kind
             else:  # join_text
-                expr = f"string_agg(CAST({col} AS VARCHAR), {_lit(a.separator)} ORDER BY __pos)"
+                expr = f"string_agg(CAST({col} AS VARCHAR), {sql_text(a.separator)} ORDER BY __pos)"
                 out = "VARCHAR"
             plan.append((a, expr, out))
         return plan

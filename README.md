@@ -86,6 +86,47 @@ Every tool returns {"text": ...} or {"error": ...}. An error says what to change
 Never guess a column name; copy it from a tool result.
 ```
 
+## A complete spec
+
+Names (`sales`, `items`, `by_group`) are letters, digits and `_`. `inputs` is always a list;
+an output's `input` is one name. Column names are copied from a tool result, never guessed.
+
+```json
+{
+  "sources": {
+    "sales": {
+      "file_role": "main",
+      "sheet": {"name": "Sales"},
+      "region": {"header_anchor": ["Item", "Qty"], "header_rows": 1,
+                 "end": "until_blank_rows(2)"},
+      "expect_columns": [{"match": "Qty", "type": "float"}]
+    },
+    "items": {
+      "file_role": "main",
+      "sheet": {"name": "Items"},
+      "region": {"header_anchor": ["Item", "Group"]}
+    }
+  },
+  "steps": [
+    {"id": "joined", "node": "join", "inputs": ["sales", "items"],
+     "config": {"on": ["Item"], "how": "left"}},
+    {"id": "by_group", "node": "group_by", "inputs": ["joined"],
+     "config": {"by": ["Group"], "aggs": [{"name": "Total", "fn": "sum", "column": "Qty"}]}}
+  ],
+  "outputs": {"totals": {"input": "by_group", "format": "parquet"}},
+  "checks": {
+    "no_lost_qty": {"kind": "reconcile",
+                    "left": {"table": "sales", "column": "Qty"},
+                    "right": {"table": "by_group", "column": "Total"}},
+    "groups_known": {"kind": "not_null", "table": "by_group", "columns": ["Group"]}
+  }
+}
+```
+
+A two-row header (a `Sales` over `Qty`) needs `"header_rows": 2` and gives columns named
+`Sales|Qty`. A total row below a gap of two empty rows needs a larger `end`
+(`until_blank_rows(5)`); a run warns when filled rows lie below the end.
+
 ## Tools
 
 | Group | Tools |

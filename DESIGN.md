@@ -145,7 +145,7 @@ Spec JSON, bukan YAML. Regex di JSON: tulis dua backslash (`\\d`) untuk regex `\
 `records()` hanya memuat source exact/shifted: tempat yang drift tak diingat.
 
 Kolom baru diterima tanpa drift bila `expect_columns` mencakupnya (`match_regex`, mis.
-`^Phonska \d+`). `ColumnExpect.group` dan `.type` diterima tapi belum dipakai.
+`^Phonska d+`). `ColumnExpect.type` dicek oleh `validate`/`run` (bukan `rebind`, yang hanya membaca header); `group` dihapus.
 
 Spec diberi versi; repair menghasilkan versi baru + diff, bukan menimpa (`SpecHistory.add`, `diff_specs`; host menyimpan JSON-nya).
 

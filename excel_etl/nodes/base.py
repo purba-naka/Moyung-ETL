@@ -19,6 +19,8 @@ from pydantic import BaseModel, ConfigDict, ValidationError
 type Relation = duckdb.DuckDBPyRelation
 
 _MAX_ERRORS = 10
+# the pattern of a spec name (pipeline.py); describe() recognises it to explain it in words
+_NAME_PATTERN = r"^(?:[A-Za-z]|_[A-Za-z0-9])[A-Za-z0-9_]{0,62}$"
 INTEGER_TYPE = re.compile(r"^U?(TINY|SMALL|BIG|HUGE)?INT(EGER)?$")  # duckdb whole-number types
 NUMERIC_TYPE = re.compile(r"^(U?(TINY|SMALL|BIG|HUGE)?INT(EGER)?|FLOAT|DOUBLE|DECIMAL\(.*\))$")
 
@@ -45,13 +47,30 @@ def quote(name: str) -> str:
     return '"' + name.replace('"', '""') + '"'
 
 
+def _say(item: Any) -> str:
+    """One pydantic error as a sentence an agent can act on."""
+    kind, msg, pattern = item["type"], item["msg"], (item.get("ctx") or {}).get("pattern")
+    if kind == "string_pattern_mismatch" and pattern == _NAME_PATTERN:
+        return (
+            "a name is 1-64 characters: letters, digits and _ only, starting with a letter "
+            "(no spaces, dashes or dots), such as 'sales_2026'"
+        )
+    if kind == "list_type":
+        return 'must be a list, such as ["a"] (even for one item)'
+    if kind == "string_type":
+        return "must be one piece of text (a single name), not a list or a number"
+    if kind == "extra_forbidden":
+        return "is not a setting here (check the spelling; node_catalog lists the valid ones)"
+    return msg.removeprefix("Value error, ")
+
+
 def describe(e: ValidationError, root: str = "config") -> str:
-    """Pydantic errors as `path.to.field: message` lines, at most 10."""
+    """Pydantic errors as `path.to.field: what to do` lines, at most 10."""
     items = e.errors(include_url=False, include_input=False, include_context=False)
-    lines = [
-        f"{'.'.join(str(x) for x in i['loc']) or root}: {i['msg'].removeprefix('Value error, ')}"
-        for i in items
-    ]
+    ctx = e.errors(include_url=False, include_input=False, include_context=True)
+    for plain, rich in zip(items, ctx, strict=True):
+        plain["ctx"] = rich.get("ctx")
+    lines = [f"{'.'.join(str(x) for x in i['loc']) or root}: {_say(i)}" for i in items]
     more = f"\n(+{len(lines) - _MAX_ERRORS} more)" if len(lines) > _MAX_ERRORS else ""
     return "\n".join(lines[:_MAX_ERRORS]) + more
 

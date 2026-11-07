@@ -22,7 +22,14 @@ from pydantic import BaseModel, ConfigDict
 from excel_etl.hitl import HitlState, gate
 from excel_etl.nodes import Column, NodeError, Schema, build, infer, quote, schema_of
 from excel_etl.nodes.base import check_arity, connect
-from excel_etl.nodes.source import expect_hits, expect_label, read_region
+from excel_etl.nodes.source import (
+    expect_hits,
+    expect_label,
+    locate,
+    missing_required,
+    read_location,
+    type_fits,
+)
 from excel_etl.pipeline import PipelineSpec, Source
 from excel_etl.quality import CheckResult, check_schema, run_checks
 from excel_etl.workbook import Workbook, WorkbookError
@@ -123,11 +130,26 @@ class _State:
     warnings: list[str] = field(default_factory=list)
     schemas: dict[str, Schema] = field(default_factory=dict)
     stats: list[NodeStat] = field(default_factory=list)
-    counts: dict[str, int] = field(default_factory=dict)
+    cut: int = 0  # issues dropped for lack of room; said once at the end
+
+    def rows(self, name: str) -> int:
+        """Rows of a source or step that ran: the one place a count lives is its NodeStat."""
+        return next(s.rows_out for s in self.stats if s.id == name)
 
     def issue(self, where: str, message: str) -> None:
-        if len(self.issues) < _MAX_ISSUES:
-            self.issues.append(Issue(where=where, message=message[:_MAX_MESSAGE]))
+        if len(self.issues) >= _MAX_ISSUES:
+            self.cut += 1
+            return
+        if len(message) > _MAX_MESSAGE:
+            message = message[: _MAX_MESSAGE - 3] + "..."
+        self.issues.append(Issue(where=where, message=message))
+
+    def done(self) -> tuple[Issue, ...]:
+        """The issues, with a last line when some did not fit."""
+        if not self.cut:
+            return tuple(self.issues)
+        more = Issue(where="report", message=f"{self.cut} more problem(s) not shown")
+        return (*self.issues, more)
 
 
 def open_file(ref: FileInput) -> Workbook:
@@ -139,14 +161,18 @@ def open_file(ref: FileInput) -> Workbook:
 def _check_columns(source: Source, schema: Schema, st: _State, where: str) -> None:
     """`expect_columns`: a `required` one must match at least one column of the table."""
     names = [c.name for c in schema]
+    shown = ", ".join(names[:12]) + (", ..." if len(names) > 12 else "")
+    for want in missing_required(source, names):
+        st.issue(where, f"required column {expect_label(want)} not found; columns: {shown}")
     for want in source.expect_columns:
-        if not expect_hits(want, names) and want.required:
-            shown = ", ".join(names[:12]) + (", ..." if len(names) > 12 else "")
-            st.issue(where, f"required column {expect_label(want)} not found; columns: {shown}")
-    if any(c.type for c in source.expect_columns):
-        msg = f"{where}: expect_columns type is not checked yet (only presence)"
-        if msg not in st.warnings:
-            st.warnings.append(msg)
+        hits = expect_hits(want, names)
+        for col in schema:
+            if want.type and col.name in hits and not type_fits(want.type, col.type):
+                st.issue(
+                    where,
+                    f"column {col.name!r} is {col.type} but expect_columns "
+                    f"{expect_label(want)} says {want.type}",
+                )
 
 
 def _load_sources(
@@ -177,21 +203,28 @@ def _load_sources(
             continue
         t0 = time.perf_counter()
         try:
-            rel = read_region(wb, source, con, name)
+            loc = locate(wb, source)
+            rel = read_location(loc, source, con, name)
         except (NodeError, WorkbookError, duckdb.Error) as e:
             st.issue(where, str(e))
             continue
         schema = schema_of(rel)
         st.schemas[name] = schema
         _check_columns(source, schema, st, where)
-        st.counts[name] = _count(con, name)
+        if (below := loc.below) > 0:
+            st.warnings.append(
+                f"{where}: {below} more filled row(s) lie below the table after "
+                f"{source.region.blank_gap} empty row(s), such as a grand total; "
+                f"they are not read. A larger end (until_blank_rows(N)) reads them."
+            )
+        n_rows = _count(con, name)
         st.stats.append(
             NodeStat(
                 id=name,
                 kind="source",
                 node="read_region",
                 rows_in=0,
-                rows_out=st.counts[name],
+                rows_out=n_rows,
                 columns=len(schema),
                 seconds=round(time.perf_counter() - t0, 4),
             )
@@ -244,13 +277,12 @@ def _run_steps(
             del st.schemas[step.id]
             continue
         rows = _count(con, step.id)
-        st.counts[step.id] = rows
         st.stats.append(
             NodeStat(
                 id=step.id,
                 kind="step",
                 node=step.node,
-                rows_in=sum(st.counts[i] for i in step.inputs),
+                rows_in=sum(st.rows(i) for i in step.inputs),
                 rows_out=rows,
                 columns=len(actual),
                 seconds=round(time.perf_counter() - t0, 4),
@@ -279,7 +311,7 @@ def validate(spec: PipelineSpec, files: dict[str, FileInput] | None = None) -> V
         st.warnings.append("no files given: only node names and settings were checked")
     return ValidationReport(
         ok=not st.issues,
-        issues=tuple(st.issues),
+        issues=st.done(),
         warnings=tuple(st.warnings),
         schemas={k: tuple(v) for k, v in st.schemas.items()},
     )
@@ -373,7 +405,7 @@ def run(
     failed = bool(st.issues)
     return RunReport(
         status="failed" if failed else "ok",
-        issues=tuple(st.issues),
+        issues=st.done(),
         warnings=tuple(st.warnings),
         nodes=tuple(st.stats),
         outputs=() if failed else tuple(outputs),
@@ -418,7 +450,7 @@ def _write_outputs(
                 name=name,
                 path=str(final),
                 format=out.format,
-                rows=st.counts[out.input],
+                rows=st.rows(out.input),
                 columns=len(schema or ()),
             )
         )

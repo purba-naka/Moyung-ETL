@@ -43,9 +43,33 @@ class Change(_Model):
         return f"~ {self.where}: {self.before} -> {self.after}"
 
 
+def _text(v: Any) -> str:
+    return json.dumps(v, ensure_ascii=False, sort_keys=True)
+
+
 def _show(v: Any) -> str:
-    s = json.dumps(v, ensure_ascii=False, sort_keys=True)
+    s = _text(v)
     return s if len(s) <= _SHOW else s[: _SHOW - 3] + "..."
+
+
+def _show_pair(old: Any, new: Any) -> tuple[str, str]:
+    """Both sides cut to `_SHOW`, but around the first place they differ: a change at the end
+    of a long value must not be hidden behind a shared beginning."""
+    a, b = _text(old), _text(new)
+    if max(len(a), len(b)) <= _SHOW:
+        return a, b
+    at = next(
+        (i for i, (x, y) in enumerate(zip(a, b, strict=False)) if x != y), min(len(a), len(b))
+    )
+    start = max(0, min(at - 20, min(len(a), len(b)) - (_SHOW - 6)))
+    start = max(0, min(start, at))
+
+    def cut(s: str) -> str:
+        head = "..." if start else ""
+        body = s[start : start + _SHOW - len(head) - 3]
+        return head + body + ("..." if start + len(body) < len(s) else "")
+
+    return cut(a), cut(b)
 
 
 def _walk(old: Any, new: Any, path: str, out: list[Change]) -> None:
@@ -59,7 +83,8 @@ def _walk(old: Any, new: Any, path: str, out: list[Change]) -> None:
             else:
                 _walk(old[k], new[k], sub, out)
     elif old != new:
-        out.append(Change(where=path, kind="changed", before=_show(old), after=_show(new)))
+        before, after = _show_pair(old, new)
+        out.append(Change(where=path, kind="changed", before=before, after=after))
 
 
 def diff_specs(old: PipelineSpec, new: PipelineSpec) -> tuple[Change, ...]:

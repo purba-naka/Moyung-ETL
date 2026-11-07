@@ -8,8 +8,9 @@ The spec holds anchors, not cell addresses, so "shifted" needs something to comp
   drift    the contract broke or the columns changed in a way the spec does not cover: repair
   missing  sheet, header or file not found: look for candidates
 
-ponytail: column types are not compared (a column that turns from numbers to text is not
-drift yet); upgrade: store a type per column in the record and diff it.
+ponytail: rebind reads headers, not cell values, so it cannot see a column turn from numbers
+to text; `expect_columns.type` is checked by `validate`/`run`, which do read the table.
+Upgrade: store a type per column in the record and diff it.
 """
 
 from __future__ import annotations
@@ -19,9 +20,9 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict
 
 from excel_etl.engine import FileInput, open_file
-from excel_etl.inspect.encode import _few, a1
+from excel_etl.inspect.encode import a1, few
 from excel_etl.nodes.base import NodeError
-from excel_etl.nodes.source import Location, expect_hits, expect_label, locate
+from excel_etl.nodes.source import Location, expect_hits, expect_label, locate, missing_required
 from excel_etl.pipeline import PipelineSpec, Source
 from excel_etl.workbook import Workbook, WorkbookError
 
@@ -87,11 +88,16 @@ def _judge(source: Source, loc: Location, old: BindRecord | None) -> SourceBind:
     rec = _record(loc)
     drift: list[str] = []
     moved: list[str] = []
-    for want in source.expect_columns:
-        if not expect_hits(want, loc.names) and want.required:
-            drift.append(f"required column {expect_label(want)} not found")
+    for want in missing_required(source, loc.names):
+        drift.append(
+            f"required column {expect_label(want)} not found: find the new header text "
+            f"(find_text, render_range), then change expect_columns and the steps that use it"
+        )
     if loc.how == "fallback" and (old is None or old.sheet != loc.sheet):
-        drift.append(f"sheet not found by name; {loc.sheet!r} found by its content")
+        drift.append(
+            f"sheet not found by name; {loc.sheet!r} found by its content: check it is the same "
+            f"table (compare_sheets), then set sheet.name to it"
+        )
     if old is not None:
         if old.sheet != loc.sheet and loc.how != "fallback":
             moved.append(f"sheet {old.sheet!r} -> {loc.sheet!r}")
@@ -104,11 +110,13 @@ def _judge(source: Source, loc: Location, old: BindRecord | None) -> SourceBind:
         gone = [n for n in old.columns if n not in now]
         for label, names in (("added", added), ("removed", gone)):
             if names:
-                moved.append(f"columns {label}: {_few(names, 6)}")
+                moved.append(f"columns {label}: {few(names, 6)}")
                 loose = [n for n in names if not _covered(source, n)]
                 if loose:
                     drift.append(
-                        f"columns {label} that no expect_columns entry covers: {_few(loose, 6)}"
+                        f"columns {label} that no expect_columns entry covers: {few(loose, 6)}; "
+                        f"decide for each: add it to the steps that need it (a group_by agg, a "
+                        f"select), or add an expect_columns entry to accept it as it is"
                     )
     status: Status = "drift" if drift else "shifted" if moved else "exact"
     return SourceBind(status=status, record=rec, diff=tuple([*drift, *moved]))

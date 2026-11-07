@@ -21,13 +21,13 @@ from excel_etl.nodes.base import (
 )
 
 
-def _need(schema: Schema, column: str, node_name: str) -> None:
+def check_column(schema: Schema, column: str, node_name: str) -> None:
     if column not in {c.name for c in schema}:
         shown = ", ".join(c.name for c in schema[:12]) + (", ..." if len(schema) > 12 else "")
         raise NodeError(f"{node_name}: no column {column!r}; columns: {shown}")
 
 
-def _lit(s: str) -> str:
+def sql_text(s: str) -> str:
     return "'" + s.replace("'", "''") + "'"
 
 
@@ -37,7 +37,9 @@ class DropRows(Node):
 
     `keep_type` keeps only rows whose `column` can be read as that type (a date column holding
     `JAN` or `FEB - 2025` subtotal labels); `drop_regex` drops rows whose `column` matches
-    (a `Total` row). The column keeps its type: use `cast` after this if you want it changed.
+    (a `Total` row; case matters, `(?i)` ignores it). A row whose `column` is empty is kept by
+    both: an empty label is not a `Total`, and `blank` is the setting for empty rows. The
+    column keeps its type: use `cast` after this if you want it changed.
     """
 
     class Config(NodeConfig):
@@ -62,7 +64,7 @@ class DropRows(Node):
     def infer_schema(self, inputs: list[Schema]) -> Schema:
         (schema,) = inputs
         if self.config.column:
-            _need(schema, self.config.column, self.name)
+            check_column(schema, self.config.column, self.name)
         return schema
 
     def run(self, inputs: list[Relation]) -> Relation:
@@ -75,7 +77,7 @@ class DropRows(Node):
         if cfg.column and cfg.drop_regex is not None:
             col = quote(cfg.column)
             # a NULL cell does not match, so it is kept (keep_type is the rule that drops it)
-            hit = f"regexp_matches(CAST({col} AS VARCHAR), {_lit(cfg.drop_regex)})"
+            hit = f"regexp_matches(CAST({col} AS VARCHAR), {sql_text(cfg.drop_regex)})"
             keep.append(f"NOT coalesce({hit}, false)")
         return rel.filter(" AND ".join(keep)) if keep else rel
 
@@ -93,7 +95,7 @@ class FillDown(Node):
     def infer_schema(self, inputs: list[Schema]) -> Schema:
         (schema,) = inputs
         for c in self.config.columns:
-            _need(schema, c, self.name)
+            check_column(schema, c, self.name)
         return schema
 
     def run(self, inputs: list[Relation]) -> Relation:
@@ -109,7 +111,7 @@ class FillDown(Node):
 type ValueType = Literal["VARCHAR", "DOUBLE", "BIGINT", "DATE", "TIMESTAMP", "BOOLEAN"]
 
 
-def _common_type(types: list[str], forced: str | None) -> str:
+def common_type(types: list[str], forced: str | None) -> str:
     """One type for columns that become one: same stays, all numbers become DOUBLE, else text."""
     if forced:
         return forced
@@ -124,10 +126,10 @@ def _pick(
 ):
     """The value columns: listed ones, or every other column whose name matches `pattern`."""
     for c in keep:
-        _need(schema, c, who)
+        check_column(schema, c, who)
     if columns is not None:
         for c in columns:
-            _need(schema, c, who)
+            check_column(schema, c, who)
         picked = list(dict.fromkeys(columns))
     else:
         assert pattern is not None
@@ -186,7 +188,7 @@ class Unpivot(Node):
         cfg = self.config
         picked = _pick(schema, cfg.keep, cfg.columns, cfg.pattern, self.name)
         by_name = {c.name: c.type for c in schema}
-        return picked, _common_type([by_name[c] for c in picked], cfg.value_type), by_name
+        return picked, common_type([by_name[c] for c in picked], cfg.value_type), by_name
 
     def infer_schema(self, inputs: list[Schema]) -> Schema:
         (schema,) = inputs
@@ -242,7 +244,7 @@ class UnpivotGroups(Node):
     def _plan(self, schema: Schema):
         cfg, rx = self.config, re.compile(self.config.pattern)
         for c in cfg.keep:
-            _need(schema, c, self.name)
+            check_column(schema, c, self.name)
         found: dict[str, dict[str, str]] = {}  # group -> measure -> column
         types: dict[str, list[str]] = {}
         by_name = {c.name: c.type for c in schema}
@@ -261,7 +263,7 @@ class UnpivotGroups(Node):
         if not found:
             shown = ", ".join(c.name for c in schema[:12]) + (", ..." if len(schema) > 12 else "")
             raise NodeError(f"{self.name}: pattern matches no column; columns: {shown}")
-        measures = {m: _common_type(t, None) for m, t in types.items()}
+        measures = {m: common_type(t, None) for m, t in types.items()}
         if clash := [m for m in measures if m in cfg.keep or m == cfg.group_column]:
             raise NodeError(f"{self.name}: measure {clash[0]!r} clashes with another output column")
         return found, measures, by_name
@@ -293,8 +295,8 @@ class UnpivotGroups(Node):
             if cfg.drop_empty:
                 have = [quote(c) for c in cols.values()]
                 where = " WHERE " + " OR ".join(f"{c} IS NOT NULL" for c in have)
-            lit = _lit(g)
-            head = ", ".join([*keep, f"{lit} AS {quote(cfg.group_column)}", *vals])
+            text = sql_text(g)
+            head = ", ".join([*keep, f"{text} AS {quote(cfg.group_column)}", *vals])
             # each input row comes out as its blocks in column order: UNION ALL alone gives
             # whatever order the plan finds, so the row and block numbers are kept to sort on
             selects.append(f"SELECT {head}, __row, {n} AS __blk FROM __numbered{where}")

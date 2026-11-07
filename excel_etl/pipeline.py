@@ -19,13 +19,13 @@ from pydantic import (
     model_validator,
 )
 
-from excel_etl.nodes.base import describe
+from excel_etl.nodes.base import _NAME_PATTERN, describe
 from excel_etl.quality import Check, tables_of
 
 # Letters, digits and `_`, up to 64 characters, not starting with `__` (helper columns and
 # views inside queries use that prefix). No lookahead: pydantic's regex engine has none.
-_IDENT = r"^(?:[A-Za-z]|_[A-Za-z0-9])[A-Za-z0-9_]{0,62}$"
-_END = re.compile(r"until_blank_rows\([0-9]+\)")
+_IDENT = _NAME_PATTERN
+_END = re.compile(r"until_blank_rows\(([0-9]+)\)")
 # Output names become file names; Windows cannot create these whatever the extension.
 _DEVICE_NAMES = frozenset(
     {
@@ -64,6 +64,16 @@ class SheetRef(_Model):
 
 
 class RegionRef(_Model):
+    """Where a source table is, by meaning.
+
+    `header_anchor`: texts that must all be in the header; `header_rows`: how many rows the
+    header takes. With 2+ rows the column names join the levels as `PARENT|LEAF` (a `Sales`
+    over `Qty` is `Sales|Qty`; a parent spanning several columns names each of them).
+    `end`: `until_blank_rows(N)` stops the table after N empty rows in a row. A total row
+    below a gap of N or more empty rows is outside the table: raise N to read it (the run
+    warns when filled rows lie below the end).
+    """
+
     header_anchor: list[str] = Field(min_length=1)  # texts that must be in the header
     header_rows: int = Field(default=1, ge=1, le=10)
     end: str = "until_blank_rows(2)"
@@ -74,13 +84,21 @@ class RegionRef(_Model):
             raise ValueError(f"end must look like until_blank_rows(2), got {self.end!r}")
         return self
 
+    @property
+    def blank_gap(self) -> int:
+        """How many empty rows in a row end the table (the one place `end` is read)."""
+        m = _END.fullmatch(self.end)
+        assert m is not None  # checked when the spec was built
+        return int(m[1])
+
 
 class ColumnExpect(_Model):
     match: str | None = None  # header text, letter case and spacing ignored
     match_regex: str | None = None
+    # checked against the duckdb type of every matched column ("float" also accepts whole
+    # numbers: a column of 1, 2, 3 is a number either way)
     type: Literal["text", "int", "float", "date", "datetime", "bool"] | None = None
     required: bool = True
-    group: str | None = None  # not used yet; kept so specs can name column families
 
     @model_validator(mode="after")
     def _one_matcher(self) -> ColumnExpect:
@@ -102,6 +120,9 @@ class Source(_Model):
 
 
 class Step(_Model):
+    """One node of the pipeline. `inputs` is always a LIST of names (`["sales"]`, two for a
+    join), read in that order; a step may read sources and earlier steps only."""
+
     id: Ident
     node: str = Field(min_length=1)
     inputs: list[Ident] = Field(min_length=1)
@@ -109,6 +130,8 @@ class Step(_Model):
 
 
 class Output(_Model):
+    """A table written to a file. `input` is ONE name (not a list): the source or step to write."""
+
     input: Ident
     format: Literal["parquet", "csv"] = "parquet"  # the host picks the path, not the spec
 

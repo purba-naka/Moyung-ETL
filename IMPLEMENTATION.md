@@ -454,6 +454,355 @@ pelajaran `fill_missing`), `prefix`, fn sum avg min max count first last. 14 mut
 tertangkap; 1 lolos = kode mubazir (`IS NOT DISTINCT FROM` di pivot, nilai config tak bisa
 NULL) dan dihapus.
 
+## Temuan P6 Fase 3-4 (dibersihkan 2026-11-07)
+
+Selesai: konversi error jadi dict (`tools.py`), `catalog()` node, pesan config dengan daftar field, pesan `Ident` dalam kata, `Step.inputs` vs `Output.input` (pesan + docstring), saran `cast` untuk sum teks (sudah ada), `drop_regex` NULL (dokumentasi + tes), `until_blank_rows` memotong grand total (peringatan di run), header 2 baris `PARENT|LEAF` (docstring `RegionRef` + tes), contoh spec lengkap (README + tes jalan), pesan drift dengan langkah berikut, `Location.how` `Literal`, `_State.counts` dibuang (satu sumber: `NodeStat`), `end` diparse satu tempat (`RegionRef.blank_gap`), cek `required` satu fungsi (`missing_required`), import privat lintas modul jadi publik (`common_type`, `sql_text`, `check_column`, `reason`, `column_names`, `few`, `text_key`), pemotongan `_MAX_ISSUES`/`_MAX_MESSAGE` bertanda, diff versi menampilkan bagian yang berbeda, `ColumnExpect.type` aktif, `ColumnExpect.group` dihapus, adversarial dijalankan (Fase 3-5 dan 6), `find_text`/`sheet_regions` ada di tools.
+
+Tersisa:
+
+- Peringatan "filled rows below" dihitung dari sel terisi, bukan dari apakah itu baris total; sheet dengan catatan kaki akan memberi peringatan walau tak ada yang salah (ponytail: peringatan, bukan error).
+- `rebind` tidak melihat tipe kolom (hanya header); `expect_columns.type` dicek `validate`/`run`.
+
+## Temuan P6 Fase 3-5 (ditunda ke Fase 6 atau lebih)
+
+- `tools.py` harus mengubah jadi dict: `PipelineError` (punya `.issues`), `SpecError`, `NodeError`, `HitlError`, `StateError`/`StateConflict`, `WorkbookError`, `KeyError` (`SpecHistory.get`), `ValueError` (`SpecHistory.add`).
+- Tool yang dibutuhkan agent tapi belum ada sebagai fungsi: daftar pertanyaan menunggu (`state.hitl.pending`), ringkasan state (`JobState` -> teks), teks `last_run`, `node_catalog` (pakai `nodes.catalog`).
+- Tidak dipasang: `after_run` dan `on_rebind_drift` (`gate` ada, host/`tools.py` yang memanggil); `lookup_knowledge` belum dibungkus tool.
+- `FileStore.save` cek-lalu-ganti tidak atomik antar proses (ponytail); `Job.open` file BOM UTF-8 ditolak (pesan "Invalid JSON").
+- `reconcile` otomatis dari baris TOTAL Excel / `formula_lineage` belum ada; RunReport belum mencatat baris dibuang + alasan per node.
+- Import privat lintas modul tersisa: `_lit`, `_need`, `_common_type` (excel -> combine/labels), `_reason` (sqlexpr -> relops), `_column_names`, `_few`, `_text_key`, `a1` (inspect.encode -> source/rebind). Aman tapi sebaiknya jadi publik saat modul dirapikan.
+- Pesan error `accepted_values` membandingkan teks: `1.0` tidak sama dengan `1` (ponytail).
+
+## Temuan P6 Fase 6 (ditunda)
+
+- Performa `Job.update`: deepcopy + validasi JSON ~40 ms per update pada state 150 KB (300 versi); kalau history besar, pangkas versi lama di host atau simpan history terpisah.
+- 3000 source dalam satu spec: validate 6 s (read_region per source ~2 ms); tidak ada batas jumlah source/step.
+- `StateConflict` dalam tool mengembalikan `conflict: true`, tetapi `JobTools` tetap memegang state lama: host harus membuat `JobTools(Job.open(...))` baru, belum ada tool `reload`.
+- `save_spec` memvalidasi dengan SEMUA file; spec untuk satu role dari job multi-file tetap membuka semua workbook.
+- `run_pipeline` menulis ke `out_dir` yang sama setiap run (menimpa); tidak ada folder per versi.
+- `render_range` dkk. tidak mengembalikan `next_offset` konsisten ketika `truncated` dari `_cap` (hanya inspect yang paginasi sendiri).
+- Contoh LiteLLM belum diuji (6.3).
+
+## Fase 6 — Serah ke host
+
+- [x] 6.1 `tools.py` final: `JobTools(job, provider, out_dir)`; 21 tool agent (`agent_tools()`) + 3 tool host (`add_file`, `answer`, `approve`).
+- [x] 6.2 Contoh pembungkus ADK `FunctionTool` (`README.md`; bukan dependency).
+- [ ] 6.3 Uji schema tool lewat LiteLLM ke >= 2 provider (oleh rekan / bersama).
+
+## Keputusan
+
+| Tanggal | Keputusan | Alasan |
+|---|---|---|
+| 2026-11-05 | Library Python murni, bukan framework/plugin/MCP | host (PINTER) yang mengorkestrasi |
+| 2026-11-05 | calamine untuk nilai + openpyxl lazy untuk formula/style | 1,0 s vs 16 s (15 MB, 72 sheet) |
+| 2026-11-05 | duckdb sebagai engine + SQL skalar sebagai expression | volume bervariasi, tanpa expression language sendiri |
+| 2026-11-05 | Spec pakai anchor semantik untuk recycle | tiap file beda bentuk, alamat sel tidak stabil |
+| 2026-11-05 | Default: dataset dari sheet source; derived untuk rekonsiliasi | cegah hitung dobel |
+| 2026-11-06 | propose_datasets: seksi derived level-sheet (edge lineage), bukan level-region | resolusi region->source butuh kerja per sel; presisinya baru berguna di fase quality (rekonsiliasi), ditunda ke sana |
+| 2026-11-05 | State: dua mode, stateless (host pegang JSON) atau `StateStore` | fleksibel untuk host |
+| 2026-11-05 | HITL via `ask_human` + `HitlPolicy` config | penempatan checkpoint fleksibel tanpa ubah kode |
+| 2026-11-05 | Tolak `sheetwise` sebagai dependency, port idenya | lihat §Temuan |
+| 2026-11-05 | Tolak `SheetBrain` sebagai dependency, ambil pola U-E-V + sandbox | terikat OpenAI/tiktoken/multimodal |
+| 2026-11-06 | Spec diterima sebagai JSON saja, tanpa `pyyaml` | AGENTS.md batasi dependency; agent LLM menulis JSON andal, YAML = dependency baru untuk kenyamanan. Tambah bila host butuh (parse YAML -> dict -> `PipelineSpec.model_validate`). `SpecError` memberi hint bila input terlihat YAML. |
+| 2026-11-06 | Output `run` ditulis ke `.part` lalu `os.replace` hanya bila semua sukses | run gagal tak menyisakan file setengah jadi; output lama yang bagus tetap terganti hanya saat run sukses |
+| 2026-11-06 | join/union/dedupe/unpivot_groups mengurutkan eksplisit lewat posisi baris (`row_number() OVER ()`) | duckdb tidak menjamin urutan (terukur: join many-to-many 300k baris, UNION distinct urutan hash) |
+
+## Temuan
+
+**File referensi** `(2026) BALANSITAS AMONIAK, UREA, NPK, DAN BAHAN BAKU 3.0.xlsx`
+(15,1 MB; di luar repo):
+- 72 sheet (4 hidden: `Outstanding PKT 2026`, `Shipping Out Curah (U) PKT`,
+  `supplyinout`, `supplyinout (2)`; dicek calamine + openpyxl), 542.358 sel formula,
+  14.010 defined names, 0 ListObject.
+- Baca: calamine semua nilai 1,0 s; openpyxl `data_only` 16,0 s; openpyxl formula 18,1 s.
+  openpyxl membuang conditional-formatting extension & gambar WMF (warning).
+- Pola: header 2 level (bulan x anper), hierarki baris (`1.0`/`1.1`/`1.2.1`), grup kolom
+  berulang (`Phonska N [Ton, Formula]`), noise atas tabel (link DASHBOARD, KPI),
+  sheet turunan (`BALANS NPK`, `REKAP BALANS`), versi duplikat (`X (2)`), banyak
+  tabel dalam satu sheet (`Per Bulan`: header bulan di D4, CN4, D57).
+- `(N) PKG` berisi tanggal sampai 2027-12-31 (805 baris), bukan hanya 2026.
+
+**sheetwise 2.8.0** (via `pd.read_excel(header=None)`):
+
+| Sheet | Ukuran | Output | ~Token | Kompresi |
+|---|---|---|---|---|
+| `(N) PKG` | 807x159, 50k sel | 136.724 char | ~34.000 | 1,2x |
+| `Per Bulan` | 88x193, 8,4k sel | 61.377 char | ~15.300 | 1,0x |
+
+Masalah: tanggal & angka didaftar per sel, struktur/region/merged/header hilang,
+multi-tabel tercampur, `PKG` dianggap `Biz_Ticker`. Berguna: inverted index
+(nilai sama di banyak sel = sinyal duplikat/turunan). Script: `%TEMP%\swtest.py`.
+
+**Versi terpasang (uv.lock)**: python-calamine 0.9.1, openpyxl 3.1.5, duckdb 2.0.0,
+pydantic 2.14.3. `SheetVisibleEnum` calamine = enum Rust, tanpa `.name`; bandingkan
+langsung dengan `SheetVisibleEnum.Visible/Hidden/VeryHidden` (juga tidak hashable,
+jadi tidak bisa jadi key dict). openpyxl read_only: `EmptyCell.font is None`; sheet
+baru di-parse saat `iter_rows`, jadi filter warning harus membungkus loop.
+`workbook_map` BALANSITAS: 3.140 char (~785 token), 2,1 s. Persen formula dihitung
+dari scan regex XML sheet (`Workbook.formula_cells`, 0,76 s seluruh workbook), bukan
+openpyxl; cocok persis dengan openpyxl di `(N) PKG` (36.368 sel). Total 542.366, beda 8
+dari angka lama 542.358 (belum diselidiki, kemungkinan array formula).
+`Workbook.meta("(N) PKG")` ~3,9 s (load openpyxl + 1 sheet); `values` jauh di bawah 1 s. Kontrak calamine dipaku
+di `tests/test_calamine_contract.py`.
+
+`detect_regions` (1.4) di BALANSITAS: `(N) PKG` A4 header [4,5], grup `[Ton, Formula] x 9`
+dengan parent Phonska 1..; `Per Bulan` 4 region berheader (A4, BZ4, FK4, A58), grup bulan x
+anper (urutan anper BZ beda dari A); `RKAP 2026` B3 header [3,4], 5 total; `REKAP BALANS`
+7 tabel berulang, noise `Periode|Jul`. Semua sheet: 3.825 region (banyak blok kecil tanpa
+header: catatan/KPI di samping tabel), deteksi <=0,16 s/sheet setelah `values` di-cache;
+`workbook_map` sampel ~4,6 s (sebelumnya 2,1 s). Baris dashboard angka di atas header
+(`(N) PKG` baris 2) diatasi: data mulai di run >=3 baris data.
+`sheet_regions` (1.5) BALANSITAS: `(N) PKG` 1.485 char (18 tabel, 123 blok tanpa header
+diringkas), `Per Bulan` 792 char, `(U) PKT` 3.606 char (~900 token, 87 tabel; terbesar).
+
+`render_range` (1.6) compressed, seluruh sheet BALANSITAS (chars/4): `(N) PKG` 985 token
+(sheetwise ~34.000, ~35x lebih kecil), `Per Bulan` 953, `RKAP 2026` 1.230, `(U) PKT` 3.140.
+Yang menekan ukuran: teks unik digabung per baris (`r4: A=TANGGAL|...`) atau per kolom
+(`col A: 37=JAN|...`); teks berulang jadi inverted index (maks 3 posisi + `+N`); run angka
+per kolom digabung bila rentang baris sama; formula tanpa cache ikut run (`+=?`); kolom
+serba-0 satu baris `all 0:`; label dipotong 30 char.
+
+**P6 Fase 1** (3 subagent: adversarial, auditor, agent pengguna; 2026-11-06). Diperbaiki:
+- calamine **abort proses** (bukan exception) bila ada nilai jauh dari data (XFD1048576):
+  alokasi persegi A1..sel terakhir. Sekarang `Workbook._scan` mengukur persegi itu dari XML
+  (satu regex, 0,6 s seluruh sampel) dan menolak > 25 jt sel dengan `WorkbookError`.
+- Range raksasa (`A1:XFD1048576`) dan merge raksasa menggantung: range dipotong ke area
+  berisi (`_clamp`), merge > 10.000 sel hanya menandai sel kiri-atas (`SheetGrid`).
+- Budget bisa jebol oleh satu baris lebar: tiap baris dipotong 600 char; `|` dan newline di
+  label/nama sheet dinetralkan.
+- Error non-`WorkbookError`: XML rusak (`XmlError`, `zlib.error`, `BadZipFile`), `open(None)`,
+  angka 5000 digit, `offset`/`limit`/`budget`/`mode` tidak valid (sebelumnya `limit=0`
+  menghasilkan loop tak berujung), baris 0 / kolom di luar XFD, ligatur `ﬀ1` jadi `FF1`.
+- Split tabel rekursif (RecursionError di 1.100 tabel, 5,7 s di 800): jadi satu lintasan; noise
+  di atas tabel pertama tidak lagi hilang. `_merge_overlaps` jadi sweep. `workbook_map` hanya
+  merangkum sheet di halaman yang diminta. `_Grid` jadi `SheetGrid` publik, dibangun sekali per
+  sheet; `col_index` satu definisi di `workbook.py`; id sheet menang atas nama sheet serupa id;
+  region id + range sekaligus = error.
+- Docstring tool ditulis ulang untuk LLM (arti tiap kolom); header kolom `sheet_regions` jadi
+  `hdr rows|orientation|total rows|group|merged|noise`.
+Ditunda (catat, belum perlu):
+- Agent bingung: `workbook_map` role "mixed" untuk 40 dari 72 sheet; tidak ada petunjuk kolom
+  mana tanggal/label; baris subtotal bulan (`JAN`, `.JAN`) bercampur di tabel harian;
+  `+N` memotong sel anper; tidak ada "region di sel X". Jalan upgrade: `profile_region` (2.2)
+  dan lineage (2.1) memberi tipe per kolom dan asal formula.
+- Error cell (`#DIV/0!`) dibaca calamine sebagai kosong; inf hilang; int > 2^53 terpotong 30 char.
+- `Workbook.meta` openpyxl tidak dibatasi ukuran. `.xls` tidak punya scan formula.
+- Test blok kecil tanpa header (`columns`) dan `_rects` hanya diuji lewat tool.
+
+**Lineage (2.1)** di BALANSITAS: 542.366 formula, 144.049 teks unik, 258 edge sheet->sheet.
+`(BB) CR` paling banyak dibaca (32.079 sel), lalu `(N) PKG` (15.979), `BALANS NPK` (13.927).
+Link ke file lain (`[1]...`): `(N) PKC/PKT/PIM/PSP/PKG` (1.696 sel). Dari 20.531 defined names
+hanya 128 menunjuk sheet, hanya 2 (`AA`, `BULAN`) dipakai formula. Peran: 22 source, 39 mixed,
+11 derived (sebelumnya persen formula saja: `(N) PKG` 72% formula = "mixed", padahal 7.210 angka
+ketikan = source). Per region: `(N) PKG` R1 source, R13-R15 derived (kolom turunan di samping),
+`Per Bulan` R2 derived, R1 mixed, `RKAP 2026` R1 source, `REKAP BALANS` derived.
+- Sel dihitung typed / local (formula yang hanya membaca sheetnya sendiri) / cross (membaca
+  sheet atau file lain). Teks tidak memilih. Ambang di `classify` (10% / 50%).
+- Parse formula pakai regex, tanpa tokenizer penuh: awalan `Sheet!`, `'Nama sheet'!`, `A:C!`
+  (3D, diperluas ke semua sheet di antaranya), `[1]X!`, `#REF!`, string literal dibuang dulu.
+  Nama yang bukan sheet file ini dianggap link file lain (`[file]`).
+- Shared formula: sel anak memakai teks sel pertama (referensi relatif tidak digeser); cukup
+  untuk "sheet mana yang dibaca", tidak cukup untuk "sel mana".
+- Kecepatan: pra-filter regex 128 nama 6,5 s, tokenisasi + set 0,3 s (diukur). Lineage 1,9 s,
+  teks formula 2,3 s. `workbook_map` sampel 8 s (sebelum lineage 4,5 s; sempat 25 s karena
+  `count` mengiterasi sejuta baris).
+
+**Profile (2.2)** BALANSITAS: `(N) PKG` R1 512 token (29 kolom), `Per Bulan` R1 1.151 token
+(76 kolom), `RKAP 2026` R1 409 token. Nama kolom dari header bertingkat (`JANUARI|PKG`,
+`Phonska 1|Ton`); parent yang tidak di-merge dibawa ke kanan sampai label berikutnya.
+Baris total dibuang dari angka dan disebut di baris pertama. `odd <tipe> n at r..` menunjuk
+sel bertipe lain: di `(N) PKG` kolom A memperlihatkan 21 baris teks `JAN`/`.JAN` di tengah
+tanggal (subtotal bulan), menjawab keluhan agent P6.
+
+**find_text (2.3)** BALANSITAS: `tanggal` 78 sel di 42 dari 72 sheet, 598 token; `phonska`
+195 sel di 17 sheet, 469 token. Panggilan pertama 2,0 s (memuat semua sheet + normalisasi
+144k teks, di-cache di `wb.memo`), panggilan berikut 0,09 s. Hanya sel teks: `rekap balans`
+dan `supplyinout` 0 hit (nama sheet saja; nama sheet urusan `workbook_map`). Normalisasi
+NFKC + casefold + kolaps spasi (ligatur `ﬀ` = `ff`, NBSP = spasi), substring, bukan regex.
+
+**compare_sheets (2.4)** BALANSITAS: `supplyinout (2)` ternyata bukan copy-paste `supplyinout`
+(1115 dari 1150 sel terisi beda; duplikat nama saja, isinya data periode lain). `(N) PKG` vs
+`(N) PKC`: 17.183 dari 17.837 beda. Cepat: 0,04-0,32 s per pasang (sheet sudah termuat).
+Verdict 3 kata (`same values`/`values differ`/`shapes differ`); baris 2 = shape, sel terisi
+yang beda di bagian shared, jumlah formula, jumlah region + same ranges; baris 3 = 6 diff
+pertama `A5 10|12` + jumlah baris yang memuat diff. Tanpa paginasi (output kecil by design).
+Satu workbook saja; compare antar file = kebutuhan fase recycle (ditunda).
+
+**propose_datasets (2.5)** BALANSITAS: 447 usulan (367 source, 80 mixed), 297 tabel derived
+ditinggalkan, 72 sheet. Halaman pertama 4.777 char (~1.200 token), 9 halaman (limit 50).
+Panggilan pertama 7,6 s (detect_regions + region_role semua sheet), halaman berikut 0,0 s
+(hasil di-`wb.memo` per file_id). Seksi `derived sheets to check against` hanya sheet yang
+punya edge cross (sheet ber-tablet derived-lokal hanya dihitung di head, tidak masuk seksi:
+tidak ada yang bisa direkonsiliasi). Dashboard = pembaca terbanyak (5 tabel, 29 sheet dibaca).
+
+**P6 Fase 2** (verifikasi paralel 3 subagent: adversarial 341 cek, auditor statis,
+agent-user dengan workbook buatan; semua cek kebenaran agent-user lulus). Diperbaiki:
+`limit=None` di 4 tool paginasi jadi `WorkbookError` (sebelumnya TypeError di hitungan
+halaman; host yang kirim null eksplisit untuk argumen opsional); `localSheetId` rusak di
+workbook.xml (bukan angka/negatif/luar range) jadi `WorkbookError` (sebelumnya ValueError
+bocor; `-1` diam-diam terikat ke sheet terakhir); `compare_sheets` set `truncated`
+sebenarnya saat budget memotong (sebelumnya selalu false); seksi derived `propose_datasets`
+hanya menyebut sheet yang tabel derived-nya memuat sel cross di dalam box-nya (koreksi temuan
+2.5: sel KPI liar di luar tabel tadinya ikut mengatribusi lineage); hitungan `rows` usulan =
+baris data tanpa baris total, sama dengan `profile_region` (BALANSITAS: RKAP 2026 R1 kini
+132, bukan 133); diff float pakai repr penuh (0.3 vs 0.30000000000000004 kini terlihat,
+sebelumnya 0.3|0.3); echo query `find_text` dipotong 40 char (query 50k char tidak lagi
+menelan baris hitungan); error "no sheet" memuat maks 5 nama + `+N`; `_region` menolak
+sheet yang bernama persis id region (konsisten dengan `_target`); pesan "has no regions"
+menggantikan "R1..R0"; docstring budget menjelaskan soft cap (head + baris pertama selalu
+tampil). Tabel ber-header tidak mungkin ber-role `empty` (deteksi butuh >=1 sel
+numerik), jadi temuan "tabel text-only hilang dari head" tidak reachable; cabang guard
+di `_proposals` dibiarkan. Ditunda: tabel 1 kolom/tanpa header tak terdeteksi (ambang 2x2
+by design), error cell `#DIV/0!` terbaca kosong (warisan P6 Fase 1), memo `text_keys`
+tumbuh per nilai teks unik (mati bersama LRU workbook), `_fit` streaming (materialisasi
+body dulu), render compressed menggabung kolom sejenis jadi satu run, heuristik
+total-row match label "Total ..." di dashboard, formula `=?` tanpa teks di render
+compressed. 153 unit + 11 sampel lulus.
+
+**PipelineSpec (3.1)** `pipeline.py`: `sources` (file_role, sheet: name/name_like/
+fallback_contains, region: header_anchor/header_rows/end, expect_columns), `steps` (id, node,
+inputs, config bebas), `outputs` (input, format parquet|csv). Semua model `extra="forbid"`:
+kunci salah ketik jadi error, bukan hilang diam-diam. Validasi pelekatan: step hanya boleh
+membaca nama yang sudah ada (source atau step sebelumnya), jadi urutan tak bisa berputar;
+nama = huruf/angka/`_` (jadi nama relation duckdb). Error = `SpecError` berisi
+`path.ke.field: pesan` per baris, maks 10. Config node masih dict bebas; divalidasi saat
+registry node (3.2) ada. Spec tidak punya path output: itu urusan host.
+
+**Registry node (3.2)** `nodes/base.py`: `Node` (ClassVar `Config`, `min_inputs`/`max_inputs`,
+`infer_schema(list[Schema]) -> Schema`, `run(list[Relation]) -> Relation`), `@node("nama")`,
+`build(name, config) -> Node`, `infer(node, schemas)` (cek jumlah input), `schema_of(rel)`,
+`quote(name)`. `Schema` = tuple `Column(name, type)`; tipe = nama tipe duckdb. `NodeConfig`
+`extra="forbid"`. Semua kegagalan jadi `NodeError` (nama node tak dikenal memuat daftar node,
+config salah memuat `path: pesan`). Node pertama `select` (`nodes/general.py`) sebagai contoh
+dan bukti kontrak: test mengecek `infer_schema == schema_of(run(...))`. `describe` (format error
+pydantic) dipakai bersama `parse_spec`. `quote` wajib untuk semua identifier: header Excel
+memuat `|`, spasi, kutip (`JANUARI|PKG`). duckdb 2.0.0: `rel.columns`/`rel.types` cukup untuk
+skema; `enable_external_access=false` memblok `read_csv` (PermissionException) dan tak bisa
+dinyalakan lagi di koneksi yang sama.
+
+**read_region (3.3)** `nodes/source.py`: `read_region(wb, source, con, name) -> Relation`. Sheet:
+`name`, lalu `name_like` (cocok persis atau setelah normalisasi teks), lalu sheet yang memuat semua
+`fallback_contains`; lebih dari satu kandidat = `NodeError` (tidak menebak). Header: tabel pertama
+dari `detect_regions` yang baris headernya (dalam `_HEADER_SEARCH`=12 baris dari puncak tabel) memuat
+semua `header_anchor`; anchor dinilai per tabel karena teks yang sama berulang di tabel samping
+(`Phonska 1` ada di 4 tempat di `(N) PKG`). Nama kolom dari `_column_names(sep_safe=False)`:
+`PARENT|LEAF` dengan `|` asli dipertahankan (teks view memakai `/`); duplikat jadi `Ton (2)`.
+Akhir tabel = `until_blank_rows(N)` baris kosong berturut. Tipe kolom dari nilai: satu jenis
+dipertahankan (BIGINT/DOUBLE/DATE/...), campuran jadi VARCHAR dengan bentuk teks tiap nilai
+(tidak ada yang hilang atau ditebak); formula tanpa cache = NULL. Koneksi dari `connect()`
+(`enable_external_access=false`). BALANSITAS: `(N) PKG` 802 baris x 29 kolom 1,4 s, `Per Bulan` 49 x 76
+0,2 s. TANGGAL jadi VARCHAR karena memuat subtotal `JAN`, `FEB - 2025`, `.` di tengah tanggal
+(34 titik, 11 `FEB - 2025`); `drop_rows` yang membuangnya. Kolom `Formula` berisi teks `sub c` (724) =
+bukan angka, jadi VARCHAR. Per Bulan: dua kolom pertama tanpa nama header (`-`, `- (2)`).
+Ditunda: kontrak `expect_columns` (cek tipe/wajib) dan status exact/shifted/drift ke fase rebind.
+
+**drop_rows, fill_down (3.3)** `nodes/excel.py`. `drop_rows`: `blank` (default true, baris
+semua-NULL), `column` + `keep_type` (date|timestamp|bigint|double|boolean; simpan baris yang
+`try_cast` ke tipe itu berhasil, jadi label `JAN`/`FEB - 2025`/`.` terbuang) atau `column` +
+`drop_regex` (baris Total; sel NULL tidak cocok jadi tetap). Tipe kolom tidak diubah: `cast`
+(3.4) yang mengubah. Config tak konsisten (column tanpa aturan, aturan tanpa column, regex rusak)
+ditolak saat `build`. `fill_down`: `last_value(... IGNORE NULLS)` dengan frame `ROWS UNBOUNDED
+PRECEDING..CURRENT ROW`, `* REPLACE` jadi urutan kolom sama; NULL di awal tetap NULL.
+Mengandalkan urutan baris, yang dijaga `read_region` (tabel dimuat berurutan). BALANSITAS
+`(N) PKG`: `drop_rows(TANGGAL, keep_type=date)` menyisakan tepat 730 baris tanggal dari 802
+(72 baris subtotal/label/kosong terbuang).
+
+**unpivot, unpivot_groups (3.3)** `nodes/excel.py`, dirancang tanpa asumsi satu workbook.
+`unpivot`: `keep` + (`columns` XOR `pattern` regex pada nama kolom), `name_column`/`value_column`,
+`value_type` opsional, `drop_nulls` (default true). Tipe kolom nilai disatukan: sama = tetap,
+semua numerik = DOUBLE, selain itu VARCHAR (atau `value_type`); duckdb menolak UNPIVOT lintas tipe,
+jadi tiap kolom di-CAST dulu. `unpivot_groups`: `pattern` wajib berisi grup bernama
+`(?P<group>..)` dan `(?P<measure>..)`; pemisah/format nama bebas (`A|Ton`, `north_units`,
+`Q1 Sales`...) karena itu di regex, bukan di kode. Blok boleh tak seragam (ukuran yang tak ada
+= NULL bertipe), `drop_empty` membuang baris blok yang kosong semua, duplikat (grup, ukuran) dan
+ukuran yang bentrok dengan kolom keluaran = `NodeError`. Dibangun dengan `UNION ALL` per grup
+(duckdb `UNPIVOT` multi-kolom dibatasi: tiap entri harus berukuran sama). Catatan perilaku:
+pattern yang terlalu longgar ikut menangkap blok yang tak dimaksud (mis. `Total|n`); ada tes
+yang menunjukkannya dan cara mempersempit dengan lookahead. Di sampel, `unpivot_groups`
+menghasilkan 13 kolom keluaran (ukuran Ton, Formula, Sub, NS, ...): pattern longgar menangkap
+semua `X|Y`, jadi pengguna menyempit sesuai kebutuhan. Mutasi `NULL` polos vs `CAST(NULL AS t)`
+tidak berefek: UNION ALL mengikuti tipe cabang lain; CAST dipertahankan agar eksplisit.
+
+**parse_hierarchy, split_header_token (3.3)** `nodes/labels.py`. `parse_hierarchy`: `column`,
+`separator` (default `.`, bebas panjang: `-`, ` > `), `level_column`, `parent_column`. Level =
+jumlah segmen, parent = kode tanpa segmen terakhir (NULL di puncak). Kode dengan segmen kosong
+(`1..2`, `1.2.`, `.1`) atau kosong/NULL diberi NULL di kedua kolom, bukan ditebak. Kolom
+desimal DITOLAK saat `infer_schema` (Excel menyimpan `1.10` sebagai angka 1.1: informasi hilang
+sebelum node ini bertemu data); integer dan teks diterima. `split_header_token`: `column`,
+`into` (>=2 nama), `separator` literal (kolom terakhir menerima sisa) ATAU `pattern` regex
+dengan tepat satu grup tangkap per nama; bagian kurang/kosong/tak cocok = NULL, bagian di-trim,
+`drop_source`. Biasanya dipakai setelah `unpivot` (isi `name_column` = nama kolom lama).
+Hasil keluaran selalu VARCHAR. Tes: 26, termasuk dua workbook sintetis berbeda bentuk (kolom
+`2025|Units` lalu unpivot lalu split; kode akun `1`, `1.1`, `2.1`). Dua kode mubazir ditemukan
+mutasi dan dihapus (cast BIGINT pada `len`, CASE di pola: `regexp_extract` tanpa cocok sudah
+'').
+
+**Validator ekspresi SQL (3.4)** `nodes/sqlexpr.py`: `check_expression(text) -> text`, `NodeError`
+bila tidak lolos. Teks dibungkus `SELECT (<expr>) AS __e` lalu diparse oleh parser duckdb sendiri
+(`json_serialize_sql`), bukan regex. Tiga lapis: (1) bentuk: harus tepat satu SELECT, satu kolom,
+tanpa FROM/WHERE/WITH/ORDER/GROUP/UNION; (2) pohon: hanya kelas node
+`BETWEEN CASE CAST COLUMN_REF COMPARISON CONJUNCTION CONSTANT FUNCTION OPERATOR TYPE`
+(subquery, `*`/`COLUMNS`, `?`, `#1`, window, lambda ditolak), fungsi tidak boleh ada di
+`_DENIED_FUNCTIONS` (baca file/jaringan, `query`, state sesi, sequence, nilai berukuran
+bebas seperti `repeat`/`range`/`lpad`, dan fungsi tak-reprodusibel: `random`, `now`, `uuid`),
+tanpa ORDER BY/FILTER/DISTINCT di dalam pemanggilan fungsi; (3) koneksi `connect()` tanpa akses
+file. Panjang maks 4000, NUL ditolak. Nama kolom yang tak ada baru ketahuan saat node meng-bind
+ekspresi ke skema (`infer_schema`). Penyelidikan: duckdb 2.0 menyerialisasi nama fungsi
+sudah huruf kecil; pembungkus `( ... )` membuat `1) WHERE (` dan sejenisnya syntax error, jadi
+sebagian cek bentuk (WHERE, tipe node) kini lapisan cadangan: ditandai di komentar dan di tes
+`test_parser_behaviour_the_shape_check_leans_on` yang mengunci perilaku parser supaya upgrade
+duckdb yang melonggarkannya langsung terlihat. Fuzz (1.500 ekspresi dari tata bahasa, 133 bentuk
+jahat terbungkus, 3.000 teks acak): tidak ada ekspresi berbahaya lolos, tidak ada exception selain
+`NodeError`. Satu celah ditemukan fuzz: `upper(*)`/`list_value(*)` lolos karena parser membacanya
+sebagai pemanggilan tanpa argumen (aman, tidak bisa menjangkau data lain); `min(COLUMNS(*))`
+yang berbahaya (banyak kolom) ditolak. Dikunci di tes. 11 mutasi: 8 tertangkap, 3 lolos
+(WHERE, tipe node, huruf besar-kecil) karena memang lapisan cadangan (lihat di atas).
+
+**Node umum langkah 1 (3.4)** `nodes/general.py`. Aturan bersama: config yang mengandung SQL
+(`filter.where`, `derive.expr`, `derive.type`, `cast.types`) diperiksa saat `build` (validator di
+`sqlexpr.py`), lalu diikat ke skema saat `infer_schema` lewat `bind` (CREATE TEMP TABLE kosong
+berskema input + `SELECT`), jadi kolom tak ada, tipe tak cocok, dan agregat jadi `NodeError`
+sebelum ada data. `check_type` = whitelist regex (huruf, spasi, `(10,2)`, `[]`) lalu duckdb
+harus mengenalnya; STRUCT/ENUM ditolak; nama tipe adalah titik injeksi kedua di `CAST`.
+`rename` (swap diperbolehkan, bentrok nama keluaran ditolak), `cast` (`strict` false = TRY_CAST,
+nilai tak cocok jadi NULL), `filter` (ekspresi harus BOOLEAN), `derive` (ganti di tempat atau
+tambah di akhir, `type` opsional), `fill_missing` (nilai tetap; harus muat di tipe kolom, dicek
+dengan evaluasi konstanta karena bind di tabel kosong tidak mengevaluasi), `sort` (`-kolom` =
+turun, NULL selalu di akhir, kolom yang namanya memang diawali `-` menang atas penanda),
+`dedupe` (`keys` opsional; yang pertama = pertama menurut urutan tabel).
+**Temuan dari tes-tes ini:** (1) *agregat lolos validator*: `derive` dengan `sum(x)` akan mengubah
+seluruh tabel jadi satu baris tanpa error; validator awal (dan tes saya sendiri) bahkan menyatakan
+`sum(a)` "lolos". Kini agregat ditolak dengan daftar dari `duckdb_functions()` (79 nama, tak ada
+yang sekaligus skalar) + `count_star`. (2) *dedupe memilih baris salah pada data besar*:
+`row_number() OVER (PARTITION BY k)` tanpa ORDER BY mengikuti scan paralel, bukan urutan tabel
+(200k baris: baris "pertama" bukan yang pertama); mutasi menangkapnya, kini memakai posisi
+eksplisit `row_number() OVER ()`. (3) bind di tabel kosong tidak mengevaluasi konstanta
+(`coalesce(id, CAST('abc' AS INTEGER))` lolos) sehingga `fill_missing` mengevaluasi nilainya
+sendiri. Mutasi lolos yang dinilai kode ganda/bukan celah: `NULLS LAST` (default duckdb sudah
+begitu, tetap ditulis eksplisit dan dites), `count_star` manual (sudah ada di katalog), cek nama
+baru ganda di `rename` config (cek keluaran di `infer_schema` menangkap yang sama).
+
+**Node umum langkah 2 (3.4)** `nodes/combine.py` + `nodes/relops.py`. Tidak ada teks SQL di
+config: semua pilihan berupa opsi bernama, jadi spec tidak bisa menyelipkan ekspresi.
+`relops.apply`/`shape`: satu fungsi SQL per node dipakai `run` (atas relation) dan
+`infer_schema` (atas tabel kosong berskema sama), jadi keduanya tidak bisa berbeda. Nama view
+unik per panggilan: view bernama sama yang diganti membuat relation lama membaca data baru
+(diukur), mutasi nama tetap menjatuhkan 12 tes. Kolom berawalan `__` dicadangkan (`__pos`).
+`join`: `on` (nama sama atau `{left,right}`), `how` inner/left/right/full, `suffixes` opsional
+(kolom non-kunci bernama sama tanpa suffix = error, tidak diam-diam diganti nama),
+`null_equal`; tipe kunci harus sama (cast dulu); kunci bernama sama muncul sekali, di full/right
+join diisi dari sisi yang ada. `union`: `by` name (kolom yang tak ada = NULL) atau position
+(jumlah kolom sama, nama dari input pertama), tipe disatukan seperti `unpivot`,
+`source_column` (nomor input), `distinct`; 2+ input. `group_by`: `by` + `aggs`
+`{name, fn, column}` dengan fn tetap (sum avg min max count count_rows count_distinct first last
+join_text); hasil berurutan kemunculan pertama grup; `first`/`last`/`join_text` mengikuti urutan
+tabel (diuji 200k baris); sum bilangan bulat -> BIGINT (duckdb memberi HUGEINT; overflow =
+error, bukan angka salah); sum/avg kolom teks ditolak. `pivot`: `values` WAJIB (kolom hasil harus
+diketahui sebelum data dibaca), nilai yang tak muat di tipe kolom ditolak (evaluasi konstanta,
+pelajaran `fill_missing`), `prefix`, fn sum avg min max count first last. 14 mutasi: 13
+tertangkap; 1 lolos = kode mubazir (`IS NOT DISTINCT FROM` di pivot, nilai config tak bisa
+NULL) dan dihapus.
+
 ## Temuan P6 Fase 3-4 (ditunda)
 
 - Error `PipelineError` untuk `run` dengan `files`/`out_dir` jelek, `ValueError`/`KeyError` di `versions.py`: AGENTS §4 minta dict; ubah saat `tools.py` (Fase 6) membungkusnya.
@@ -511,3 +860,4 @@ NULL) dan dihapus.
 | 2026-11-07 | 6.1 `tools.py`: `JobTools(job, provider, out_dir)`. Semua tool mengembalikan dict (`text` atau `error`), tidak pernah exception: `PipelineError` -> issues per baris, `StateConflict` -> `conflict: true` + 'Nothing was changed', error domain (Spec/Node/Hitl/State/Workbook/Value/Key) -> pesan, bug lain -> `internal error (Tipe): ... library bug`; argumen salah panggil dilaporkan dengan daftar parameter. Teks dipotong 24000 char + `truncated`. Tool agent (21): job_summary list_files workbook_map sheet_regions render_range profile_region find_text compare_sheets formula_lineage propose_datasets node_catalog lookup_knowledge ask_human pending_questions save_spec get_spec validate_spec rebind_sources run_pipeline last_run spec_history. Tool host (3, tidak diberikan ke agent): add_file answer approve. File dirujuk `F1..` (juga nama file / id host), hash dicek lewat `open_ref`. `save_spec` memvalidasi dulu dan menolak spec bermasalah; `run_pipeline` memakai `hitl` + `ref=v<N>` (persetujuan lama tidak berlaku untuk versi baru), mengingatkan `after_run`; `rebind_sources` menyimpan `binds` dan memberi tahu bila `on_rebind_drift` butuh persetujuan. Skema datar (tanpa None/Optional; default `""`/`[]`) dijaga tes. Tes sekali jalan: argumen hostile ke semua tool (None, 5, [], ' ', 5000 char) tidak ada `internal error`. 25 tes; 19 mutasi mati (3 selamat -> tes ditambah). |
 | 2026-11-07 | 6.2 `README.md`: apa yang disediakan host (file provider, state/store, out_dir), snippet mode store dan stateless, pembungkus `LlmAgent` + `FunctionTool(fn) for fn in tools.agent_tools()`, instruksi awal untuk agent, tabel tool. Diverifikasi dengan google-adk dari venv PINTER: `FunctionTool` menerima method terikat apa adanya (nama, docstring, default dipakai) dan ke-24 tool menghasilkan skema tanpa `anyOf`/`oneOf`/`$ref`/`$defs`/`allOf`. `tests/test_readme.py` (3) menjalankan dua blok python README (store + stateless) dan mencocokkan tabel tool dengan `agent_tools()`; 5 mutasi README mati. Contoh LiteLLM ditulis sebagai catatan saja, belum diuji (6.3). |
 | 2026-11-07 | P6 Fase 6 (sendiri, tanpa subagent): adversarial ~60 probe lewat `JobTools` (workbook aneh: kosong/1 sel/40 sheet/unicode/error cell/header kembar; urutan panggilan tak lazim; argumen salah tipe/negatif/raksasa; JSON bersarang 100k; 3000 source; 300 versi; qa_log; dua penulis; provider rusak), auditor (docstring tiap tool, `hint` di AGENTS.md vs kode), agent-user (BALANSITAS sungguhan: map -> propose_datasets -> profile -> render -> node_catalog -> save_spec -> run -> rebind, total ~1800 token output). DIPERBAIKI: (1) exception apa pun dari `provider.open` (bukan hanya OSError/KeyError) jadi `internal error ... library bug`; sekarang `read_file` mengubahnya jadi error host; (2) catatan versi spec tak terbatas (100k char tersimpan di state; pydantic membocorkan `input_value` 100k) -> `MAX_NOTE=500`, pesan bersih di `save_spec`; (3) `pydantic.ValidationError` bocor mentah dari tool -> `describe`; (4) run ditolak checkpoint: agent tidak tahu harus apa -> pesan menambahkan 'use ask_human ... host approves'; (5) `node_catalog` menampilkan `value_type: {}` dan `suffixes: [any]` -> enum bernama dan list ukuran tetap ditampilkan (`VARCHAR|DOUBLE|...`, `[string, string]`); (6) AGENTS.md §4 menyebut `hint`, kode tidak -> AGENTS disesuaikan (pesan sudah memuat apa yang diubah). 12 tes baru; mutasi mati. Terukur: `Job.update` ~40 ms pada state 150 KB (300 versi spec), deepcopy dominan: aman untuk satu agent, dicatat sebagai batas. |
+| 2026-11-07 | Bersihkan temuan P6 Fase 3-4. Pesan: `describe` menjelaskan nama tak valid dalam kata (bukan regex), list vs satu nama, key salah ('is not a setting here'). `RegionRef`/`Step`/`Output` didokumentasikan (header 2 baris `PARENT|LEAF`, `inputs` list vs `input` satu nama, `end`). `end` diparse satu tempat (`RegionRef.blank_gap`); `locate` menghitung `last` dan `below`, run memberi peringatan bila ada baris terisi setelah akhir tabel (grand total terpotong); `read_location` memuat dari lokasi yang sudah dicari (engine memanggil `locate` sekali). `ColumnExpect.type` aktif (`type_fits`: float menerima bilangan bulat) dan gagal sebagai issue, `group` dihapus (mati). Pesan drift memuat langkah berikut. `_State.counts` dibuang, `issue()` menghitung yang tak muat (`N more problem(s) not shown`) dan memotong dengan `...`; diff versi memotong di sekitar beda pertama (perubahan di ekor tak lagi tersembunyi). `missing_required` satu fungsi untuk engine dan rebind; helper privat lintas modul jadi publik. Contoh spec lengkap di README dijalankan oleh tes. Bug ditemukan sambil jalan: `lit` lokal menimpa fungsi saat rename (dipakai `sql_text`). 786 unit + 16 sampel; 13 mutasi mati. |
