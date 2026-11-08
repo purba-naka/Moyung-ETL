@@ -137,6 +137,23 @@ A two-row header (a `Sales` over `Qty`) needs `"header_rows": 2` and gives colum
 `Sales|Qty`. A total row below a gap of two empty rows needs a larger `end`
 (`until_blank_rows(5)`); a run warns when filled rows lie below the end.
 
+## Steps a spec can use
+
+A source reads one table by its header text (`read_region`). Steps then change it. The agent
+gets the exact fields of each step from the `node_catalog` tool.
+
+| Group | Steps |
+|---|---|
+| Tidy Excel shapes | `drop_rows`, `fill_down`, `unpivot`, `unpivot_groups`, `split_header_token`, `parse_hierarchy` |
+| General | `select`, `rename`, `cast`, `filter`, `derive`, `fill_missing`, `sort`, `dedupe` |
+| Combine and summarise | `join`, `union`, `group_by`, `pivot` |
+
+`filter` and `derive` take one scalar SQL expression (duckdb): text functions (`split_part`,
+`regexp_extract`, `regexp_replace`, `substr`), dates (`strptime`, `date_trunc`, `strftime`,
+`date_diff`), `CASE`, `coalesce`, `round`. Not allowed: subqueries, aggregates, window
+functions, and functions that read files or the system. Running totals, ranks and
+month-over-month differences are not possible yet; see "Planned" in `IMPLEMENTATION.md`.
+
 ## Tools
 
 | Group | Tools |
@@ -150,6 +167,23 @@ A two-row header (a `Sales` over `Qty`) needs `"header_rows": 2` and gives colum
 A result is `{"text": ...}`, with `truncated` and `next_offset` when paged, or `{"error": ...}`.
 `save_spec` also returns `saved` and `version`; `validate_spec`, `rebind_sources` and
 `run_pipeline` return `ok`; a store conflict returns `conflict: true` (reload the job and repeat).
+
+## Where the ideas come from
+
+Nothing below is a dependency. The library depends only on `python-calamine`, `openpyxl`,
+`duckdb` and `pydantic`. These are the works whose ideas shaped it, and what we took from each.
+
+| Source | What we took | What we did not take |
+|---|---|---|
+| [SpreadsheetLLM: Encoding Spreadsheets for Large Language Models](https://arxiv.org/abs/2407.09025) (Dong et al., Microsoft, EMNLP 2024) | The three compression ideas behind `render_range`: structural anchors (keep the rows and columns at table edges, drop the homogeneous middle), an inverted index (one text, many addresses) and aggregation of number cells by type and range. | The fine-tuned model and the Chain of Spreadsheet question answering. |
+| [SheetBrain](https://github.com/microsoft/SheetBrain) (Microsoft; AAAI 2026) | The Understand, Execute, Validate cycle, which is the shape of the tool flow here (`workbook_map` to `render_range`, then `save_spec` and `run_pipeline`, then `checks`), and running agent code in a restricted sandbox. | The package itself: it depends on OpenAI, tiktoken and multimodal input, and its execution step runs free Python. Here the agent writes a spec and scalar SQL, never code. |
+| [sheetwise](https://github.com/Khushiyant/sheetwise) (PyPI) | A practical reference for the SpreadsheetLLM encoding; we measured it on the sample workbook and found the inverted index useful. | The package: it reads a pandas DataFrame, so merged cells, styles and table regions are already gone, and it pulls in heavy dependencies. Our views are about 35 times smaller on the large sample sheet. |
+| [DocETL](https://github.com/ucbepic/docetl) (UC Berkeley EPIC Data Lab) | Confirmation of the design: a declarative pipeline spec, a schema known before running, deterministic code steps, caching by hash. Ideas kept for later: run on a sample before the full run, and a review screen for human checkpoints. | The package: its steps are LLM calls, which is the opposite of the deterministic transforms wanted here. It is a candidate only for unstructured documents. |
+| `pinter-be-refactor/modules/parse_excel/parser.py` (this project's backend) | The base of `detect_regions`: stacked headers, vertical merges, total rows, several tables on one sheet. Copied and changed, not imported. | Its reader and agent tools: they answer questions about one file, while this library builds and reruns pipelines. |
+
+The sample workbook used for checks is internal data and is not in the repository. The
+tests build their own small workbooks in many shapes, because one real file is one example,
+not the rule.
 
 ## Checks before relying on it
 
