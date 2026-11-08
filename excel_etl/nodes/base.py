@@ -7,6 +7,7 @@ checked before any file is opened, so it must agree with what `run` produces.
 
 from __future__ import annotations
 
+import json
 import re
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -88,6 +89,9 @@ class Node:
     min_inputs: ClassVar[int] = 1
     max_inputs: ClassVar[int | None] = 1  # None = any number
     name: ClassVar[str] = ""
+    # (config, what it does) pairs shown by `catalog`. tests/test_node_examples.py runs each
+    # one, so an example that stops working fails a test instead of misleading an agent.
+    examples: ClassVar[tuple[tuple[dict[str, Any], str], ...]] = ()
 
     def __init__(self, config: Any) -> None:
         self.config = config
@@ -176,7 +180,12 @@ def catalog(name: str | None = None) -> str:
     lo, hi = cls.min_inputs, cls.max_inputs
     n_in = f"{lo}" if lo == hi else f"{lo}+" if hi is None else f"{lo}-{hi}"
     doc = "\n".join(line.strip() for line in (cls.__doc__ or "").strip().splitlines())
-    return f"{name} (inputs: {n_in})\n{doc}\nconfig: {_fields(cls)}"
+    shown = "".join(
+        f"\n  {json.dumps(cfg, ensure_ascii=False)}  # {note}" for cfg, note in cls.examples
+    )
+    return f"{name} (inputs: {n_in})\n{doc}\nconfig: {_fields(cls)}" + (
+        f"\nexamples:{shown}" if shown else ""
+    )
 
 
 def build(name: str, config: dict[str, Any] | None = None) -> Node:

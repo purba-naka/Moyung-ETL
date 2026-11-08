@@ -91,7 +91,10 @@ def _walk(node: Any, expr: str) -> None:
                 "WINDOW": "a window function (OVER)",
                 "LAMBDA": "a lambda",
             }.get(cls, f"a {cls.lower()} expression")
-            raise _fail(expr, f"{what} is not allowed; use plain column and function calls")
+            use = (
+                "use the window node" if cls == "WINDOW" else "use plain column and function calls"
+            )
+            raise _fail(expr, f"{what} is not allowed; {use}")
         if cls == "FUNCTION":
             name = str(node.get("function_name", "")).lower()  # duckdb already lowercases
             if name in _DENIED_FUNCTIONS:

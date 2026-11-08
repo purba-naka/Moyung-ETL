@@ -145,14 +145,18 @@ gets the exact fields of each step from the `node_catalog` tool.
 | Group | Steps |
 |---|---|
 | Tidy Excel shapes | `drop_rows`, `fill_down`, `unpivot`, `unpivot_groups`, `split_header_token`, `parse_hierarchy` |
-| General | `select`, `rename`, `cast`, `filter`, `derive`, `fill_missing`, `sort`, `dedupe` |
+| General | `select`, `rename`, `cast`, `filter`, `derive`, `fill_missing`, `sort`, `dedupe`, `window` |
 | Combine and summarise | `join`, `union`, `group_by`, `pivot` |
 
 `filter` and `derive` take one scalar SQL expression (duckdb): text functions (`split_part`,
 `regexp_extract`, `regexp_replace`, `substr`), dates (`strptime`, `date_trunc`, `strftime`,
-`date_diff`), `CASE`, `coalesce`, `round`. Not allowed: subqueries, aggregates, window
-functions, and functions that read files or the system. Running totals, ranks and
-month-over-month differences are not possible yet; see "Planned" in `IMPLEMENTATION.md`.
+`date_diff`), `CASE`, `coalesce`, `round`; `node_catalog("derive")` and `("filter")` show
+working examples. Not allowed: subqueries, aggregates, window functions, and functions that
+read files or the system. Running totals, ranks, the previous row's value and the share of a
+group total are the `window` step: a fixed list of functions (`sum`, `avg`, `min`, `max`,
+`count`, `row_number`, `rank`, `dense_rank`, `lag`, `lead`, `first_value`, `last_value`,
+`share`), a group (`partition_by`) and an order (`order_by`), no free SQL. Rows and their
+order are kept.
 
 ## Tools
 

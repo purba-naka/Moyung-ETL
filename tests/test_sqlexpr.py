@@ -241,3 +241,8 @@ def test_a_sleep_cannot_hold_a_run_even_when_it_reaches_the_engine() -> None:
     with pytest.raises(NodeError, match="not allowed"):
         build("filter", {"where": "pg_sleep(30) = true"})
     assert time.perf_counter() - start < 5  # refused when the spec is read, nothing slept
+
+
+def test_a_window_function_in_an_expression_points_to_the_window_step() -> None:
+    with pytest.raises(NodeError, match="use the window node"):
+        check_expression("sum(a) OVER (ORDER BY b)")

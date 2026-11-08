@@ -109,7 +109,8 @@ Setiap node: config pydantic + `infer_schema(inputs) -> Schema` + `run(inputs) -
 `drop_rows` (total, blank, noise), `split_header_token` (`JANUARI|PKG` -> bulan, anper).
 
 **Umum (ala KNIME)**: `select`, `rename`, `cast`, `filter`, `dedupe`, `sort`,
-`fill_missing`, `derive` (ekspresi SQL), `join`, `union`, `group_by`, `pivot`.
+`fill_missing`, `derive` (ekspresi SQL), `window` (saldo berjalan, peringkat, lag/lead, share;
+config terstruktur, bukan SQL), `join`, `union`, `group_by`, `pivot`.
 
 **Sink**: bukan node. `spec.outputs` (`input` + `format` parquet/csv); `run` menulis ke
 `out_dir/<nama>.<format>`. `write_snowflake` fase berikut.

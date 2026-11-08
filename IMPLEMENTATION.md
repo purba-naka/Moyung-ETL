@@ -12,34 +12,21 @@ Perbarui setiap selesai satu item (lihat AGENTS.md §7).
 
 ## Berikutnya
 
-1. Lihat "Planned" di bawah (contoh ekspresi, node `window`, plugin coding agent). 6.3 bersama rekan. Setelah itu: temuan lama P6 Fase 1/2 di §Temuan (error cell sudah diperingatkan; `_fit` streaming tersisa).
+1. Lihat "Planned" di bawah (plugin coding agent). 6.3 bersama rekan. Setelah itu: temuan lama P6 Fase 1/2 di §Temuan (error cell sudah diperingatkan; `_fit` streaming tersisa).
 2. Pertanyaan terbuka di bagian bawah (batas dataset per job, pemilik target schema Snowflake, retensi versi).
 
 ## Planned (belum dikerjakan, urut)
 
-1. **Contoh ekspresi di `node_catalog("derive")` dan `("filter")`.** Hasil uji 2026-11-08: split dan
-   regex teks (`split_part`, `regexp_extract`, `regexp_replace`, `string_split(...)[n]`,
-   `regexp_matches`, `LIKE`, `substr`) dan tanggal (`strptime`, `date_trunc`, `strftime`,
-   `date_diff`) sudah jalan lewat `derive`, tetapi agent tidak diberi tahu. Tambahkan daftar
-   fungsi aman dengan contoh pendek ke docstring node; tes: tiap contoh di docstring benar-benar
-   lolos `check_expression` dan dieksekusi.
-2. **Node `window`** (operasi berurutan). Window di dalam `derive` ditolak dengan sengaja (bisa
-   membaca seluruh tabel). Kebutuhan nyata: saldo berjalan, selisih bulan ke bulan, peringkat,
-   bagian dari total grup. Rancangan: config terstruktur, tanpa SQL bebas.
-   `{"name": "saldo", "fn": "sum", "column": "qty", "partition_by": ["produk"], "order_by": ["tgl"]}`
-   `fn`: `sum avg min max count` (kumulatif), `row_number rank dense_rank`, `lag lead`,
-   `first_value last_value`, `share` (nilai / jumlah grup). Syarat: urutan baris dijaga
-   (`row_number() OVER ()` sebagai posisi, seperti `dedupe`), `infer_schema == schema_of(run)`,
-   urutan seri sama deterministik, partisi kosong dan NULL diuji, beberapa bentuk data bukan
-   satu contoh, tes pada 200k baris untuk urutan.
-3. **Plugin coding agent** (ingatkan user). Maki: folder terpisah (`integrations/maki/`), tanpa
+(Contoh ekspresi di katalog dan node `window` selesai 2026-11-08; lihat Log.)
+
+1. **Plugin coding agent** (ingatkan user). Maki: folder terpisah (`integrations/maki/`), tanpa
    menyentuh `excel_etl/`. Jembatan satu file Python (satu tool per proses, state di
    `FileStore`, `file_id` = path di disk), `register_tool` Lua untuk 21 tool agent, perintah slash
    untuk sisi host (`add_file`, `answer`, `approve`, `reload_job`) agar agent tidak bisa
    menyetujui sendiri. Terukur: tiap panggilan sekitar 0,7 s (impor duckdb 0,26 s); bila terasa,
    pertimbangkan proses yang tetap hidup. Perlu diputuskan: hanya Maki atau banyak agent
    (server tipis), dan di mana batas `AGENTS.md` ("bukan MCP server") berlaku: untuk `excel_etl/`.
-4. **Menunggu pihak lain:** 6.3 (uji skema lewat LiteLLM, bersama rekan), tes di Linux
+2. **Menunggu pihak lain:** 6.3 (uji skema lewat LiteLLM, bersama rekan), tes di Linux
    (CI Ubuntu sudah dipasang), Fase 7 `write_snowflake` (butuh jawaban: pemilik target schema,
    dan apakah tulis ke Snowflake lewat MCP di PINTER atau dari library ini).
 
@@ -542,3 +529,4 @@ Tersisa:
 | 2026-11-08 | Perbaiki bug dari review AI eksternal (diverifikasi dulu satu per satu). (1) Tabel semua-teks (master/mapping) tak punya header terdeteksi karena `is_data` butuh angka: `regions._text_header` menerima baris atas sebagai header bila blok >= 4 baris, >= 2 kolom, tanpa angka dan tanpa formula, header teks unik, >= 3 dari 4 baris isi mostly terisi, dan header berhuruf tebal ATAU tak ada teks header yang berulang di bawah kolomnya; `lineage.region_role` memberi `source` pada blok teks >= 2x2 dengan >= 4 teks (satu label atau satu baris tetap `empty`). Diukur pada BALANSITAS: 3825 region, 0 sheet berubah. Awalnya 3 region berubah (potongan tabel angka: baris pengiriman) karena aturan tanpa syarat 'tanpa angka'; syarat itu ditambahkan setelah mengukur. (2) `FileStore.load` memperlakukan `NotADirectoryError` (Linux) sama dengan `FileNotFoundError` (Windows); tes `test_store_save_failure_keeps_job_state` tak lagi bergantung kode galat OS (mkdir ditolak lewat monkeypatch) + tes dua kode galat. (3) `JobTools.approve` tanpa `ref` memakai `v<N>` spec yang tersimpan; pesan 'approved for None' jadi 'approved for no version, but this is v1'. (4) `"^P\d$"` jadi raw string; `tests/test_source_hygiene.py` mengompilasi semua .py dengan peringatan terekam. Tambahan: sandbox menolak `pg_sleep`, `pg_sleep_for`, `pg_sleep_until`, `sleep`, `version`, `duckdb_version`, `pg_backend_pid`, `txid_current`, `current_query` (`pg_sleep(2)` terbukti menahan run 2 s; `current_date`/`current_user` adalah referensi kolom di parser, bukan fungsi, jadi tidak ditolak); `.github/workflows/ci.yml` (ruff, format, `compileall -W error`, pytest di ubuntu dan windows); 'Struktur target' disamakan dengan isi repo; README menyebut Moyung-ETL = excel-etl. 861 unit + 16 sampel; 24 mutasi mati (beberapa lolos dulu, dipertajam). Tes Linux sungguhan belum dijalankan (tak ada Linux di mesin ini): CI yang akan membuktikannya. |
 | 2026-11-08 | Latihan end-to-end (map, propose, save_spec, run) menemukan peran sheet `workbook_map` untuk sheet teks masih `empty` padahal region-nya `source`: `sheet_role` memakai aturan teks yang sama (`_is_text_table` pada kotak terpakai). DESIGN: status baris awal diperbarui (Fase 1-6 berkode). 862 unit + 16 sampel; mutasi mati. |
 | 2026-11-08 | README: bagian 'Steps a spec can use' (18 node dan batas ekspresi) dan 'Where the ideas come from' (SpreadsheetLLM, SheetBrain, sheetwise, DocETL, parse_excel PINTER; tautan diverifikasi lewat pencarian, klaim kompresi 35x dari ukuran terukur 985 vs ~34.000 token). `tests/test_readme.py`: tabel node = registry, tautan sumber lengkap, dependency tetap empat. 4 mutasi mati (satu lolos dulu: substring, dipertajam). Bagian 'Planned' ditambahkan: contoh ekspresi, node `window`, plugin coding agent. |
+| 2026-11-08 | `Node.examples` (config + catatan) dicetak oleh `catalog(node)`; 10 contoh `derive`, 6 `filter` (teks, regex, tanggal, CASE, nullif untuk bagi-0 yang jadi `inf`). Node `window` (13 fungsi: sum/avg/min/max/count berjalan atau total grup, row_number, rank, dense_rank, lag, lead, first_value, last_value, share; `partition_by`, `order_by` dengan `-`, `offset`); urutan baris dijaga lewat `__pos`, seri diputus oleh posisi tabel, `rank` memakai seri yang sama; `Sort._keys` jadi `_order_keys` bersama; pesan ekspresi dengan OVER kini menunjuk node `window`. `tests/test_node_examples.py` (tiap contoh dijalankan, nilai dicek, katalog mencetak persis), `tests/test_window.py` (76 kasus melawan referensi Python pada 4 bentuk data: banyak grup kecil, satu grup, kunci NULL, banyak seri; tipe, tepi, penolakan, 200k baris ~1 s). Mutasi: 22, semua mati (satu NOOP karena sed, diulang). Sampel BALANSITAS 16 lulus. |
