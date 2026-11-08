@@ -68,15 +68,16 @@ def spec_json(**over):
 def test_agent_tools_are_the_documented_fixed_list(tools):
     names = [f.__name__ for f in tools.agent_tools()]
     assert names[:3] == ["job_summary", "list_files", "workbook_map"]
-    assert len(names) == len(set(names)) == 21
-    for banned in ("add_file", "answer", "approve"):  # host only
+    assert len(names) == len(set(names)) == 22
+    for banned in ("add_file", "answer", "approve", "reload_job", "record_load"):  # host only
         assert banned not in names
 
 
 def test_tool_schemas_are_flat_and_documented(tools):
     """DESIGN 11: primitives, enums and lists of strings only; the docstring is the description."""
     ok = {str, int, float, bool}
-    for fn in tools.agent_tools() + [tools.add_file, tools.answer, tools.approve]:
+    host = [tools.add_file, tools.answer, tools.approve, tools.reload_job, tools.record_load]
+    for fn in tools.agent_tools() + host:
         assert (fn.__doc__ or "").strip(), fn.__name__
         hints = typing.get_type_hints(fn, include_extras=False)
         for name, hint in hints.items():

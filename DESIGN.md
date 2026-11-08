@@ -2,7 +2,7 @@
 
 Library Python murni: tools untuk agent LLM membangun, menjalankan, dan me-recycle
 pipeline ETL dari file Excel raw (multi-sheet, multi-tabel, bentuk tak seragam)
-sampai menghasilkan data bersih. Load ke Snowflake di luar scope (fase berikut).
+sampai menghasilkan data bersih. Muat ke warehouse (Snowflake, Databricks, BigQuery) dirancang di §Sink; library hanya menyusun rencana.
 
 Status: Fase 1-6 sudah berkode (inspect, spec, node, engine, rebind, versi, HITL, knowledge,
 quality, state, tools.py). Yang belum: uji skema lewat LiteLLM (6.3) dan load ke Snowflake.
@@ -90,7 +90,7 @@ ID stabil: `F1` (file), `F1.S12` (sheet), `F1.S12.R2` (region).
 | `rebind_sources`, `run_pipeline`, `last_run` | bind ulang, jalankan (butuh approval), laporan terakhir |
 
 Semua ada di `tools.py` sebagai method `JobTools`; `add_file`, `answer`, `approve`, `reload_job`
-khusus host.
+khusus host (`record_load` juga: host mencatat hasil muat).
 
 Deteksi region: generalisasi `pinter-be-refactor/modules/parse_excel/parser.py`
 (header bertingkat, merged vertikal, total row, multi-tabel satu sheet) +
@@ -113,7 +113,20 @@ Setiap node: config pydantic + `infer_schema(inputs) -> Schema` + `run(inputs) -
 config terstruktur, bukan SQL), `join`, `union`, `group_by`, `pivot`.
 
 **Sink**: bukan node. `spec.outputs` (`input` + `format` parquet/csv); `run` menulis ke
-`out_dir/<nama>.<format>`. `write_snowflake` fase berikut.
+`out_dir/<nama>.<format>`.
+
+**Muat ke warehouse (Fase 7).** Library tidak menyambung ke database dan tidak memegang
+kredensial. `outputs.<nama>.load = {table, mode: replace|append|merge, keys}` hanya menyebut
+nama tabel dan cara menulis; database, schema, stage dan login dari host (`Where`).
+`plan_load` (`load.py`) membaca file parquet hasil run (kolom dan tipe dari file, bukan spec)
+dan menyusun langkah berurutan (`upload`, `create`, `copy`, `merge`, `cleanup`) dengan SQL
+tiap langkah. Satu `Profile` per platform memuat fakta yang beda: kutip nama, panjang maksimum,
+aturan nama, peta tipe duckdb ke tipe platform. Menambah platform = satu `Profile` dan satu
+pembangun langkah. Semua nama masuk SQL lewat `Profile.quote`, semua nilai lewat `_literal`.
+Pintu `before_load` (default `required`, per versi spec) harus disetujui orang sebelum
+`plan_load` jalan; host menjalankan langkah lalu memanggil `record_load`. Tabel target yang sudah
+ada dibandingkan lewat `existing_columns` (hasil DESCRIBE dari host): `append` dan `merge` ke tabel
+yang tidak cocok ditolak, `replace` membuat ulang tabel. Belum terbukti di akun sungguhan.
 
 Ekspresi SQL `derive`/`filter`: diparse, hanya ekspresi skalar (tanpa subquery,
 tanpa fungsi file/IO), duckdb dengan `enable_external_access=false`.
@@ -169,7 +182,7 @@ dicocokkan tanpa beda huruf, `confirm` yes/no (ya/tidak), lalu masuk `Knowledge.
 ```json
 {"checkpoints": {"after_workbook_map": "off", "after_propose_datasets": "required",
                  "after_spec": "optional", "after_run": "required_if_fail",
-                 "on_rebind_drift": "required"},
+                 "before_load": "required", "on_rebind_drift": "required"},
  "confidence_below": 0.7, "unknown_term": true}
 ```
 
@@ -276,5 +289,5 @@ di mode mana pun.
 ## 13. Pertanyaan terbuka
 
 - Satu file BALANSITAS menghasilkan banyak dataset: batas berapa dataset per job?
-- Siapa pemilik `target_schema` di Snowflake nanti (agar nama/tipe kolom konsisten)?
+- Siapa pemilik schema target di warehouse (nama/tipe kolom)? Library mencocokkan lewat `existing_columns`, tetapi siapa yang menetapkan bentuk tabel tetap keputusan produk.
 - Retensi versi spec dan RunReport: berapa lama?

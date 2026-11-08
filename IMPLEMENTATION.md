@@ -17,7 +17,7 @@ Perbarui setiap selesai satu item (lihat AGENTS.md §7).
 
 ## Planned (belum dikerjakan, urut)
 
-(Contoh ekspresi di katalog dan node `window` selesai 2026-11-08; lihat Log.)
+(Contoh ekspresi di katalog dan node `window` selesai 2026-11-08. Fase 7 (rencana muat ke Snowflake, Databricks, BigQuery) selesai 2026-11-09 kecuali uji di akun sungguhan; lihat Log.)
 
 1. **Plugin coding agent** (ingatkan user). Maki: folder terpisah (`integrations/maki/`), tanpa
    menyentuh `excel_etl/`. Jembatan satu file Python (satu tool per proses, state di
@@ -27,8 +27,8 @@ Perbarui setiap selesai satu item (lihat AGENTS.md §7).
    pertimbangkan proses yang tetap hidup. Perlu diputuskan: hanya Maki atau banyak agent
    (server tipis), dan di mana batas `AGENTS.md` ("bukan MCP server") berlaku: untuk `excel_etl/`.
 2. **Menunggu pihak lain:** 6.3 (uji skema lewat LiteLLM, bersama rekan), tes di Linux
-   (CI Ubuntu sudah dipasang), Fase 7 `write_snowflake` (butuh jawaban: pemilik target schema,
-   dan apakah tulis ke Snowflake lewat MCP di PINTER atau dari library ini).
+   (CI Ubuntu sudah dipasang), uji muat di akun Snowflake, Databricks dan BigQuery sungguhan
+   (SQL belum pernah dijalankan di platform aslinya), pemilik schema target.
 
 ## Struktur target
 
@@ -531,3 +531,4 @@ Tersisa:
 | 2026-11-08 | README: bagian 'Steps a spec can use' (18 node dan batas ekspresi) dan 'Where the ideas come from' (SpreadsheetLLM, SheetBrain, sheetwise, DocETL, parse_excel PINTER; tautan diverifikasi lewat pencarian, klaim kompresi 35x dari ukuran terukur 985 vs ~34.000 token). `tests/test_readme.py`: tabel node = registry, tautan sumber lengkap, dependency tetap empat. 4 mutasi mati (satu lolos dulu: substring, dipertajam). Bagian 'Planned' ditambahkan: contoh ekspresi, node `window`, plugin coding agent. |
 | 2026-11-08 | `Node.examples` (config + catatan) dicetak oleh `catalog(node)`; 10 contoh `derive`, 6 `filter` (teks, regex, tanggal, CASE, nullif untuk bagi-0 yang jadi `inf`). Node `window` (13 fungsi: sum/avg/min/max/count berjalan atau total grup, row_number, rank, dense_rank, lag, lead, first_value, last_value, share; `partition_by`, `order_by` dengan `-`, `offset`); urutan baris dijaga lewat `__pos`, seri diputus oleh posisi tabel, `rank` memakai seri yang sama; `Sort._keys` jadi `_order_keys` bersama; pesan ekspresi dengan OVER kini menunjuk node `window`. `tests/test_node_examples.py` (tiap contoh dijalankan, nilai dicek, katalog mencetak persis), `tests/test_window.py` (76 kasus melawan referensi Python pada 4 bentuk data: banyak grup kecil, satu grup, kunci NULL, banyak seri; tipe, tepi, penolakan, 200k baris ~1 s). Mutasi: 22, semua mati (satu NOOP karena sed, diulang). Sampel BALANSITAS 16 lulus. |
 | 2026-11-08 | `skills/`: 4 skill format Agent Skills (`excel-etl-understand`, `-build-spec` + `references/patterns.md`, `-run-verify`, `-recycle`), agnostik agent. `tests/test_skills.py` (31): format (nama = folder, deskripsi, <= 150 baris, aturan Do not / Stop and ask), semua nama tool/node/setting ada di kode, 21 tool agent semua disebut, tiap snippet JSON valid dan dibangun lewat node, langkah wide-to-long dijalankan. Temuan: DESIGN menulis peran sheet `dashboard/chart_data/form`, kode hanya `source/mixed/derived/empty`; DESIGN diperbaiki, skill memakai peran nyata. 15 mutasi mati. |
+| 2026-11-09 | Fase 7: muat hasil ETL ke warehouse sebagai RENCANA, bukan koneksi. `Output.load` (`LoadTarget`: table, mode replace/append/merge, keys; ditolak: merge tanpa keys, keys di luar merge, csv, dua output ke satu tabel; `"load": null` tidak ikut di dump). `excel_etl/load.py`: `Profile` per platform (Snowflake, Databricks, BigQuery: kutip, panjang nama, aturan nama, peta tipe, dari dokumentasi vendor yang dibaca 2026-11-08), `plan_load` (kolom dari file parquet, bukan spec; langkah upload/create/copy/merge/cleanup + SQL), `compare_target` (DESCRIBE host vs file: kolom baru, tipe lain, kolom lebih), `file_columns`. Checkpoint baru `before_load` (default required, per versi spec); tool agent `plan_load` (tool ke-22) dan tool host `record_load` (`JobState.loads`); skill `excel-etl-load`. Semua nama lewat `Profile.quote`, semua nilai lewat `_literal`, jalur stage divalidasi. Tes: `test_load.py` (100 kasus, termasuk parse tiap pernyataan dalam dialek aslinya bila `sqlglot` ada), `test_load_flow.py` (alur dari spec ke tabel di duckdb lokal untuk replace, append, merge), `test_pipeline.py`, skills/readme. Mutasi 50, semua mati. BELUM TERBUKTI: SQL tidak pernah dijalankan di Snowflake, Databricks atau BigQuery; dua hal sengaja ditandai di peringatan rencana (timestamp tanpa zona ke BigQuery DATETIME; batas panjang nama kolom Databricks tidak ditemukan di dokumen, dipakai 255). |

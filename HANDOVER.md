@@ -28,7 +28,7 @@ from excel_etl.tools import JobTools
 
 tools = JobTools(Job.open("job1", FileStore("state")), my_files, out_dir="out/job1")
 tools.add_file("upload-17", "Balance Jan.xlsx", role="main")
-agent_functions = tools.agent_tools()  # 21 plain methods; give them to the agent
+agent_functions = tools.agent_tools()  # 22 plain methods; give them to the agent
 ```
 
 Job ids are lower case letters, digits and `_ . -` (so they are safe file names on Windows).
@@ -68,6 +68,7 @@ Checkpoints (default policy):
 | `after_propose_datasets` | required | `run_pipeline` refuses until approved |
 | `after_spec` | optional | `run_pipeline` refuses only if you set it to `required` |
 | `after_run` | required_if_fail | reminder in the `run_pipeline` text; does not block |
+| `before_load` | required | `plan_load` refuses until approved for this spec version |
 | `on_rebind_drift` | required | reminder in the `rebind_sources` text; does not block |
 
 Approvals are tied to `ref`: `run_pipeline` passes `v<N>` of the saved spec, so an approval given
@@ -141,7 +142,7 @@ EXCEL_ETL_SAMPLE="path/to/BALANSITAS.xlsx" uv run pytest -q -m sample
 ## Open questions for the product side
 
 - How many datasets may one job produce?
-- Who owns the target schema (names and types) once data goes to Snowflake?
+- Who owns the target schema (names and types) in the warehouse?
 - How long are spec versions and run reports kept?
 
-Loading to Snowflake is not in this library: it ends at parquet/csv plus the report.
+The library does not connect to a warehouse. It ends at parquet/csv plus the report, and `plan_load` plans the load into Snowflake, Databricks or BigQuery for your side to run (README, "Loading the result into a warehouse"). Not tested on a live account yet.

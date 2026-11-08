@@ -69,7 +69,7 @@ turn). The generated schema of all tools is flat: no `anyOf`, `oneOf` or `$ref`.
 the same functions work through its function-to-schema helper; `tests/test_tools.py` checks
 that argument types stay primitive, enum or list of strings.
 
-**Not for the agent**: `tools.add_file`, `tools.answer`, `tools.approve`, `tools.reload_job`. They are what a person
+**Not for the agent**: `tools.add_file`, `tools.answer`, `tools.approve`, `tools.reload_job`, `tools.record_load`. They are what a person
 does through your UI. When the agent calls `ask_human` the tool returns a `question_id` and the
 agent must stop; show the question, then call `tools.answer(question_id, reply)` and start the
 next turn.
@@ -93,7 +93,7 @@ Never guess a column name; copy it from a tool result.
 
 ### Skills for coding agents
 
-`skills/` holds four playbooks in the open Agent Skills format (a folder per skill with a
+`skills/` holds five playbooks in the open Agent Skills format (a folder per skill with a
 `SKILL.md`; spec at agentskills.io). Any agent that reads that format can load them: copy or
 link the folders into its skills directory. They tell the agent the order of work, not the
 tool arguments (the tool docstrings and `node_catalog` do that).
@@ -104,10 +104,43 @@ tool arguments (the tool docstrings and `node_catalog` do that).
 | `excel-etl-build-spec` | write and fix the spec (`references/patterns.md`: Excel shape to nodes) |
 | `excel-etl-run-verify` | run, read the report, handle approval gates |
 | `excel-etl-recycle` | a new file for a job that has a spec |
+| `excel-etl-load` | plan the load of a clean output into Snowflake, Databricks or BigQuery |
 
 `tests/test_skills.py` keeps them honest: the format rules, every tool, node and setting
 named in them must exist, every JSON snippet must parse and build, and every agent tool must
 appear in at least one skill.
+
+## Loading the result into a warehouse
+
+The library ends at a parquet file and a report. To put the file in a database, an output
+names its target and `plan_load` turns it into steps; the host runs them with its own login.
+Nothing in the library connects to anything or holds a password.
+
+```json
+{"outputs": {"clean": {"input": "by_group", "format": "parquet",
+   "load": {"table": "sales_clean", "mode": "merge", "keys": ["Plant", "Product"]}}}}
+```
+
+`mode`: `replace` (swap the table), `append` (add rows), `merge` (update rows with the same
+`keys`, add the rest). The agent calls `plan_load(platform, output, database, schema, stage)`
+after a person approves `before_load` for that spec version; the result lists the steps
+(send the file, make the table, copy, merge) with the SQL of each. The host runs them and calls
+`tools.record_load(output, status, rows, note)`.
+
+| Platform | Notes |
+|---|---|
+| `snowflake` | `PUT` to a stage, `COPY INTO ... MATCH_BY_COLUMN_NAME`; `replace` is one transaction |
+| `databricks` | `COPY INTO` a Delta table (made first); `replace` is `CREATE OR REPLACE TABLE` |
+| `bigquery` | `LOAD DATA INTO` or `OVERWRITE` from a Cloud Storage file; a failed overwrite leaves the table |
+
+A column the platform cannot hold (`INTERVAL`, nested types, huge integers, a name BigQuery
+rejects) is an error that names it. Pass the target table's `DESCRIBE` as `existing_columns`
+and an `append` or `merge` into a table that does not fit the file is refused.
+
+**Not proven on a live account.** The SQL follows each vendor's documentation, parses in that
+platform's dialect and runs the same flow on a local duckdb in `tests/test_load_flow.py`, but
+it has not been run on Snowflake, Databricks or BigQuery. Add a new platform with one `Profile`
+in `excel_etl/load.py`.
 
 ## A complete spec
 
@@ -182,9 +215,9 @@ order are kept.
 |---|---|
 | Look at a file | `workbook_map`, `sheet_regions`, `render_range`, `profile_region`, `find_text`, `compare_sheets`, `formula_lineage`, `propose_datasets` |
 | Write a pipeline | `node_catalog`, `save_spec`, `get_spec`, `validate_spec`, `spec_history` |
-| Run and recycle | `run_pipeline`, `last_run`, `rebind_sources` |
+| Run and recycle | `run_pipeline`, `last_run`, `rebind_sources`, `plan_load` |
 | People and context | `ask_human`, `pending_questions`, `lookup_knowledge`, `job_summary`, `list_files` |
-| Host only | `add_file`, `answer`, `approve`, `reload_job` |
+| Host only | `add_file`, `answer`, `approve`, `reload_job`, `record_load` |
 
 A result is `{"text": ...}`, with `truncated` and `next_offset` when paged, or `{"error": ...}`.
 `save_spec` also returns `saved` and `version`; `validate_spec`, `rebind_sources` and

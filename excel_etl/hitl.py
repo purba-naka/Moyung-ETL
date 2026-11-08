@@ -25,6 +25,7 @@ type Checkpoint = Literal[
     "after_propose_datasets",
     "after_spec",
     "after_run",
+    "before_load",
     "on_rebind_drift",
 ]
 type Mode = Literal["off", "optional", "required", "required_if_fail"]
@@ -35,6 +36,7 @@ CHECKPOINTS: tuple[str, ...] = (
     "after_propose_datasets",
     "after_spec",
     "after_run",
+    "before_load",
     "on_rebind_drift",
 )
 _MAX_PENDING = 20
@@ -58,6 +60,7 @@ class HitlPolicy(_Model):
             "after_propose_datasets": "required",
             "after_spec": "optional",
             "after_run": "required_if_fail",
+            "before_load": "required",
             "on_rebind_drift": "required",
         }
     )
