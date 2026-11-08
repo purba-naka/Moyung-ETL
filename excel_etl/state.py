@@ -25,7 +25,7 @@ import re
 import time
 from collections.abc import Callable, Iterable, Iterator
 from pathlib import Path
-from typing import Protocol
+from typing import Literal, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
@@ -69,6 +69,19 @@ class FileRef(_Model):
         return self
 
 
+class LoadRecord(_Model):
+    """What the host reports after it ran a load plan. The library never loads anything."""
+
+    output: str
+    platform: str
+    table: str
+    status: Literal["ok", "failed"]
+    rows: int = Field(ge=0)
+    ref: str  # the spec version and run the plan was made for
+    note: str = Field(default="", max_length=500)
+    at: str
+
+
 class JobState(_Model):
     job_id: str
     version: int = Field(default=0, ge=0)  # how many times it was saved; the optimistic lock
@@ -79,6 +92,7 @@ class JobState(_Model):
     history: SpecHistory | None = None
     binds: dict[str, BindRecord] = {}  # source name -> where it was found last time
     last_run: RunReport | None = None
+    loads: list[LoadRecord] = Field(default=[], max_length=200)  # newest last
 
     @model_validator(mode="after")
     def _consistent(self) -> JobState:

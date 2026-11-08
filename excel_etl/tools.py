@@ -23,6 +23,7 @@ import functools
 import inspect
 import os
 from collections.abc import Callable
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal
 
@@ -32,7 +33,8 @@ from excel_etl.engine import PipelineError, run, validate
 from excel_etl.hitl import HitlError, answer, approve, ask_human, gate
 from excel_etl.inspect import encode
 from excel_etl.knowledge import lookup_knowledge
-from excel_etl.nodes import NodeError, catalog
+from excel_etl.load import LoadError, Where, file_columns, plan_load
+from excel_etl.nodes import Column, NodeError, catalog
 from excel_etl.nodes.base import describe
 from excel_etl.pipeline import PipelineSpec, SpecError, dump_spec, parse_spec
 from excel_etl.rebind import rebind
@@ -40,6 +42,7 @@ from excel_etl.state import (
     FileProvider,
     Job,
     JobState,
+    LoadRecord,
     StateConflict,
     StateError,
     add_file,
@@ -51,7 +54,9 @@ from excel_etl.versions import MAX_NOTE, SpecHistory
 from excel_etl.workbook import Workbook, WorkbookError
 
 _MAX_TEXT = 24_000
-_ERRORS = (SpecError, NodeError, HitlError, StateError, WorkbookError, ValueError, KeyError)
+_ERRORS = (
+    SpecError, NodeError, HitlError, StateError, WorkbookError, LoadError, ValueError, KeyError,
+)  # fmt: skip
 
 
 def _cap(result: dict) -> dict:
@@ -102,6 +107,15 @@ def _tool(fn: Callable[..., dict]) -> Callable[..., dict]:
     return wrapper
 
 
+def _split_column(text: str) -> Column:
+    """`name type` (the last word or `type(p,s)` is the type) -> Column. The type is kept as the
+    platform wrote it; `compare_target` only looks at its family."""
+    name, _, kind = text.strip().rpartition(" ")
+    if not name or not kind:
+        raise StateError(f"existing_columns item {text[:40]!r} must look like 'name TYPE'")
+    return Column(name.strip().strip('"`'), kind)
+
+
 class JobTools:
     def __init__(
         self,
@@ -114,6 +128,8 @@ class JobTools:
         self.provider = provider
         self.out_dir = out_dir
         self.per_version = per_version  # write into out_dir/v<N> so a rerun keeps older files
+        # (output, platform, table) of the last plan_load, so record_load answers a real plan
+        self._last_plan: tuple[str, str, str] | None = None
 
     # --- helpers -----------------------------------------------------------------------------
 
@@ -179,6 +195,29 @@ class JobTools:
         s = self.job.reload()
         return {"text": f"reloaded job {s.job_id} at version {s.version}"}
 
+    @_tool
+    def record_load(
+        self, output: str, status: Literal["ok", "failed"], rows: int, note: str = ""
+    ) -> dict:
+        """Host: record the result of a load plan it ran for `output` (rows loaded, ok or
+        failed, and a short note such as the error). The library loads nothing itself."""
+        last = self._state.last_run
+        plan = self._last_plan
+        if last is None or plan is None or plan[0] != output:
+            raise StateError(f"no load plan was made for {output!r}; call plan_load first")
+        rec = LoadRecord(
+            output=output,
+            platform=plan[1],
+            table=plan[2],
+            status=status,
+            rows=rows,
+            ref=f"v{self._version()}",
+            note=" ".join(note.split())[:500],
+            at=datetime.now(UTC).isoformat(timespec="seconds"),
+        )
+        self.job.update(lambda s: s.model_copy(update={"loads": [*s.loads, rec][-200:]}))
+        return {"text": f"recorded load of {output} to {plan[1]} {plan[2]}: {status}, {rows} rows"}
+
     # --- the agent's tools -------------------------------------------------------------------
 
     def agent_tools(self) -> list[Callable[..., dict]]:
@@ -204,6 +243,7 @@ class JobTools:
             "rebind_sources",
             "run_pipeline",
             "last_run",
+            "plan_load",
             "spec_history",
         ]
         return [getattr(self, n) for n in names]
@@ -445,6 +485,46 @@ class JobTools:
         """The report of the last run: rows per step, checks, files written, problems."""
         rep = self._state.last_run
         return {"text": rep.text() if rep else "no run yet"}
+
+    @_tool
+    def plan_load(
+        self,
+        platform: Literal["snowflake", "databricks", "bigquery"],
+        output: str,
+        database: str = "",
+        schema: str = "",
+        stage: str = "",
+        existing_columns: list[str] = [],  # noqa: B006 - never mutated
+    ) -> dict:
+        """Plan the load of one output of the last run into a warehouse table. It runs
+        nothing: it returns the steps and SQL for a person to approve and the host to run.
+        `database`, `schema` and `stage` come from the person or `lookup_knowledge`, never
+        guess them. `existing_columns` is the target table's current columns as `name type`
+        strings (from DESCRIBE); with it, a table that does not fit the file is refused.
+        The output must have `load` in the spec (table, mode, keys)."""
+        s = self._state
+        rep = s.last_run
+        if rep is None or rep.status != "ok" or s.history is None:
+            raise StateError("run the pipeline successfully first (run_pipeline)")
+        spec = s.history.current.spec
+        out = spec.outputs.get(output)
+        if out is None:
+            raise StateError(f"no output {output!r}; outputs: {', '.join(spec.outputs) or 'none'}")
+        if out.load is None:
+            raise StateError(f"output {output!r} has no `load` in the spec; add table and mode")
+        stat = next((o for o in rep.outputs if o.name == output), None)
+        if stat is None:
+            raise StateError(f"the last run did not write {output!r}; run again")
+        if why := gate(s.hitl, "before_load", ref=f"v{self._version()}"):
+            raise StateError(f"{why}. Use ask_human (confirm) and stop; the host approves.")
+        cols, _ = file_columns(stat.path)
+        found = tuple(_split_column(c) for c in existing_columns) or None
+        plan = plan_load(
+            platform, output, stat.path, out.load.table, out.load.mode, out.load.keys, cols,
+            Where(database=database, schema_name=schema, stage=stage), found,
+        )  # fmt: skip
+        self._last_plan = (output, plan.platform, out.load.table)
+        return {"text": plan.text() + "\nThe host runs these steps, then calls record_load."}
 
     @_tool
     def spec_history(self) -> dict:

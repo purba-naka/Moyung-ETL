@@ -58,6 +58,7 @@ def test_tools_table_matches_the_code():
         "answer",
         "approve",
         "reload_job",
+        "record_load",
     }
     assert named == exposed
 
@@ -68,7 +69,8 @@ def test_the_complete_spec_in_the_readme_parses_and_runs(tmp_path):
     from excel_etl.engine import run
     from excel_etl.pipeline import parse_spec
 
-    block = re.findall(r"```json\n(.*?)```", README, re.S)[0]
+    blocks = re.findall(r"```json\n(.*?)```", README, re.S)
+    block = next(b for b in blocks if '"sources"' in b)  # the complete spec, not a fragment
     spec = parse_spec(block)
     book = make_xlsx(
         {
@@ -112,3 +114,16 @@ def test_readme_names_where_the_ideas_come_from_with_working_links():
     assert names == {"python-calamine", "openpyxl", "duckdb", "pydantic"}
     for banned in ("sheetwise", "docetl", "SheetBrain"):
         assert banned.lower() not in {n.lower() for n in names}
+
+
+def test_the_load_example_in_the_readme_is_a_valid_output():
+    import json
+
+    from excel_etl.pipeline import Output
+
+    blocks = re.findall(r"```json\n(.*?)```", README, re.S)
+    block = next(b for b in blocks if '"load"' in b)
+    out = json.loads(block)["outputs"]["clean"]
+    assert Output.model_validate(out).load.mode == "merge"
+    for platform in ("snowflake", "databricks", "bigquery"):
+        assert f"| `{platform}` |" in README  # each platform the library plans for is described

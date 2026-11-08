@@ -16,6 +16,7 @@ from pydantic import (
     Field,
     StringConstraints,
     ValidationError,
+    model_serializer,
     model_validator,
 )
 
@@ -129,11 +130,48 @@ class Step(_Model):
     config: dict[str, Any] = {}
 
 
+class LoadTarget(_Model):
+    """Where an output goes after the file is written, as a plan the host runs (see `load.py`).
+
+    Only the table name and the way to write it. The database, schema, stage and credentials
+    belong to the host, so a spec can move between environments and holds no secret.
+    `replace` swaps the whole table, `append` adds rows, `merge` updates rows with the same
+    `keys` and adds the rest (`keys` are the columns that identify one row).
+    """
+
+    table: Ident
+    mode: Literal["replace", "append", "merge"] = "replace"
+    keys: list[str] = []
+
+    @model_validator(mode="after")
+    def _keys_fit_mode(self) -> LoadTarget:
+        if self.mode == "merge" and not self.keys:
+            raise ValueError("merge needs keys: the columns that identify one row")
+        if self.mode != "merge" and self.keys:
+            raise ValueError(f"keys are only for merge, not {self.mode}")
+        if len({k.casefold() for k in self.keys}) != len(self.keys):
+            raise ValueError("keys lists a column twice (letter case is ignored)")
+        return self
+
+
 class Output(_Model):
-    """A table written to a file. `input` is ONE name (not a list): the source or step to write."""
+    """A table written to a file. `input` is ONE name (not a list): the source or step to write.
+
+    `load` (optional) says which database table the file is loaded into afterwards. Writing
+    the file never needs it; only `plan_load` reads it.
+    """
 
     input: Ident
     format: Literal["parquet", "csv"] = "parquet"  # the host picks the path, not the spec
+    load: LoadTarget | None = None
+
+    @model_serializer(mode="wrap")
+    def _omit_empty_load(self, handler: Any) -> dict[str, Any]:
+        # most outputs have no load; a `"load": null` on each would only be noise in get_spec
+        data = handler(self)
+        if data.get("load") is None:
+            data.pop("load", None)
+        return data
 
 
 class PipelineSpec(_Model):
@@ -174,6 +212,16 @@ class PipelineSpec(_Model):
                 raise ValueError(f"output name {name!r} is a reserved file name on Windows")
             if (other := files.setdefault(name.lower(), name)) != name:
                 raise ValueError(f"output names {other!r} and {name!r} would be the same file")
+        tables: dict[str, str] = {}
+        for name, out in self.outputs.items():
+            if out.load is None:
+                continue
+            if out.format != "parquet":
+                raise ValueError(f"output {name!r}: only a parquet file can be loaded, not csv")
+            if (other := tables.setdefault(out.load.table.lower(), name)) != name:
+                raise ValueError(
+                    f"outputs {other!r} and {name!r} load into the same table {out.load.table!r}"
+                )
         return self
 
 

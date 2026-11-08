@@ -6,6 +6,7 @@ dead end, so every name and every JSON snippet in them is checked against the co
 
 from __future__ import annotations
 
+import inspect
 import json
 import re
 import typing
@@ -72,16 +73,19 @@ def _check_words() -> set[str]:
     return out
 
 
-def _known_words() -> set[str]:  # ANCHOR
+def _known_words() -> set[str]:
     tools = JobTools(Job(new_state("j")), None, None)
     words = {f.__name__ for f in tools.agent_tools()} | set(names()) | set(CHECKPOINTS)
+    for fn in tools.agent_tools():  # an argument an agent passes, such as `existing_columns`
+        words |= {p for p in inspect.signature(fn).parameters if "_" in p}
     for cls in _REGISTRY.values():
         words |= _fields(cls.Config) | _choices(cls.Config)
     for model in (PipelineSpec, Source, Step, Output, RegionRef):
         words |= _fields(model)
     words |= _check_words()
     # SQL functions and wording that are not settings of ours
-    return words | {"try_strptime", "until_blank_rows", "file_id", "next_offset", "question_id"}
+    host = {"record_load", "add_file", "approve", "answer", "reload_job"}  # named, never given
+    return words | host | {"try_strptime", "until_blank_rows", "file_id", "next_offset"}
 
 
 def _agent_tools() -> list[str]:
@@ -133,7 +137,11 @@ def test_the_skills_together_name_every_agent_tool() -> None:
 
 
 def _kind(snippet: dict) -> str:
-    return "step" if "node" in snippet else "source" if "file_role" in snippet else "check"
+    if "node" in snippet:
+        return "step"
+    if "file_role" in snippet:
+        return "source"
+    return "output" if "input" in snippet else "check"
 
 
 def _snippets() -> list[tuple[str, dict]]:
@@ -145,7 +153,7 @@ def _snippets() -> list[tuple[str, dict]]:
 
 
 def test_the_patterns_file_has_snippets_of_every_kind() -> None:
-    assert {_kind(s) for _, s in _snippets()} == {"step", "check", "source"}
+    assert {_kind(s) for _, s in _snippets()} == {"step", "check", "source", "output"}
     used = {s["node"] for _, s in _snippets() if "node" in s}
     assert {"unpivot", "unpivot_groups", "fill_down", "drop_rows", "window", "group_by"} <= used
     checks = {s["kind"] for _, s in _snippets() if "kind" in s}
@@ -153,14 +161,19 @@ def test_the_patterns_file_has_snippets_of_every_kind() -> None:
 
 
 @pytest.mark.parametrize(
-    "snippet", [s for _, s in _snippets()], ids=lambda s: s.get("id") or s.get("kind") or "source"
+    "snippet",
+    [s for _, s in _snippets()],
+    ids=lambda s: s.get("id") or s.get("kind") or _kind(s),
 )
-def test_every_json_snippet_is_a_valid_step_or_check(snippet: dict) -> None:
+def test_every_json_snippet_is_a_valid_step_check_source_or_output(snippet: dict) -> None:
     if "node" in snippet:
         Step.model_validate(snippet)  # ids, inputs list
         build(snippet["node"], snippet["config"])  # the node's own rules
     elif "file_role" in snippet:
         Source.model_validate(snippet)
+    elif "input" in snippet:
+        Output.model_validate(snippet)
+        assert snippet["load"]["table"]  # the point of an output snippet
     else:
         TypeAdapter(Check).validate_python(snippet)
 

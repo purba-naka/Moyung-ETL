@@ -119,3 +119,13 @@ Nothing lost between input and output:
 ```json
 {"kind": "accepted_values", "table": "sales", "column": "Unit", "values": ["KG", "TON"]}
 ```
+
+## Where an output goes in a database
+
+Only when the person wants the result in a warehouse; the `excel-etl-load` skill covers the
+rest. The database, schema and login are never in the spec.
+
+```json
+{"input": "by_group", "format": "parquet",
+ "load": {"table": "sales_by_group", "mode": "merge", "keys": ["Group"]}}
+```

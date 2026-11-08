@@ -231,3 +231,54 @@ def test_list_where_one_name_belongs_and_the_reverse_say_what_to_write():
 def test_misspelled_key_says_it_is_not_a_setting():
     msg = _spec_error(sources={"s": _SRC}, output={})
     assert msg.startswith("output: is not a setting here") and "node_catalog" in msg
+
+
+# --- output.load: where a file goes in a database --------------------------------------------
+
+
+def _with_load(load, fmt="parquet", second=None):
+    base = {
+        "sources": {
+            "a": {
+                "file_role": "f",
+                "sheet": {"name": "S"},
+                "region": {"header_anchor": ["x"]},
+            }
+        },
+        "outputs": {"o": {"input": "a", "format": fmt, "load": load}},
+    }
+    if second:
+        base["outputs"]["p"] = {"input": "a", "load": second}
+    return json.dumps(base)
+
+
+def test_a_load_target_defaults_to_replace_and_round_trips() -> None:
+    spec = parse_spec(_with_load({"table": "sales"}))
+    assert spec.outputs["o"].load.mode == "replace" and spec.outputs["o"].load.keys == []
+    assert parse_spec(dump_spec(spec)) == spec
+    assert "load" not in json.loads(dump_spec(parse_spec(_with_load(None))))["outputs"]["o"]
+
+
+@pytest.mark.parametrize(
+    ("load", "needle"),
+    [
+        ({"table": "t", "mode": "merge"}, "merge needs keys"),
+        ({"table": "t", "mode": "merge", "keys": []}, "merge needs keys"),
+        ({"table": "t", "mode": "append", "keys": ["a"]}, "keys are only for merge"),
+        ({"table": "t", "mode": "merge", "keys": ["A", "a"]}, "lists a column twice"),
+        ({"table": "t", "mode": "upsert"}, "replace"),
+        ({"table": "has space"}, "letters, digits"),
+        ({"table": "t", "database": "x"}, "not a setting"),
+        ({"mode": "append"}, "table"),
+    ],
+)
+def test_a_bad_load_target_says_what_to_change(load: dict, needle: str) -> None:
+    with pytest.raises(SpecError, match=needle):
+        parse_spec(_with_load(load))
+
+
+def test_only_parquet_can_be_loaded_and_two_outputs_cannot_share_a_table() -> None:
+    with pytest.raises(SpecError, match="only a parquet file can be loaded"):
+        parse_spec(_with_load({"table": "t"}, fmt="csv"))
+    with pytest.raises(SpecError, match="load into the same table"):
+        parse_spec(_with_load({"table": "Sales"}, second={"table": "sales"}))
