@@ -75,7 +75,7 @@ ID stabil: `F1` (file), `F1.S12` (sheet), `F1.S12.R2` (region).
 |---|---|
 | `job_summary()` | ringkasan job: file, versi spec, pertanyaan menunggu, approval, run terakhir |
 | `list_files()` | file dalam job |
-| `workbook_map(file)` | per sheet: nama, visible, ukuran terpakai, jumlah region, % formula, tebakan peran (`source`/`derived`/`dashboard`/`chart_data`/`form`/`empty`) |
+| `workbook_map(file)` | per sheet: nama, visible, ukuran terpakai, jumlah region, % formula, tebakan peran (`source`/`mixed`/`derived`/`empty`; dashboard dan form belum dibedakan) |
 | `sheet_regions(sheet)` | blok tabel: range, baris header (bisa >1), merged di header, orientasi, baris total terdeteksi, noise di atas |
 | `render_range(sheet, range, mode)` | grid ringkas ala SpreadsheetLLM: `raw` / `compressed` (anchor + inverted index + tipe agregat) dengan budget token |
 | `formula_lineage(file)` | graf sheet->sheet dari referensi formula + defined names |

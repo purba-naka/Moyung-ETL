@@ -91,6 +91,24 @@ Every tool returns {"text": ...} or {"error": ...}. An error says what to change
 Never guess a column name; copy it from a tool result.
 ```
 
+### Skills for coding agents
+
+`skills/` holds four playbooks in the open Agent Skills format (a folder per skill with a
+`SKILL.md`; spec at agentskills.io). Any agent that reads that format can load them: copy or
+link the folders into its skills directory. They tell the agent the order of work, not the
+tool arguments (the tool docstrings and `node_catalog` do that).
+
+| Skill | When |
+|---|---|
+| `excel-etl-understand` | a person gives a workbook; find the tables worth loading |
+| `excel-etl-build-spec` | write and fix the spec (`references/patterns.md`: Excel shape to nodes) |
+| `excel-etl-run-verify` | run, read the report, handle approval gates |
+| `excel-etl-recycle` | a new file for a job that has a spec |
+
+`tests/test_skills.py` keeps them honest: the format rules, every tool, node and setting
+named in them must exist, every JSON snippet must parse and build, and every agent tool must
+appear in at least one skill.
+
 ## A complete spec
 
 Names (`sales`, `items`, `by_group`) are letters, digits and `_`. `inputs` is always a list;
