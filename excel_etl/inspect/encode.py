@@ -113,6 +113,42 @@ def _compact(n: int) -> str:
     return f"{n / 1000:.1f}k" if n >= 1000 else str(n)
 
 
+def _shape_groups(wb: Workbook) -> list[tuple[list[int], str | None]]:
+    """Sheet indexes with the same first table header and a safe common name pattern."""
+    if (hit := wb.memo.get("shape_groups")) is not None:
+        return hit
+    shapes: dict[tuple[int, tuple[str, ...]], list[int]] = {}
+    for i, sheet in enumerate(wb.sheets):
+        g = SheetGrid(wb, sheet.name)
+        region = next((r for r in detect_regions(wb, sheet.name, g) if r.header_rows), None)
+        if region is not None and region_role(wb, sheet.name, region.box) == "source":
+            key = (len(region.header_rows), tuple(text_key(n) for n in column_names(g, region)))
+            shapes.setdefault(key, []).append(i)
+    all_names = [s.name for s in wb.sheets]
+    groups = []
+    for indexes in shapes.values():
+        if len(indexes) < 3:
+            continue
+        patterns = {
+            re.sub(r"[0-9]+", lambda m: f"[0-9]{{{len(m[0])}}}", re.escape(all_names[i]))
+            for i in indexes
+        }
+        pattern = patterns.pop() if len(patterns) == 1 else None
+        if pattern is not None and any(
+            i not in indexes and re.fullmatch(pattern, name) for i, name in enumerate(all_names)
+        ):
+            pattern = None
+        groups.append((indexes, pattern))
+    wb.memo["shape_groups"] = groups
+    return groups
+
+
+def _group_note(file_id: str, indexes: list[int], pattern: str | None) -> str:
+    ids = [f"{file_id}.S{i + 1}" for i in indexes]
+    names = f"name_regex {_name(pattern)}" if pattern is not None else "names differ"
+    return f"+{len(ids) - 1} same shape: {ids[0]}..{ids[-1]}, {names}"
+
+
 def workbook_map(wb: Workbook, file_id: str, offset: int = 0, limit: int = 200) -> dict:
     """List the sheets of a workbook, one line each. Use this first.
 
@@ -121,19 +157,33 @@ def workbook_map(wb: Workbook, file_id: str, offset: int = 0, limit: int = 200) 
     (see sheet_regions), formula% = share of cells that are formulas (? for .xls),
     role = where the numbers come from: source = typed by people, derived = formulas that
     read other sheets or only add up this one, mixed = both, empty. Judged on numeric cells.
-    Hidden sheets carry a `[hidden]` flag. `offset`/`limit` page over sheets.
+    Hidden sheets carry a `[hidden]` flag. Three or more sheets with the same first table header
+    appear once, with `| +N same shape: first_id..last_id, name_regex PATTERN` (or `names differ`).
+    The endpoints are the group's first and last IDs; use the regex with `sheet_column` in one
+    source instead of inspecting every sheet. `offset`/`limit` still page over original sheets,
+    so a page can be empty when its sheets were represented by a group on an earlier page.
     """
     _paging(offset, limit, paged=True)
     total = len(wb.sheets)
     page = [_summary(wb, file_id, i) for i in range(offset, min(offset + limit, total))]
     lines = [f"{file_id} {total} sheets. id|name|used|cells|regions|formula%|role"]
+    groups = {
+        i: (indexes, pattern)
+        for indexes, pattern in _shape_groups(wb)
+        for i in indexes
+        if offset <= i < offset + limit
+    }
     for s in page:
+        i = int(s.id.rsplit(".S", 1)[1]) - 1
+        if i in groups and groups[i][0][0] != i:
+            continue
         flag = "" if s.visible == "visible" else f" [{s.visible}]"
         pct = "?" if s.formula_pct is None else str(s.formula_pct)
+        note = f"|{_group_note(file_id, *groups[i])}" if i in groups else ""
         lines.append(
             _clip(
                 f"{s.id}|{_name(s.name)}{flag}|{s.used or '-'}|{_compact(s.cells)}"
-                f"|{s.regions}|{pct}|{s.role}"
+                f"|{s.regions}|{pct}|{s.role}{note}"
             )
         )
     return _page(lines, offset, len(page), total)
@@ -800,13 +850,21 @@ def _proposals(wb: Workbook, file_id: str) -> tuple[list[str], list[str], int, i
     counts = {"source": 0, "mixed": 0}
     n_derived = 0
     lin = lineage(wb)
+    groups = {i: (indexes, pattern) for indexes, pattern in _shape_groups(wb) for i in indexes}
     for i, s in enumerate(wb.sheets, start=1):
         g = SheetGrid(wb, s.name)
         cross = lin.cross.get(s.name, frozenset())
+        first_header = next(
+            (k for k, r in enumerate(detect_regions(wb, s.name, g), start=1) if r.header_rows),
+            0,
+        )
         for j, r in enumerate(detect_regions(wb, s.name, g), start=1):
             if not r.header_rows:
                 continue  # headerless blocks are notes and KPIs, not datasets
             role = region_role(wb, s.name, r.box)
+            grouped = j == first_header and (i - 1) in groups and role == "source"
+            if grouped and groups[i - 1][0][0] != i - 1:
+                continue
             if role == "derived":
                 n_derived += 1
                 top, left, bottom, right = r.box
@@ -822,10 +880,11 @@ def _proposals(wb: Workbook, file_id: str) -> tuple[list[str], list[str], int, i
             flag = "" if s.visible == "visible" else f" [{s.visible}]"
             totals = set(r.total_rows)  # the same data rows profile_region counts
             nrows = sum(1 for x in range(r.data_start, r.box[2] + 1) if x not in totals)
+            note = f"|{_group_note(file_id, *groups[i - 1])}" if grouped else ""
             props.append(
                 _clip(
                     f"{file_id}.S{i}.R{j}|{_name(s.name)}{flag}|{_box(r.box)}|{role}"
-                    f"|{nrows}|{r.box[3] - r.box[1] + 1}|{shown}{more}"
+                    f"|{nrows}|{r.box[3] - r.box[1] + 1}|{shown}{more}{note}"
                 )
             )
     reads: dict[str, list[tuple[int, str]]] = {}
@@ -859,7 +918,9 @@ def propose_datasets(wb: Workbook, file_id: str, offset: int = 0, limit: int = 5
     = region id, sheet, range, role, data rows (total rows left out), columns, first
     column names. Derived tables are not proposals; the `derived sheets to check against`
     line names the sheets that hold derived tables that read other sheets, to check the
-    chosen data against (formula_lineage has the counts). `offset`/`limit` page over the
+    chosen data against (formula_lineage has the counts). Repeated sheets with the same header
+    appear once with `+N same shape` and a suggested `name_regex`; their `rows` and `cols` still
+    describe the first sheet's region, not the stacked output. `offset`/`limit` page over the
     proposals.
     """
     _paging(offset, limit, paged=True)

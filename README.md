@@ -188,6 +188,18 @@ A two-row header (a `Sales` over `Qty`) needs `"header_rows": 2` and gives colum
 `Sales|Qty`. A total row below a gap of two empty rows needs a larger `end`
 (`until_blank_rows(5)`); a run warns when filled rows lie below the end.
 
+For the same table repeated across sheets, use one source instead of one source per sheet:
+
+```json
+"sheet": {"name_regex": "day-[0-9]{2}", "sheet_column": "source_sheet"}
+```
+
+The whole sheet name must match. Sheets are stacked in workbook order, rows keep their order
+within each sheet, and `source_sheet` is the first output column. Columns missing from some
+sheets become NULL; mixed column types use a common duckdb type. A matching sheet whose table
+cannot be found fails the run. A later workbook may have more or fewer matching sheets without
+causing rebind drift. `sheet_column` is required with `name_regex` and cannot be used without it.
+
 ## Steps a spec can use
 
 A source reads one table by its header text (`read_region`). Steps then change it. The agent

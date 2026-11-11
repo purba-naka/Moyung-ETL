@@ -19,6 +19,8 @@ Perbarui setiap selesai satu item (lihat AGENTS.md §7).
 
 (Contoh ekspresi di katalog dan node `window` selesai 2026-11-08. Fase 7 (rencana muat ke Snowflake, Databricks, BigQuery) selesai 2026-11-09 kecuali uji di akun sungguhan; lihat Log.)
 
+0. **Sumber multi-sheet (`name_regex`)** (usul 2026-11-11, PRIORITAS). Rencana lengkap di
+   §Rencana multi-sheet di bawah. Kerjakan fase M1 -> M4 berurutan, satu fase per sesi.
 1. **Plugin coding agent** (ingatkan user). Maki: folder terpisah (`integrations/maki/`), tanpa
    menyentuh `excel_etl/`. Jembatan satu file Python (satu tool per proses, state di
    `FileStore`, `file_id` = path di disk), `register_tool` Lua untuk 21 tool agent, perintah slash
@@ -26,9 +28,212 @@ Perbarui setiap selesai satu item (lihat AGENTS.md §7).
    menyetujui sendiri. Terukur: tiap panggilan sekitar 0,7 s (impor duckdb 0,26 s); bila terasa,
    pertimbangkan proses yang tetap hidup. Perlu diputuskan: hanya Maki atau banyak agent
    (server tipis), dan di mana batas `AGENTS.md` ("bukan MCP server") berlaku: untuk `excel_etl/`.
-2. **Menunggu pihak lain:** 6.3 (uji skema lewat LiteLLM, bersama rekan), tes di Linux
+2. **Tool pembangun spec (spec builder)** (usul 2026-11-11, dari uji etl-e2e-lab). Masalah: agent
+   menulis seluruh JSON spec sendiri lalu `save_spec`; model lemah salah nama field, menyalin nama
+   dari contoh, salah bentuk `header_anchor`, tiap salah = satu putaran gagal (maks 5). Usul: tool
+   bertahap yang mengubah DRAF spec di state (bukan versi): `spec_add_source(region_id, name)`
+   (isi `sheet`, `header_anchor`, kolom dan tipe dari region yang terdeteksi, bukan dari ketikan
+   agent), `spec_add_step(id, node, inputs, config_json)` (config dicek langsung lewat skema node
+   dan `infer_schema`, error menunjuk field), `spec_add_output(name, input, format)`,
+   `spec_add_check(...)`, `spec_remove(part, id)`, `spec_draft()` (lihat draf + skema keluaran
+   tiap step), `spec_commit(note)` = `save_spec` atas draf. `save_spec(spec_json)` tetap ada
+   (model kuat, edit massal). Batas: tool hanya merakit dan memeriksa; keputusan isi tetap dari
+   agent (jangan ada tool "buat spec otomatis"). Cek selesai: tes alur builder menghasilkan spec
+   = `golden_spec.json` lab; tes setiap kesalahan umum (field salah, input tak dikenal, kolom tak
+   ada) ditolak per langkah dengan pesan yang menunjuk field; uji live etl-e2e-lab dengan model
+   non-frontier: jumlah `save_spec` gagal turun dibanding tanpa builder (catat angka sebelum dan
+   sesudah). Perlu diputuskan: draf disimpan di `JobState` (ikut versi state) atau terpisah;
+   jumlah tool agent naik 22 -> ~28 (cek batas tool provider pada 6.3).
+3. **Menunggu pihak lain:** 6.3 (uji skema lewat LiteLLM, bersama rekan), tes di Linux
    (CI Ubuntu sudah dipasang), uji muat di akun Snowflake, Databricks dan BigQuery sungguhan
    (SQL belum pernah dijalankan di platform aslinya), pemilik schema target.
+
+## Rencana multi-sheet (`name_regex`)
+
+Ditulis 2026-11-11 agar bisa dikerjakan model mana pun. Kerjakan SATU fase per sesi, urut
+M1 -> M4. Tiap fase: baca bagian fase itu saja + file yang disebut, kerjakan, jalankan "Cek
+selesai", centang, isi Log. Jangan lompat fase. Ragu = tanya user.
+
+### Masalah
+
+Workbook harian (contoh nyata: "Stok Pupuk Subsidi Per Kabupaten", 161 sheet) punya satu
+sheet per tanggal (`2026-11-08`, `2026-11-07`, ...) dengan tabel berbentuk sama, dan sheet baru
+muncul tiap hari. `SheetRef` (`excel_etl/pipeline.py:55`) hanya menunjuk SATU sheet. Akibat
+terukur di etl-e2e-lab job `stok_kab`: agent menulis satu source + langkah per sheet, spec
+membengkak tiap versi (v1 3 sheet, v3 5 sheet), 22 menit tanpa selesai. Spec seperti itu juga
+tidak bisa dipakai `auto.py` untuk file besok (sheet baru tidak ikut).
+
+### Tujuan (perilaku yang diminta)
+
+Satu source membaca SEMUA sheet yang namanya cocok pola, dengan aturan region yang sama, lalu
+menumpuknya jadi satu tabel + satu kolom berisi nama sheet asal:
+
+```json
+"sources": {"stok": {
+  "file_role": "main",
+  "sheet": {"name_regex": "[0-9]{4}-[0-9]{2}-[0-9]{2}", "sheet_column": "tanggal"},
+  "region": {"header_anchor": ["PROVINSI", "KABUPATEN"], "header_rows": 2}
+}}
+```
+
+Contoh di atas hanya ilustrasi. ATURAN USER: jangan masukkan nama/kolom file contoh ke kode.
+
+### Keputusan (sudah diputuskan, jangan diubah tanpa tanya user)
+
+| # | Keputusan | Alasan |
+|---|---|---|
+| K1 | Field baru di `SheetRef`: `name_regex: str \| None`, `sheet_column: str \| None`. | Satu tempat; tidak ada node baru. |
+| K2 | `name_regex` dicocokkan dengan `re.fullmatch` pada nama sheet APA ADANYA (tanpa `text_key`). | `$`/`search` menerima sebagian nama; normalisasi membuat pola tak terduga. |
+| K3 | `name_regex` TIDAK boleh digabung dengan `name`, `name_like`, `fallback_contains`. `sheet_column` WAJIB bila ada `name_regex` dan DILARANG bila tidak. | Satu cara menemukan sheet per source; state lebih sedikit. |
+| K4 | Urutan sheet = urutan di workbook. Urutan baris = per sheet, lalu urutan baris di sheet. | Deterministik (AGENTS §4). |
+| K5 | Kolom yang tidak ada di sebagian sheet = NULL (`UNION ALL BY NAME`). Tipe beda antar sheet = tipe bersama duckdb (biasanya VARCHAR). | Tidak ada data hilang, tidak menebak. |
+| K6 | Satu sheet cocok-pola yang tabelnya tidak ketemu = GAGAL (run: issue; rebind: drift + daftar sheet). Tidak dilewati diam-diam. | Data hilang tanpa ketahuan lebih buruk dari run gagal. `# ponytail:` opsi `skip_bad_sheets` bila user minta. |
+| K7 | 0 sheet cocok = missing (rebind) / issue (run). Jumlah sheet bertambah/berkurang BUKAN drift. | Sheet harian baru = normal. |
+| K8 | `sheet_column` bertabrakan dengan nama kolom tabel (casefold) = error yang menyebut keduanya. | duckdb case-insensitive (gotcha 16). |
+| K9 | Tidak ada node baru, tidak ada dependency baru, tidak ada perubahan di `auto.py`. | YAGNI; Auto otomatis ikut bisa. |
+
+### Fase M1 — Spec + baca + run (inti) — SELESAI 2026-11-11
+
+File yang disentuh: `excel_etl/pipeline.py`, `excel_etl/nodes/source.py`, `excel_etl/engine.py`,
+tes baru `tests/test_multi_sheet.py`. Tidak ada file lain.
+
+1. `pipeline.py` `SheetRef` (baris ~55): tambah dua field (K1). Ubah validator
+   `_some_way_to_find_it` agar menegakkan K3, dan `re.compile(name_regex)` (regex rusak =
+   `ValueError` dengan pesan berisi pola, sama gaya `ColumnExpect._one_matcher`).
+   `sheet_column`: tidak kosong setelah strip, tidak berawalan `__` (dicadangkan, lihat
+   `nodes/relops.py:52 check_reserved`), maks 100 char.
+2. `nodes/source.py`:
+   - `How` tambah `"name_regex"`.
+   - Pecah `locate` jadi `_find_sheet` (tetap) + fungsi baru
+     `_locate_in(wb, source, sheet: str, how: How) -> Location` (isi badan `locate` saat ini
+     sesudah `_find_sheet`). `locate` = `_find_sheet` lalu `_locate_in`. Perilaku lama sama
+     persis (semua tes lama hijau).
+   - `locate` untuk source dengan `name_regex` harus MENOLAK (`NodeError("... use
+     locate_all ...")`), supaya pemanggil tidak diam-diam membaca satu sheet.
+   - Fungsi baru `locate_all(wb, source) -> list[Location]`: sheet di `wb.sheets` yang
+     `re.fullmatch(name_regex, s.name)`, urut workbook (K4). 0 cocok -> `NodeError` berisi pola
+     + `few(names, 8)`. Panggil `_locate_in` per sheet; kumpulkan `NodeError` per sheet; bila ada
+     yang gagal -> SATU `NodeError` berisi jumlah + `few([f"{sheet}: {msg}"], 5)` (K6).
+     Untuk source biasa, `locate_all` = `[locate(wb, source)]` (satu jalur pemanggil).
+   - Fungsi baru `read_locations(locs, source, con, name) -> Relation`:
+     - Bila `name_regex` kosong: `read_location(locs[0], ...)` (tanpa kolom sheet).
+     - Bila ada: cek K8 terhadap gabungan nama kolom. Baca tiap lokasi ke tabel sementara
+       `__{name}_{i}` lewat `read_location`, lalu satu `CREATE TABLE name AS` yang
+       `UNION ALL BY NAME` dari `SELECT '<sheet>' AS sheet_column, {i} AS __k,
+       row_number() OVER () AS __r, * FROM __{name}_{i}`, `ORDER BY __k, __r`, lalu buang
+       `__k`, `__r` (`SELECT * EXCLUDE (...)`). Kolom sheet paling kiri. Nama sheet sebagai
+       literal: escape `'` -> `''` (atau parameter). `DROP` tabel sementara di `finally`.
+     - Kenapa `__k/__r` + ORDER BY: urutan UNION tidak dijamin (gotcha 16). Jangan dihapus.
+3. `engine.py` `_load_sources` (baris ~182): ganti `locate` + `read_location` dengan
+   `locate_all` + `read_locations`. `loc.errors` dan `loc.below` -> jumlahkan semua lokasi.
+   `NodeStat` untuk source multi: tambahkan    `note=f"{n} sheets: {first}..{last}"` (field `note` ada di `NodeStat`, engine.py:71).
+4. `read_region` (source.py:214) ikut lewat `locate_all`/`read_locations`.
+
+Tes `tests/test_multi_sheet.py` (workbook sintetis `make_xlsx` dari `conftest.py`; JANGAN pakai
+nama/kolom file contoh; tiap tes satu perilaku; jalankan lewat `engine.run`/`validate` publik):
+- 3 sheet cocok (`d1`,`d2`,`d3`) + 1 sheet tak cocok (`notes`): hasil = baris d1 lalu d2 lalu d3,
+  kolom pertama = nama sheet.
+- Pola `d[0-9]` TIDAK mencocokkan `xd1` maupun `d1x` (fullmatch, K2).
+- Sheet cocok dengan kolom ekstra di satu sheet -> kolom itu NULL di sheet lain (K5).
+- Kolom angka di satu sheet, teks di sheet lain -> run tetap ok, tipe VARCHAR (K5).
+- Satu sheet cocok tanpa header anchor -> run `failed`, issue menyebut nama sheet itu (K6).
+- 0 sheet cocok -> run `failed`, pesan menyebut pola (K7).
+- `sheet_column` = nama kolom tabel beda huruf besar/kecil -> gagal dengan pesan (K8).
+- Validasi spec: `name_regex` + `name` -> SpecError; `name_regex` tanpa `sheet_column` ->
+  SpecError; `sheet_column` tanpa `name_regex` -> SpecError; regex rusak `"("` -> SpecError.
+- Header 2 baris (`PARENT|LEAF`) di tiap sheet terbaca sama.
+- Nama sheet berisi `'` (mis. `d'1`) tidak merusak SQL.
+- Urutan stabil: 3 sheet x 3000 baris, hasil urut persis (deteksi bug urutan; gotcha 16).
+- Source biasa (tanpa `name_regex`): tes lama `test_engine.py`, `test_read_region.py`,
+  `test_rebind.py` tetap hijau TANPA diubah.
+
+Cek selesai M1:
+```bash
+# di excel-etl/
+uv run ruff check . && uv run ruff format --check .
+uv run pytest -q
+```
+Lalu mutasi manual (cp backup, ubah, pytest harus GAGAL, cp balik; cek `grep -c` bahwa
+mutasi kena): (a) `fullmatch` -> `search`; (b) hapus `ORDER BY __k, __r`; (c) lewati sheet gagal
+alih-alih raise. Tiap mutasi harus ditangkap minimal satu tes. Catat hasil di Log.
+
+### Fase M2 — rebind + petunjuk agent — SELESAI 2026-11-11
+
+File: `excel_etl/rebind.py`, `excel_etl/tools.py` (hanya `save_spec` dan docstring),
+`excel_etl/nodes/source.py` (bila perlu), `../etl-e2e-lab/lab/prompt.py`,
+`../etl-e2e-lab/lab/static/index.html` (satu baris label, ~667). Tes: tambah di
+`tests/test_rebind.py` dan `tests/test_tools.py`.
+
+1. `rebind.rebind` (rebind.py:125): pakai `locate_all`. `NodeError` -> `missing` (0 cocok)
+   atau `drift` (ada sheet gagal, K6) dengan `diff` berisi daftar sheet gagal. Bedakan dengan
+   menangkap jumlah sheet cocok dulu (fungsi kecil `matching_sheets(wb, source)` di
+   source.py, dipakai `locate_all` juga, supaya satu sumber kebenaran).
+2. `BindRecord` untuk multi: `sheet` = sheet cocok PERTAMA, `header_row`/`first_col` dari
+   sheet pertama, `columns` = gabungan nama kolom semua sheet urut kemunculan, field baru
+   `sheets: int = 1`. `_judge`: untuk source `name_regex` JANGAN bandingkan nama sheet
+   (nama berganti tiap hari = normal); bandingkan header/kolom seperti biasa. Jumlah sheet
+   berubah TIDAK dicatat di `diff` sama sekali (K7), agar file harian berstatus `exact`.
+3. `tools.save_spec`: setelah validasi ok, bila >= 3 source punya `file_role` sama DAN
+   `region.header_anchor` sama (casefold) DAN tanpa `name_regex` -> tambah baris peringatan ke
+   `text`: `"N sources read the same table shape from different sheets; one source with
+   sheet.name_regex + sheet_column reads them all"`. Peringatan, bukan penolakan.
+4. Docstring `SheetRef` / bagian spec di `node_catalog` atau README spec (cari di mana agent
+   membaca bentuk spec: `grep -n "name_like" excel_etl README.md DESIGN.md`) tambah satu contoh
+   `name_regex`.
+5. Lab: `prompt.py` satu kalimat: "Many sheets with the same table (one per day/month): use ONE
+   source with sheet.name_regex and sheet_column, never one source per sheet." `index.html`
+   label sumber: `s.sheet.name || s.sheet.name_like || s.sheet.name_regex || "?"`.
+
+Tes M2: file sama -> `exact`; file dengan 1 sheet tambahan cocok -> `exact`; satu sheet cocok
+rusak -> `drift` dan diff menyebut sheet itu; 0 cocok -> `missing`; kolom baru di semua sheet ->
+`shifted`/`drift` sama seperti source biasa; peringatan `save_spec` muncul untuk 3 source
+sebentuk dan tidak muncul untuk 2. Cek selesai = sama dengan M1 + tes lab:
+`cd ../etl-e2e-lab && .venv/Scripts/python.exe -m pytest tests -m "not live" -q`.
+
+### Fase M3 — peta workbook mengelompokkan sheet sebentuk — SELESAI 2026-11-11
+
+File: `excel_etl/inspect/encode.py` (`workbook_map` ~116, `propose_datasets` ~854,
+`_proposals` ~793). Tes di `tests/test_encode.py` / `tests/test_propose.py`.
+
+1. Fungsi baru `_shape_groups(wb) -> list[tuple[list[int], str]]` (indeks sheet, pola):
+   kunci bentuk sebuah sheet = (jumlah header_rows, tuple `text_key` teks header) dari region
+   ber-header PERTAMA di sheet (pakai `detect_regions` + `column_names`, sudah di-memo per
+   sheet; JANGAN scan ulang semua sel, gotcha 2 perf). Kelompok = >= 3 sheet dengan kunci sama.
+2. Pola nama: ganti tiap run digit dengan `[0-9]{n}` (n = panjang run), escape sisanya
+   (`re.escape`). Bila semua nama di kelompok menghasilkan pola sama -> pakai itu; bila tidak
+   -> pola = `None` dan baris menyebut "names differ". Cek: pola harus `fullmatch` SEMUA nama
+   kelompok dan TIDAK mencocokkan sheet lain di luar kelompok; bila mencocokkan sheet lain ->
+   `None`.
+3. `workbook_map`: sheet anggota kelompok (kecuali yang pertama) tidak dicetak satu-satu;
+   baris sheet pertama diberi akhiran `| +157 same shape: F1.S5..F1.S161, name_regex
+   [0-9]{4}-[0-9]{2}-[0-9]{2}`. Paging (`offset/limit`, `total`) tetap dihitung atas sheet
+   asli supaya ID stabil (AGENTS §4). `propose_datasets`: sama, satu proposal per kelompok.
+4. Budget: tes dengan 150 sheet sebentuk -> output `workbook_map` < 1.500 char (assert, chars/4
+   aturan AGENTS §6).
+
+Tes M3: 5 sheet sebentuk `m01..m05` + 2 sheet lain -> 1 baris kelompok + 2 baris; nama tak
+berpola (`alpha, beta, gamma` sebentuk) -> kelompok dengan "names differ"; 2 sheet sebentuk ->
+TIDAK dikelompokkan; pola yang ikut cocok ke sheet luar kelompok -> `None`; ID sheet tidak
+berubah dibanding sebelum M3 (`F1.S7` tetap sheet ke-7).
+
+### Fase M4 — uji nyata + dokumen — SELESAI 2026-11-11
+
+1. Lab: job baru, upload file harian asli, minta agent "satu tabel untuk semua sheet tanggal".
+   Catat: jumlah langkah spec, jumlah `save_spec` gagal, waktu total. Target: spec <= 10
+   langkah, selesai < 5 menit. Publish, lalu uji `POST /auto` dengan file yang sama -> `ok`.
+2. Perbarui `DESIGN.md` (bagian contoh spec ~141), `README.md` (bentuk spec), `HANDOVER.md`
+   bila menyebut `SheetRef`. Isi Log + §Keputusan (salin K1-K9 singkat).
+3. P6 (AGENTS §8) atas diff M1-M3.
+
+### Jangan (jebakan yang sudah pernah terjadi)
+
+- Jangan tulis kode lewat bash heredoc (terpotong diam-diam, gotcha 11/14). Pakai tool edit,
+  lalu `ruff`.
+- Jangan pakai `re.search`/`$` untuk pola nama (K2; gotcha 20: `$` menerima `\n`).
+- Jangan andalkan urutan `UNION`/`JOIN` duckdb tanpa `ORDER BY` (gotcha 16).
+- Jangan bandingkan nama kolom tanpa casefold (gotcha 18).
+- Jangan ubah tes lama agar hijau; bila tes lama gagal, perilaku lama rusak.
+- Jangan tambah node, dependency, atau opsi yang tidak tertulis di sini.
 
 ## Struktur target
 
@@ -170,6 +375,10 @@ Tersisa (disengaja):
 | 2026-11-06 | Spec diterima sebagai JSON saja, tanpa `pyyaml` | AGENTS.md batasi dependency; agent LLM menulis JSON andal, YAML = dependency baru untuk kenyamanan. Tambah bila host butuh (parse YAML -> dict -> `PipelineSpec.model_validate`). `SpecError` memberi hint bila input terlihat YAML. |
 | 2026-11-06 | Output `run` ditulis ke `.part` lalu `os.replace` hanya bila semua sukses | run gagal tak menyisakan file setengah jadi; output lama yang bagus tetap terganti hanya saat run sukses |
 | 2026-11-06 | join/union/dedupe/unpivot_groups mengurutkan eksplisit lewat posisi baris (`row_number() OVER ()`) | duckdb tidak menjamin urutan (terukur: join many-to-many 300k baris, UNION distinct urutan hash) |
+| 2026-11-11 | Multi-sheet: `name_regex` + `sheet_column` di `SheetRef`; fullmatch, eksklusif dari matcher lain, kolom asal wajib | satu source untuk tabel berulang; nama dan asal baris deterministik |
+| 2026-11-11 | Urutan workbook/baris eksplisit; union by name; tabrakan kolom casefold ditolak | tidak kehilangan data atau bergantung pada planner duckdb |
+| 2026-11-11 | Sheet cocok yang rusak gagal; 0 cocok missing; jumlah sheet berubah bukan drift | fail-fast untuk data hilang, file harian baru tetap dapat auto-run |
+| 2026-11-11 | Tidak ada node/dependency/perubahan auto; map dan proposal mengelompokkan >=3 sheet sebentuk | fitur dipakai ulang oleh alur lama dan output agent tetap kecil |
 
 ## Temuan
 
@@ -486,6 +695,10 @@ Tersisa:
 
 | Tanggal | Apa |
 |---|---|
+| 2026-11-11 | M4 selesai: lab job `m4_daily`, workbook harian 161 sheet, agent 181,5 detik; 1 source + 5 steps, 6 save_spec (5 gagal), output 80.698 baris x28 kolom; publish `m4_daily_stock`, `/auto` ok sebelum dan sesudah P6. Satu sheet tanggal tak sebentuk dikecualikan eksplisit agent. Dokumentasi README/DESIGN/docstring/prompt diperbarui; byte UTF-8 rusak di DESIGN diperbaiki. P6 tiga reviewer: perbaiki typing union inkompatibel -> VARCHAR, tabel kedua tak hilang, rebind casefold, escaping regex pipe, hanya source yang dikelompokkan, docstring group. 1198 unit +25 skip, ruff check/format seluruh repo lulus. |
+| 2026-11-11 | M3 selesai: `_shape_groups` memoized mengelompokkan >=3 sheet berdasarkan header region pertama; pola digit `[0-9]{n}` hanya diusulkan bila tak cocok ke sheet luar; map/proposal satu baris per grup, ID asli dan paging sheet tetap. Budget 150 sheet <1500 char. 1193 unit +25 skip lulus. |
+| 2026-11-11 | M2 selesai: rebind memakai `locate_all`; record multi menyimpan sheet pertama, gabungan kolom, jumlah sheet; perubahan nama/jumlah sheet bukan diff; sheet cocok yang gagal -> drift, 0 cocok -> missing. `save_spec` memperingatkan >=3 source dengan role/anchor sama; docstring, prompt lab, label graph menjelaskan `name_regex`. 1186 unit + 25 skip; lab 16 tes non-live relevan lulus, assertion lama 6-vs-7 tab tetap gagal di luar M2. |
+| 2026-11-11 | M1 multi-sheet selesai: `SheetRef.name_regex`/`sheet_column` + validasi K3 dan regex; `locate_all`, `locate` menolak source multi, `read_locations` union by name dengan kolom sheet dan urutan eksplisit; engine menjumlah warning dan memberi stat sheet. 19 tes sintetis baru. Mutasi fullmatch->search, tanpa ORDER BY (dengan simulasi planner legal), dan skip sheet gagal semua tertangkap. |
 | 2026-11-05 | DESIGN.md, AGENTS.md, IMPLEMENTATION.md dibuat. Benchmark calamine/openpyxl, uji sheetwise. |
 | 2026-11-05 | 1.1 scaffold: `pyproject.toml` (uv, tanpa build-system: belum perlu dipaket), `excel_etl/__init__.py`, `tests/conftest.py` (`make_xlsx`, fixture `sample_path`), `test_calamine_contract.py`. Ruff format juga cek blok kode di DESIGN.md (dirapikan). |
 | 2026-11-05 | 1.2 `workbook.py`: `Workbook.open(path|bytes)` + cache LRU 4 per sha256, `sheets` (visibility), `values` (grid immutable, `""`->None, float bulat->int), `merged` (0-based inklusif), `meta` (formula/bold/fill/border/number_format, openpyxl lazy, ukuran dari calamine). Error input -> `WorkbookError` (tools nanti ubah jadi dict). Koreksi temuan: 4 sheet hidden, bukan 2. |

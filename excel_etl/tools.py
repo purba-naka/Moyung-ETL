@@ -383,7 +383,9 @@ class JobTools:
     @_tool
     def save_spec(self, spec_json: str, note: str = "") -> dict:
         """Save a pipeline spec (JSON text) as the next version. It is checked against the
-        files first; a spec with problems is not saved. `note` says why (needed from v2)."""
+        files first; a spec with problems is not saved. `note` says why (needed from v2).
+        Repeated sheets use one source: sheet={"name_regex":"day-[0-9]{2}",
+        "sheet_column":"source_sheet"}; full names match and every match must hold the table."""
         if isinstance(note, str) and len(note) > MAX_NOTE:
             raise ValueError(f"the note is {len(note)} characters; keep it under {MAX_NOTE}")
         spec = parse_spec(spec_json)
@@ -401,6 +403,17 @@ class JobTools:
 
         self.job.update(apply)
         warn = "" if files else "\nno files registered: only node names and settings were checked"
+        shapes: dict[tuple[str, tuple[str, ...]], int] = {}
+        for source in spec.sources.values():
+            if source.sheet.name_regex is None:
+                anchors = tuple(a.casefold() for a in source.region.header_anchor)
+                key = (source.file_role, anchors)
+                shapes[key] = shapes.get(key, 0) + 1
+        if (count := max(shapes.values(), default=0)) >= 3:
+            warn += (
+                f"\n{count} sources read the same table shape from different sheets; "
+                "one source with sheet.name_regex + sheet_column reads them all"
+            )
         return {
             "saved": True,
             "version": self._version(),

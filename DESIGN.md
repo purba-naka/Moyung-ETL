@@ -2,7 +2,7 @@
 
 Library Python murni: tools untuk agent LLM membangun, menjalankan, dan me-recycle
 pipeline ETL dari file Excel raw (multi-sheet, multi-tabel, bentuk tak seragam)
-sampai menghasilkan data bersih. Muat ke warehouse (Snowflake, Databricks, BigQuery) dirancang di §Sink; library hanya menyusun rencana.
+sampai menghasilkan data bersih. Muat ke warehouse (Snowflake, Databricks, BigQuery) dirancang di Â§Sink; library hanya menyusun rencana.
 
 Status: Fase 1-6 sudah berkode (inspect, spec, node, engine, rebind, versi, HITL, knowledge,
 quality, state, tools.py). Yang belum: uji skema lewat LiteLLM (6.3) dan load ke Snowflake.
@@ -147,6 +147,20 @@ Kunci: spec **tidak menyimpan alamat sel** (`B5:N40`), tapi **anchor semantik**.
 
 `file_role` = label bebas; host memetakannya ke file (`files={"balansitas": path}`).
 Spec JSON, bukan YAML. Regex di JSON: tulis dua backslash (`\\d`) untuk regex `\d`.
+
+Satu source dapat membaca tabel yang berulang di banyak sheet:
+
+```json
+"sheet": {"name_regex": "day-[0-9]{2}", "sheet_column": "source_sheet"}
+```
+
+`name_regex` memakai `fullmatch` pada nama apa adanya dan tidak dapat digabung dengan matcher
+lain. `sheet_column` wajib untuk sumber ini, dilarang untuk sumber biasa, dan menjadi kolom
+pertama berisi nama sheet. Hasil ditumpuk dalam urutan workbook dan urutan baris tiap sheet;
+`UNION ALL BY NAME` mengisi kolom yang tidak ada dengan NULL dan menyatukan tipe yang berbeda.
+Nol sheet cocok adalah `missing`; satu sheet cocok yang tabelnya gagal adalah `drift` saat
+rebind dan issue saat run. Perubahan jumlah sheet bukan drift. Nama `sheet_column` yang
+bertabrakan dengan kolom tabel tanpa memandang huruf besar/kecil ditolak.
 
 `rebind(spec, files, previous=None)` menghasilkan `BindReport` per source:
 
