@@ -25,9 +25,9 @@ from excel_etl.nodes.base import check_arity, connect
 from excel_etl.nodes.source import (
     expect_hits,
     expect_label,
-    locate,
+    locate_all,
     missing_required,
-    read_location,
+    read_locations,
     type_fits,
 )
 from excel_etl.pipeline import PipelineSpec, Source
@@ -207,20 +207,21 @@ def _load_sources(
             continue
         t0 = time.perf_counter()
         try:
-            loc = locate(wb, source)
-            rel = read_location(loc, source, con, name)
+            locs = locate_all(wb, source)
+            rel = read_locations(locs, source, con, name)
         except (NodeError, WorkbookError, duckdb.Error) as e:
             st.issue(where, str(e))
             continue
         schema = schema_of(rel)
         st.schemas[name] = schema
         _check_columns(source, schema, st, where)
-        if loc.errors:
+        errors = sum(loc.errors for loc in locs)
+        if errors:
             st.warnings.append(
-                f"{where}: {loc.errors} cell(s) hold an Excel error (#DIV/0!, #N/A ...) and are "
+                f"{where}: {errors} cell(s) hold an Excel error (#DIV/0!, #N/A ...) and are "
                 f"read as empty; fix them in the workbook, or use fill_missing after the read"
             )
-        if (below := loc.below) > 0:
+        if (below := sum(loc.below for loc in locs)) > 0:
             st.warnings.append(
                 f"{where}: {below} more filled row(s) lie below the table after "
                 f"{source.region.blank_gap} empty row(s), such as a grand total; "
@@ -236,6 +237,11 @@ def _load_sources(
                 rows_out=n_rows,
                 columns=len(schema),
                 seconds=round(time.perf_counter() - t0, 4),
+                note=(
+                    f"{len(locs)} sheets: {locs[0].sheet}..{locs[-1].sheet}"
+                    if source.sheet.name_regex is not None
+                    else ""
+                ),
             )
         )
 

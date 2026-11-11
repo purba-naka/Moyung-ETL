@@ -22,7 +22,7 @@ from excel_etl.workbook import Workbook
 if TYPE_CHECKING:
     from excel_etl.pipeline import ColumnExpect, Source
 
-type How = Literal["name", "name_like", "fallback"]
+type How = Literal["name", "name_like", "fallback", "name_regex"]
 _BIGINT = (-(2**63), 2**63 - 1)
 _HEADER_SEARCH = 12  # rows from a table's top in which its header may start
 
@@ -146,7 +146,41 @@ class Location:
 
 def locate(wb: Workbook, source: Source) -> Location:
     """Find the sheet and the table of a spec source; no cell values are loaded into duckdb."""
+    if source.sheet.name_regex is not None:
+        raise NodeError("a name_regex source has several sheets; use locate_all")
     sheet, how = _find_sheet(wb, source)
+    return _locate_in(wb, source, sheet, how)
+
+
+def matching_sheets(wb: Workbook, source: Source) -> list[str]:
+    """Sheet names selected by name_regex, in workbook order."""
+    pattern = source.sheet.name_regex
+    if pattern is None:
+        return []
+    return [s.name for s in wb.sheets if re.fullmatch(pattern, s.name)]
+
+
+def locate_all(wb: Workbook, source: Source) -> list[Location]:
+    """Find every table in workbook order, failing rather than dropping a bad sheet."""
+    if source.sheet.name_regex is None:
+        return [locate(wb, source)]
+    pattern = source.sheet.name_regex
+    matches = matching_sheets(wb, source)
+    if not matches:
+        names = [s.name for s in wb.sheets]
+        raise NodeError(f"no sheet matches {pattern!r}; sheets: {few(names, 8)}")
+    locations, errors = [], []
+    for sheet in matches:
+        try:
+            locations.append(_locate_in(wb, source, sheet, "name_regex"))
+        except NodeError as e:
+            errors.append(f"{sheet}: {e}")
+    if errors:
+        raise NodeError(f"{len(errors)} sheet(s) failed: {few(errors, 5)}")
+    return locations
+
+
+def _locate_in(wb: Workbook, source: Source, sheet: str, how: How) -> Location:
     g = SheetGrid(wb, sheet)
     top, reg = _header(wb, g, sheet, source)
     _, left, _, right = reg.box
@@ -214,8 +248,71 @@ def expect_label(want: ColumnExpect) -> str:
 def read_region(
     wb: Workbook, source: Source, con: duckdb.DuckDBPyConnection, name: str
 ) -> Relation:
-    """`locate` the source, then `read_location`."""
-    return read_location(locate(wb, source), source, con, name)
+    """Locate every sheet selected by the source, then read them into one table."""
+    return read_locations(locate_all(wb, source), source, con, name)
+
+
+def read_locations(
+    locs: list[Location], source: Source, con: duckdb.DuckDBPyConnection, name: str
+) -> Relation:
+    """Read a source, stacking regex-selected sheets and recording each row's sheet name."""
+    if source.sheet.name_regex is None:
+        return read_location(locs[0], source, con, name)
+    sheet_column = source.sheet.sheet_column
+    assert sheet_column is not None
+    for loc in locs:
+        for col in loc.names:
+            if col.casefold() == sheet_column.casefold():
+                raise NodeError(
+                    f"sheet_column {sheet_column!r} clashes with table column {col!r} "
+                    f"on sheet {loc.sheet!r}"
+                )
+    parts = [f"__{name}_{i}" for i in range(len(locs))]
+    con.execute(f"DROP TABLE IF EXISTS {quote(name)}")
+    representatives: dict[str, str] = {}
+    for loc in locs:
+        for col in loc.names:
+            representatives.setdefault(col.casefold(), col)
+    try:
+        selections = []
+        for i, (loc, part) in enumerate(zip(locs, parts, strict=True)):
+            read_location(loc, source, con, part)
+            selections.append(
+                f"SELECT ? AS {quote(sheet_column)}, {i} AS __k, "
+                f"row_number() OVER () AS __r, * FROM {quote(part)}"
+            )
+        types: dict[str, set[str]] = {}
+        for part in parts:
+            for row in con.execute(f"DESCRIBE SELECT * FROM {quote(part)}").fetchall():
+                col, typ = row[:2]
+                types.setdefault(col.casefold(), set()).add(typ)
+        text_columns = {
+            representatives[key]
+            for key, kinds in types.items()
+            if len(kinds) > 1 and not kinds <= {"BIGINT", "DOUBLE"}
+        }
+        if text_columns:
+            for i, (loc, part) in enumerate(zip(locs, parts, strict=True)):
+                columns = ", ".join(
+                    f"CAST({quote(col)} AS VARCHAR) AS {quote(col)}"
+                    if representatives[col.casefold()] in text_columns
+                    else quote(col)
+                    for col in loc.names
+                )
+                selections[i] = (
+                    f"SELECT ? AS {quote(sheet_column)}, {i} AS __k, "
+                    f"row_number() OVER () AS __r, {columns} FROM {quote(part)}"
+                )
+        con.execute(
+            f"CREATE TABLE {quote(name)} AS SELECT * EXCLUDE (__k, __r) FROM ("
+            + " UNION ALL BY NAME ".join(selections)
+            + ") ORDER BY __k, __r",
+            [loc.sheet for loc in locs],
+        )
+        return con.table(name)
+    finally:
+        for part in parts:
+            con.execute(f"DROP TABLE IF EXISTS {quote(part)}")
 
 
 def read_location(

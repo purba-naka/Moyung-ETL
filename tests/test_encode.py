@@ -86,6 +86,73 @@ def test_sample_workbook_map_budget(sample_path) -> None:
     assert sum(len(wb.formula_cells(s.name) or ()) for s in wb.sheets) >= 542_358
 
 
+def _same_table_sheets(names) -> Workbook:
+    return Workbook.open(make_xlsx({name: [["Item", "Qty"], ["a", 1], ["b", 2]] for name in names}))
+
+
+def test_workbook_map_groups_same_shape_without_changing_sheet_ids() -> None:
+    names = ["m01", "m02", "m03", "m04", "m05"]
+    wb = Workbook.open(
+        make_xlsx(
+            {
+                **{name: [["Item", "Qty"], ["a", 1], ["b", 2]] for name in names},
+                "other": [["Code", "Value"], [1, 2]],
+                "last": [["When", "Amount"], ["now", 3]],
+            }
+        )
+    )
+    text = workbook_map(wb, "F1")["text"]
+    assert text.count("\n") == 3
+    assert "F1.S1|m01" in text and "+4 same shape: F1.S1..F1.S5" in text
+    assert "name_regex m[0-9]{2}" in text
+    assert "F1.S6|other" in text and "F1.S7|last" in text
+    assert "F1.S2|m02" not in text
+
+
+def test_shape_group_with_different_name_patterns_says_names_differ() -> None:
+    text = workbook_map(_same_table_sheets(["alpha", "beta", "gamma"]), "F1")["text"]
+    assert "+2 same shape" in text and "names differ" in text
+
+
+def test_two_same_shape_sheets_are_not_grouped() -> None:
+    text = workbook_map(_same_table_sheets(["m01", "m02"]), "F1")["text"]
+    assert "same shape" not in text and "F1.S2|m02" in text
+
+
+def test_pattern_matching_a_sheet_outside_the_group_is_not_proposed() -> None:
+    wb = Workbook.open(
+        make_xlsx(
+            {
+                **{name: [["Item", "Qty"], ["a", 1]] for name in ["m01", "m02", "m03"]},
+                "m10": [["Different", "Headers"], [1, 2]],
+            }
+        )
+    )
+    text = workbook_map(wb, "F1")["text"]
+    assert "names differ" in text and "name_regex" not in text
+
+
+def test_workbook_map_grouping_preserves_original_sheet_paging() -> None:
+    wb = _same_table_sheets([f"m{i:02}" for i in range(5)])
+    out = workbook_map(wb, "F1", offset=4, limit=2)
+    assert out["text"].startswith("F1 5 sheets") and not out["truncated"]
+    assert out["text"].count("\n") == 0  # m05 is represented by the group on the first page
+    assert "F1.S1..F1.S5" in workbook_map(wb, "F1")["text"]
+
+
+def test_generated_group_pattern_does_not_break_pipe_delimited_fields() -> None:
+    text = workbook_map(_same_table_sheets(["m|01", "m|02", "m|03"]), "F1")["text"]
+    line = text.splitlines()[1]
+    assert len(line.split("|")) == 8
+    assert "name_regex m\\/[0-9]{2}" in line
+
+
+def test_workbook_map_150_same_shape_sheets_stays_under_budget() -> None:
+    wb = _same_table_sheets([f"m{i:03}" for i in range(150)])
+    out = workbook_map(wb, "F1")
+    assert len(out["text"]) < 1500 and "+149 same shape" in out["text"]
+
+
 def test_sheet_regions_text_and_lookup() -> None:
     from datetime import date
 

@@ -63,13 +63,56 @@ def test_propose_mixed_when_typed_and_cross() -> None:
 
 
 def test_propose_flags_hidden_and_pages() -> None:
-    sheets = {name: [["TANGGAL", "PKG"], [date(2026, 1, 5), 10]] for name in ("A", "B", "C")}
+    sheets = {name: [[f"Header {name}", "PKG"], [date(2026, 1, 5), 10]] for name in ("A", "B", "C")}
     wb = Workbook.open(make_xlsx(sheets, hidden=("B",)))
     first = propose_datasets(wb, "F1", limit=1)
     assert first["truncated"] and first["next_offset"] == 1
     rest = propose_datasets(wb, "F1", offset=1, limit=1)
     assert "F1.S2.R1|B [hidden]|A1:B2|source|1|2" in rest["text"]
     assert "F1.S3.R1|C|A1:B2|source|1|2" in propose_datasets(wb, "F1", offset=2)["text"]
+
+
+def test_propose_groups_repeated_sheets_into_one_dataset() -> None:
+    sheets = {
+        **{
+            name: [["Item", "Qty"], ["a", 1], ["b", 2]]
+            for name in ["m01", "m02", "m03", "m04", "m05"]
+        },
+        "other": [["Code", "Value"], [1, 2], [3, 4]],
+    }
+    out = propose_datasets(Workbook.open(make_xlsx(sheets)), "F1")
+    assert out["text"].count("\n") == 2
+    assert "F1.S1.R1|m01" in out["text"]
+    assert "+4 same shape: F1.S1..F1.S5, name_regex m[0-9]{2}" in out["text"]
+    assert "F1.S6.R1|other" in out["text"]
+    assert "m02" not in out["text"]
+
+
+def test_grouped_sheets_keep_unrelated_second_table_proposals() -> None:
+    sheets = {
+        name: [
+            ["Item", "Qty"],
+            ["a", 1],
+            [],
+            [],
+            [f"Other {name}", "Value"],
+            ["x", 2],
+        ]
+        for name in ["m01", "m02", "m03"]
+    }
+    out = propose_datasets(Workbook.open(make_xlsx(sheets)), "F1")
+    assert len(out["text"].splitlines()) == 5
+    assert "F1.S2.R2|m02" in out["text"] and "F1.S3.R2|m03" in out["text"]
+
+
+def test_same_header_derived_sheets_are_not_grouped_away() -> None:
+    sheets = {
+        "m01": [["Item", "Qty"], ["a", 1]],
+        **{name: [["Item", "Qty"], ["a", "=m01!B2"]] for name in ["m02", "m03", "m04"]},
+    }
+    out = propose_datasets(Workbook.open(make_xlsx(sheets)), "F1")
+    assert "1 source" in out["text"] and "3 derived tables left out" in out["text"]
+    assert all(f"F1.S{i}" in out["text"] for i in (2, 3, 4))
 
 
 def test_propose_no_datasets() -> None:

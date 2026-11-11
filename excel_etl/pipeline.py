@@ -53,14 +53,39 @@ class _Model(BaseModel):
 
 
 class SheetRef(_Model):
+    """How to find one sheet, or all matching sheets for a repeating table.
+
+    Use `name`, `name_like`, or `fallback_contains` for one sheet. For many sheets with the
+    same table, use `{"name_regex": "[0-9]{4}", "sheet_column": "period"}`: the full sheet
+    name must match, and every output row records its sheet in `sheet_column`.
+    """
+
     name: str | None = None
     name_like: str | None = None  # the sheet name as seen when the spec was written
     fallback_contains: list[str] = []  # texts that must appear on the sheet if the name moved
+    name_regex: str | None = None
+    sheet_column: str | None = None
 
     @model_validator(mode="after")
     def _some_way_to_find_it(self) -> SheetRef:
-        if not (self.name or self.name_like or self.fallback_contains):
-            raise ValueError("give name, name_like or fallback_contains")
+        if self.name_regex is not None:
+            if self.name or self.name_like or self.fallback_contains:
+                raise ValueError("name_regex cannot be combined with another sheet matcher")
+            if self.sheet_column is None:
+                raise ValueError("name_regex requires sheet_column")
+            try:
+                re.compile(self.name_regex)
+            except re.error as e:
+                raise ValueError(f"name_regex {self.name_regex!r} is not a regex: {e}") from e
+        elif self.sheet_column is not None:
+            raise ValueError("sheet_column requires name_regex")
+        elif not (self.name or self.name_like or self.fallback_contains):
+            raise ValueError("give name, name_like or fallback_contains, or use name_regex")
+        if self.sheet_column is not None:
+            if not self.sheet_column.strip() or self.sheet_column.startswith("__"):
+                raise ValueError("sheet_column must be non-blank and cannot start with __")
+            if len(self.sheet_column) > 100:
+                raise ValueError("sheet_column must be at most 100 characters")
         return self
 
 

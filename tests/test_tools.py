@@ -171,6 +171,23 @@ def test_save_spec_errors_are_dicts_with_a_reason(tools):
     assert tools.save_spec(json.dumps(other), "dropped output")["version"] == 2
 
 
+@pytest.mark.parametrize("count,warns", [(3, True), (2, False)])
+def test_save_spec_suggests_one_source_for_repeated_sheet_shapes(tools, count, warns):
+    sources = {
+        f"s{i}": {
+            "file_role": "f",
+            "sheet": {"name": "Sales"},
+            "region": {"header_anchor": ["QTY"]},
+        }
+        for i in range(count)
+    }
+    spec = {"sources": sources, "steps": [], "outputs": {"all": {"input": "s0"}}}
+    result = tools.save_spec(json.dumps(spec))
+    assert result["saved"]
+    warning = "one source with sheet.name_regex + sheet_column reads them all"
+    assert (warning in result["text"]) is warns
+
+
 def test_get_spec_versions_and_history(tools):
     tools.save_spec(spec_json())
     tools.save_spec(json.dumps(dict(SPEC, outputs={})), "no output")

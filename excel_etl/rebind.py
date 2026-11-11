@@ -22,7 +22,14 @@ from pydantic import BaseModel, ConfigDict
 from excel_etl.engine import FileInput, open_file
 from excel_etl.inspect.encode import a1, few
 from excel_etl.nodes.base import NodeError
-from excel_etl.nodes.source import Location, expect_hits, expect_label, locate, missing_required
+from excel_etl.nodes.source import (
+    Location,
+    expect_hits,
+    expect_label,
+    locate_all,
+    matching_sheets,
+    missing_required,
+)
 from excel_etl.pipeline import PipelineSpec, Source
 from excel_etl.workbook import Workbook, WorkbookError
 
@@ -40,6 +47,7 @@ class BindRecord(_Model):
     header_row: int
     first_col: int
     columns: tuple[str, ...]
+    sheets: int = 1
 
 
 class SourceBind(_Model):
@@ -76,19 +84,33 @@ class BindReport(_Model):
         return "\n".join(lines)
 
 
-def _record(loc: Location) -> BindRecord:
-    return BindRecord(sheet=loc.sheet, header_row=loc.header, first_col=loc.left, columns=loc.names)
+def _record(locs: list[Location]) -> BindRecord:
+    first = locs[0]
+    columns_by_key: dict[str, str] = {}
+    for loc in locs:
+        for col in loc.names:
+            columns_by_key.setdefault(col.casefold(), col)
+    columns = tuple(columns_by_key.values())
+    return BindRecord(
+        sheet=first.sheet,
+        header_row=first.header,
+        first_col=first.left,
+        columns=columns,
+        sheets=len(locs),
+    )
 
 
 def _covered(source: Source, name: str) -> bool:
     return any(expect_hits(w, [name]) for w in source.expect_columns)
 
 
-def _judge(source: Source, loc: Location, old: BindRecord | None) -> SourceBind:
-    rec = _record(loc)
+def _judge(source: Source, locs: list[Location], old: BindRecord | None) -> SourceBind:
+    rec = _record(locs)
+    loc = locs[0]
+    names = rec.columns
     drift: list[str] = []
     moved: list[str] = []
-    for want in missing_required(source, loc.names):
+    for want in missing_required(source, names):
         drift.append(
             f"required column {expect_label(want)} not found: find the new header text "
             f"(find_text, render_range), then change expect_columns and the steps that use it"
@@ -99,14 +121,14 @@ def _judge(source: Source, loc: Location, old: BindRecord | None) -> SourceBind:
             f"table (compare_sheets), then set sheet.name to it"
         )
     if old is not None:
-        if old.sheet != loc.sheet and loc.how != "fallback":
+        if old.sheet != loc.sheet and loc.how not in ("fallback", "name_regex"):
             moved.append(f"sheet {old.sheet!r} -> {loc.sheet!r}")
         if (old.header_row, old.first_col) != (loc.header, loc.left):
             moved.append(
                 f"header {a1(old.header_row, old.first_col)} -> {a1(loc.header, loc.left)}"
             )
-        was, now = set(old.columns), set(loc.names)
-        added = [n for n in loc.names if n not in was]
+        was, now = set(old.columns), set(names)
+        added = [n for n in names if n not in was]
         gone = [n for n in old.columns if n not in now]
         for label, names in (("added", added), ("removed", gone)):
             if names:
@@ -155,11 +177,17 @@ def rebind(
             out[name] = SourceBind(status="missing", record=None, diff=(), message=wb)
             continue
         try:
-            loc = locate(wb, source)
+            locs = locate_all(wb, source)
         except (NodeError, WorkbookError) as e:
-            out[name] = SourceBind(status="missing", record=None, diff=(), message=str(e))
+            matched = bool(matching_sheets(wb, source))
+            out[name] = SourceBind(
+                status="drift" if matched else "missing",
+                record=None,
+                diff=(str(e),) if matched else (),
+                message="" if matched else str(e),
+            )
             continue
-        out[name] = _judge(source, loc, previous.get(name))
+        out[name] = _judge(source, locs, previous.get(name))
     return BindReport(sources=out)
 
 

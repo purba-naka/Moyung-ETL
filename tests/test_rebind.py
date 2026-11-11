@@ -203,6 +203,88 @@ def test_sample_binds_and_shifts(sample_path) -> None:
     assert rebind(spec, {"b": sample_path}, rep.records()).sources["pkg"].status == "exact"
 
 
+def _multi_spec() -> object:
+    return _spec(_src(sheet={"name_regex": "d[0-9]", "sheet_column": "origin"}))
+
+
+def _multi_book(names=("d1", "d2"), rows=None):
+    return {"f": make_xlsx({name: rows or _BASE for name in names})}
+
+
+def test_multi_sheet_rebind_ignores_new_sheet_names_and_counts() -> None:
+    spec = _multi_spec()
+    first = rebind(spec, _multi_book())
+    assert first.sources["s"].status == "exact"
+    assert first.sources["s"].record == BindRecord(
+        sheet="d1", header_row=0, first_col=0, columns=_BASE[0], sheets=2
+    )
+    again = rebind(spec, _multi_book(), first.records())
+    grown = rebind(spec, _multi_book(("d0", "d1", "d2", "d3")), first.records())
+    assert again.sources["s"].status == grown.sources["s"].status == "exact"
+    assert grown.sources["s"].diff == ()
+    assert grown.sources["s"].record is not None
+    assert grown.sources["s"].record.sheets == 4
+
+
+def test_multi_sheet_rebind_combines_columns_in_first_seen_order() -> None:
+    spec = _multi_spec()
+    book = {
+        "f": make_xlsx(
+            {
+                "d1": [["Item", "Qty"], ["a", 1]],
+                "d2": [["Item", "Price"], ["b", 2]],
+            }
+        )
+    }
+    rec = rebind(spec, book).sources["s"].record
+    assert rec is not None and rec.columns == ("Item", "Qty", "Price")
+
+
+def test_case_only_column_variants_have_one_consistent_record() -> None:
+    spec = _multi_spec()
+    book = {
+        "f": make_xlsx(
+            {
+                "d1": [["Item", "Qty"], ["a", 1]],
+                "d2": [["Item", "QTY"], ["b", 2]],
+            }
+        )
+    }
+    first = rebind(spec, book)
+    assert first.sources["s"].record is not None
+    assert first.sources["s"].record.columns == ("Item", "Qty")
+    assert rebind(spec, book, first.records()).sources["s"].status == "exact"
+
+
+def test_a_bad_matching_sheet_is_drift_not_missing() -> None:
+    spec = _multi_spec()
+    book = {"f": make_xlsx({"d1": _BASE, "d2": [["Other", "Qty", "Price"], ["x", 1, 2]]})}
+    result = rebind(spec, book).sources["s"]
+    assert result.status == "drift" and result.record is None
+    assert "d2" in result.diff[0] and "not found" in result.diff[0]
+
+
+def test_no_matching_sheet_is_missing() -> None:
+    result = rebind(_multi_spec(), _multi_book(("other",))).sources["s"]
+    assert result.status == "missing" and "d[0-9]" in result.message
+
+
+def test_new_columns_across_multi_sheets_follow_normal_drift_rules() -> None:
+    spec = _multi_spec()
+    previous = rebind(spec, _multi_book()).records()
+    wider = [["Item", "Qty", "Price", "Extra"], ["a", 1, 2, 3]]
+    result = rebind(spec, _multi_book(rows=wider), previous).sources["s"]
+    assert result.status == "drift" and "columns added: Extra" in result.diff
+    covered = _spec(
+        _src(
+            sheet={"name_regex": "d[0-9]", "sheet_column": "origin"},
+            expect=[{"match": "Extra", "required": False}],
+        )
+    )
+    result = rebind(covered, _multi_book(rows=wider), previous).sources["s"]
+    assert result.status == "shifted" and "columns added: Extra" in result.diff
+
+
 def test_records_leave_out_drifted_sources() -> None:
     spec = _spec(_src(expect=[{"match": "Gone"}]))
     rep = _bind(_BASE, spec)
