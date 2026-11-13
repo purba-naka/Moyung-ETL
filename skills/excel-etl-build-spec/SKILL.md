@@ -21,7 +21,10 @@ Tool names may carry a prefix in your host.
    summarise. `references/patterns.md` maps an Excel shape to the nodes that fix it.
 5. `save_spec(spec_json, note)`. It validates against the files and does not save a spec
    with problems. Read every listed problem, fix them all, save again.
-6. Add `checks` (see "Checks"), save again with a `note` saying what changed.
+6. Add `checks` (see "Checks"), save again with a `note` saying what changed. For a small
+   change after the first version use `edit_spec(patch_json, note)`: `{"steps": [...]}` (same
+   id replaces, a new id is placed before the step that reads it), `"remove": [ids]`,
+   `"sources"`/`"outputs"` (a name, or null to remove).
 7. `get_spec` shows what is saved. `validate_spec` checks a draft without saving it.
 
 ## Sources

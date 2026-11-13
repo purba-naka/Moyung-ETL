@@ -68,7 +68,7 @@ def spec_json(**over):
 def test_agent_tools_are_the_documented_fixed_list(tools):
     names = [f.__name__ for f in tools.agent_tools()]
     assert names[:3] == ["job_summary", "list_files", "workbook_map"]
-    assert len(names) == len(set(names)) == 22
+    assert len(names) == len(set(names)) == 23
     for banned in ("add_file", "answer", "approve", "reload_job", "record_load"):  # host only
         assert banned not in names
 
@@ -526,3 +526,96 @@ def test_a_missing_ref_in_an_old_approval_is_named_plainly(tools):
     )
     err = tools.run_pipeline()["error"]
     assert "approved for no version, but this is 'v1'" in err and "None" not in err
+
+
+# --- token savings: short results, small edits --------------------------------------------
+
+
+def test_catalog_lists_config_fields_and_takes_several_names():
+    from excel_etl.nodes import catalog
+
+    short = catalog()
+    assert "| types*" in short and len(short) // 4 < 1_300  # token budget of the overview
+    both = catalog("cast, drop_rows")
+    assert both.count("(inputs: 1)") == 2
+
+
+def test_a_repeat_save_lists_only_the_tables_it_touched(tools):
+    first = tools.save_spec(spec_json())["text"]
+    assert "sales:" in first and "by_item:" in first
+    again = tools.save_spec(
+        spec_json(outputs={"totals": {"input": "by_item"}, "x": {"input": "sales"}}), "more"
+    )
+    assert again["saved"] and "sales:" not in again["text"] and "by_item:" not in again["text"]
+    edited = json.loads(spec_json())
+    edited["steps"][0]["config"]["by"] = ["Item"]
+    edited["steps"][0]["config"]["aggs"].append({"name": "N", "fn": "count", "column": "Qty"})
+    shown = tools.save_spec(json.dumps(edited), "count too")["text"]
+    assert "by_item:" in shown and "sales:" not in shown
+
+
+def test_run_pipeline_leaves_out_quiet_steps_but_last_run_keeps_them(tools):
+    spec = json.loads(spec_json())
+    spec["steps"].insert(
+        0,
+        {
+            "id": "typed",
+            "node": "cast",
+            "inputs": ["sales"],
+            "config": {"types": {"Qty": "DOUBLE"}},
+        },
+    )
+    spec["steps"][1]["inputs"] = ["typed"]
+    spec["checks"] = {}
+    tools.save_spec(json.dumps(spec))
+    tools.approve("after_propose_datasets", "dina", "v1")
+    short = tools.run_pipeline()["text"]
+    assert "wrote" in short and "typed|cast" not in short and "by_item|group_by" in short
+    assert "typed|cast" in tools.last_run()["text"]
+
+
+def test_a_text_cell_in_a_number_column_says_what_to_try():
+    import duckdb
+
+    from excel_etl.engine import _explain, run, validate  # noqa: F401  (run path is covered below)
+    from excel_etl.pipeline import (
+        Step,
+        parse_spec,  # noqa: F401
+    )
+
+    con = duckdb.connect()
+    with pytest.raises(duckdb.ConversionException) as caught:
+        con.execute("select cast('abc' as double)")
+    step = Step(id="u", node="unpivot", inputs=["s"], config={})
+    assert "cast step" in _explain(caught.value, step, {})
+    with pytest.raises(duckdb.BinderException) as missing:
+        con.execute("select nope from (select 1 a)")
+    assert "Columns this step reads" in _explain(missing.value, step, {})
+
+
+def test_edit_spec_replaces_adds_and_removes_steps_in_one_small_call(tools):
+    assert "error" in tools.edit_spec("{}")  # nothing saved yet
+    tools.save_spec(spec_json())
+    rename = {"steps": [{**json.loads(spec_json())["steps"][0], "id": "by_item"}]}
+    rename["steps"][0]["config"]["aggs"][0]["name"] = "Sum"
+    out = tools.edit_spec(json.dumps(rename), "rename total")
+    assert out["saved"] is False  # the check still reads Total: a patch is validated like a spec
+    patch = {
+        "steps": rename["steps"],
+        "checks": {},
+    }
+    assert "error" in tools.edit_spec(json.dumps(patch))  # `checks` is not a patch key
+    ok = tools.edit_spec(
+        json.dumps({"steps": rename["steps"], "outputs": {"totals": {"input": "by_item"}}}),
+        "rename total",
+    )
+    assert ok["saved"] is False and "Total" in ok["text"]
+    cast = {
+        "id": "typed",
+        "node": "cast",
+        "inputs": ["sales"],
+        "config": {"types": {"Qty": "DOUBLE"}},
+    }
+    added = tools.edit_spec(json.dumps({"steps": [cast]}), "add cast")
+    assert added["saved"] is True and added["version"] == 2
+    assert "error" in tools.edit_spec(json.dumps({"remove": ["nope"]}))

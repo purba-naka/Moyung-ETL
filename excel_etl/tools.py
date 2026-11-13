@@ -36,7 +36,7 @@ from excel_etl.knowledge import lookup_knowledge
 from excel_etl.load import LoadError, Where, file_columns, plan_load
 from excel_etl.nodes import Column, NodeError, catalog
 from excel_etl.nodes.base import describe
-from excel_etl.pipeline import PipelineSpec, SpecError, dump_spec, parse_spec
+from excel_etl.pipeline import PipelineSpec, SpecError, dump_spec, parse_spec, patch_spec
 from excel_etl.rebind import rebind
 from excel_etl.state import (
     FileProvider,
@@ -105,6 +105,21 @@ def _tool(fn: Callable[..., dict]) -> Callable[..., dict]:
             return {"error": f"internal error ({type(e).__name__}): {e}; this is a library bug"}
 
     return wrapper
+
+
+def _changed_tables(old: PipelineSpec | None, new: PipelineSpec) -> set[str] | None:
+    """Tables whose columns may differ from the last saved version: new or edited sources and
+    steps, and everything downstream of them. None (list all) for a first version. A repeat
+    save then shows only what the agent just touched; the rest is already in its context."""
+    if old is None:
+        return None
+    before = {k: v.model_dump() for k, v in old.sources.items()}
+    before.update({s.id: s.model_dump() for s in old.steps})
+    changed = {k for k, v in new.sources.items() if before.get(k) != v.model_dump()}
+    for step in new.steps:
+        if before.get(step.id) != step.model_dump() or changed & set(step.inputs):
+            changed.add(step.id)
+    return changed
 
 
 def _split_column(text: str) -> Column:
@@ -238,6 +253,7 @@ class JobTools:
             "ask_human",
             "pending_questions",
             "save_spec",
+            "edit_spec",
             "get_spec",
             "validate_spec",
             "rebind_sources",
@@ -386,13 +402,29 @@ class JobTools:
         files first; a spec with problems is not saved. `note` says why (needed from v2).
         Repeated sheets use one source: sheet={"name_regex":"day-[0-9]{2}",
         "sheet_column":"source_sheet"}; full names match and every match must hold the table."""
+        return self._commit(parse_spec(spec_json), note)
+
+    @_tool
+    def edit_spec(self, patch_json: str, note: str = "") -> dict:
+        """Change the saved spec without sending all of it again; saved as the next version
+        like save_spec. patch_json: {"steps": [step, ...] (same id = replace that step, new id
+        = added before the step that reads it, else at the end), "remove": ["step_id"],
+        "sources": {"name": source or null}, "outputs": {"name": output or null}}.
+        Use it for repairs; use save_spec for a first version or a rewrite."""
+        h = self._state.history
+        if h is None:
+            raise StateError("no spec saved yet; use save_spec for the first version")
+        return self._commit(patch_spec(h.current.spec, patch_json), note)
+
+    def _commit(self, spec: PipelineSpec, note: str) -> dict:
         if isinstance(note, str) and len(note) > MAX_NOTE:
             raise ValueError(f"the note is {len(note)} characters; keep it under {MAX_NOTE}")
-        spec = parse_spec(spec_json)
         files = self._open_all(spec)
         report = validate(spec, files)
         if not report.ok:
             return {"saved": False, "text": "not saved\n" + report.text()}
+
+        previous = self._state.history.current.spec if self._state.history else None
 
         def apply(s: JobState) -> JobState:
             if s.history is None:
@@ -417,7 +449,9 @@ class JobTools:
         return {
             "saved": True,
             "version": self._version(),
-            "text": f"saved v{self._version()}\n" + report.text() + warn,
+            "text": f"saved v{self._version()}\n"
+            + report.text(_changed_tables(previous, spec))
+            + warn,
         }
 
     def _open_all(self, spec: PipelineSpec) -> dict[str, Workbook] | None:
@@ -488,7 +522,7 @@ class JobTools:
             target = target / f"v{self._version()}"
         rep = run(spec, files, target, hitl=s.hitl, ref=f"v{self._version()}")
         self.job.update(lambda st: st.model_copy(update={"last_run": rep}))
-        text = rep.text()
+        text = rep.text(full=False)
         if why := gate(self._state.hitl, "after_run", failed=rep.status != "ok"):
             text += f"\nask the person before going on: {why}"
         return {"ok": rep.status == "ok", "text": text}

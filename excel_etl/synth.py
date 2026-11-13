@@ -61,7 +61,8 @@ class Target(_Model):
     name: Ident
     columns: list[TargetColumn] = Field(min_length=1)
     grain: list[str] = Field(min_length=1)
-    total_regex: str = r"(?i)^\s*(?:(?:sub\s*)?(?:total|jumlah|rekap)\b|jml(?:\.|\b))"
+    # Pivot tables put the word last ("JAMBI Total"), hand-made reports put it first.
+    total_regex: str = r"(?i)^\s*(?:(?:sub\s*)?(?:total|jumlah|rekap)\b|jml(?:\.|\b))|\btotal\s*$"
     filters: list[str] = []
     decimal: Literal[".", ","] = "."  # how numbers typed as text read: 1,234.56 or 1.234,56
 
@@ -137,6 +138,7 @@ class Proposal(_Model):
     grid: object
     role: str
     name_regex: str | None = None
+    sheets: list[str] = []  # every sheet the region stands for (one name when not grouped)
 
 
 def _representative(indexes: list[int], wb: Workbook) -> int:
@@ -177,6 +179,7 @@ def proposal_regions(wb: Workbook, file_id: str = "F1") -> list[Proposal]:
             grouped = groups.get(i)
             if grouped and _representative(grouped[0], wb) != i:
                 continue
+            members = [wb.sheets[k].name for k in grouped[0]] if grouped else [sheet.name]
             out.append(
                 Proposal(
                     id=f"{file_id}.S{i + 1}.R{j}",
@@ -186,6 +189,7 @@ def proposal_regions(wb: Workbook, file_id: str = "F1") -> list[Proposal]:
                     grid=grid,
                     role=role,
                     name_regex=grouped[1] if grouped else None,
+                    sheets=members,
                 )
             )
     wb.memo[key] = out
@@ -341,6 +345,24 @@ def _slug(header: str, taken: set[str]) -> str:
     return name
 
 
+def _left_out(wb: Workbook, p: Proposal) -> list[str]:
+    """Sheets whose name fits the group's pattern but whose layout differs. They are not
+    read, so the person should at least see them (a changed layout is easy to miss)."""
+    if not p.name_regex:
+        return []
+    mine = set(p.sheets)
+    return [
+        s.name
+        for s in wb.sheets
+        if s.name not in mine and re.fullmatch(_bare(p.name_regex), s.name)
+    ]
+
+
+def _bare(pattern: str) -> str:
+    """The name shape without the leading negative lookahead that lists the outsiders."""
+    return re.sub(r"^\(\?!\(\?:.*?\)\$\)", "", pattern)
+
+
 def draft_targets(wb: Workbook, file_id: str = "F1") -> list[dict]:
     """One editable Target guess per table, so a person crosses out columns instead of typing
     them. Text columns become the grain; "group|measure" headers become one from_header
@@ -358,7 +380,9 @@ def draft_targets(wb: Workbook, file_id: str = "F1") -> list[dict]:
         for n, t in zip(names[:first] if grouped else names, types, strict=False):
             c = TargetColumn(name=_slug(n, taken), type=_FROM_DUCK.get(t, "text"), hints=[n])
             cols.append(c)
-            if c.type == "text":
+            # Left of repeated blocks every column is a key (a numeric code too): a non-grain
+            # column there would be looked for among the block measures and never found.
+            if grouped or c.type == "text":
                 grain.append(c.name)
         if grouped:
             group = TargetColumn(name=_free_name("group", taken), type="text", from_header=True)
@@ -375,6 +399,10 @@ def draft_targets(wb: Workbook, file_id: str = "F1") -> list[dict]:
             {
                 "region": p.id,
                 "sheet": p.sheet,
+                "sheets": len(p.sheets),
+                "first": min(p.sheets),
+                "last": max(p.sheets),
+                "left_out": _left_out(wb, p),
                 "rows": len(rows),
                 "headers": [n.replace("|", " / ") for n in names[:6]],
                 "target": Target(name="clean_data", columns=cols, grain=grain).model_dump(),
@@ -395,6 +423,7 @@ def _build(
     names: list[str],
     types: list[str],
     rows: list[list[object]],
+    prefix: str = "",
 ) -> tuple[PipelineSpec | None, list[str], list[str]]:
     header_target = next((c for c in target.columns if c.from_header), None)
     # The sheet name column must not clash with any source header or target column, in any
@@ -427,7 +456,7 @@ def _build(
     )[:3]
     spec = PipelineSpec(
         sources={
-            "input": {
+            f"{prefix}input": {
                 "file_role": "main",
                 "sheet": source_sheet,
                 "region": {
@@ -450,7 +479,7 @@ def _build(
             f"Reads every sheet with this layout, named like /{p.name_regex}/, "
             "and keeps the sheet name in source_sheet."
         )
-    current = "input"
+    current = f"{prefix}input"
     fill = []
     for c in target.columns:
         # Measure columns map to a leaf like "SAFETY STOCK" that is not a real header
@@ -462,7 +491,7 @@ def _build(
         if any(v is None for v in vals) and any(v is not None for v in vals):
             fill.append(mapping[c.name])
     if fill:
-        current = _step(steps, "filled", "fill_down", current, {"columns": fill})
+        current = _step(steps, prefix + "filled", "fill_down", current, {"columns": fill})
         reasons.append("Filled down blank repeated labels.")
     grain_text = [
         mapping[c.name]
@@ -472,7 +501,7 @@ def _build(
     for i, column in enumerate(grain_text):
         current = _step(
             steps,
-            "details" if i == 0 else f"details_{i}",
+            prefix + ("details" if i == 0 else f"details_{i}"),
             "drop_rows",
             current,
             {"column": column, "drop_regex": target.total_regex},
@@ -490,7 +519,7 @@ def _build(
     ]
     if unused and not header_target:
         kept = [n for n in names if n not in unused]
-        current = _step(steps, "unused", "select", current, {"columns": kept})
+        current = _step(steps, prefix + "unused", "select", current, {"columns": kept})
         reasons.append(f"Dropped unused source columns that share a target name: {unused}.")
     # The sheet name column of a multi-sheet read is a key too, so unpivot must carry it.
     sheet_key = [sheet_col] if p.name_regex else []
@@ -508,7 +537,7 @@ def _build(
             if total_columns:
                 current = _step(
                     steps,
-                    "totals",
+                    prefix + "totals",
                     "select",
                     current,
                     {"columns": [n for n in names if n not in total_columns]},
@@ -521,7 +550,7 @@ def _build(
             ] + sheet_key
             current = _step(
                 steps,
-                "long",
+                prefix + "long",
                 "unpivot_groups",
                 current,
                 {
@@ -549,7 +578,7 @@ def _build(
             )
             current = _step(
                 steps,
-                "long",
+                prefix + "long",
                 "unpivot",
                 current,
                 {
@@ -566,30 +595,44 @@ def _build(
                 rename["__value"] = value_targets[0].name
             reasons.append("Unpivoted repeated numeric columns into header/value rows.")
     if rename:
-        current = _step(steps, "renamed", "rename", current, {"mapping": rename})
+        current = _step(steps, prefix + "renamed", "rename", current, {"mapping": rename})
     casts = {c.name: _TARGET_TYPES[c.type] for c in output_columns}
     cast_config: dict = {"types": casts}
     if target.decimal != ".":
         cast_config["decimal"] = target.decimal
-    current = _step(steps, "typed", "cast", current, cast_config)
+    current = _step(steps, prefix + "typed", "cast", current, cast_config)
     if target.filters:
         current = _step(
             steps,
-            "filtered",
+            prefix + "filtered",
             "filter",
             current,
             {"where": " AND ".join(f"({f})" for f in target.filters)},
         )
     _step(
         steps,
-        "selected",
+        prefix + "selected",
         "select",
         current,
         {"columns": [c.name for c in output_columns]},
     )
     spec.steps = steps
-    spec.outputs = {target.name: Output(input="selected")}
+    spec.outputs = {target.name: Output(input=f"{prefix}selected")}
     return spec, reasons, grain
+
+
+def _merge(target: Target, built: list[tuple[PipelineSpec, str]]) -> PipelineSpec:
+    """One spec that stacks the tables of several regions (a daily group and a monthly group
+    with the same columns) into the single output. `built` holds (spec, final step id)."""
+    merged = PipelineSpec()
+    for spec, _ in built:
+        merged.sources.update(spec.sources)
+        merged.steps.extend(spec.steps)
+    merged.steps.append(
+        Step(id="stacked", node="union", inputs=[last for _, last in built], config={"by": "name"})
+    )
+    merged.outputs = {target.name: Output(input="stacked")}
+    return merged
 
 
 def _is_measure(c: TargetColumn, target: Target) -> bool:
@@ -614,7 +657,7 @@ def _json_value(v):
 
 def _evaluate(
     target: Target,
-    p: Proposal,
+    regions: list[Proposal],
     spec: PipelineSpec,
     reasons: list[str],
     scores: dict[str, float],
@@ -625,13 +668,12 @@ def _evaluate(
     problems = []
     # Score on the sample sheet only. A file with 150 daily sheets would otherwise be read in
     # full for every candidate; the returned spec still reads them all.
-    probe = spec
-    if p.name_regex:
-        probe = spec.model_copy(deep=True)
-        sheet = probe.sources["input"].sheet
-        probe.sources["input"].sheet = type(sheet)(
-            name_regex=f"^{re.escape(p.sheet)}$", sheet_column=sheet.sheet_column
-        )
+    probe = spec.model_copy(deep=True)
+    for r, src in zip(regions, probe.sources.values(), strict=True):
+        if r.name_regex:
+            src.sheet = type(src.sheet)(
+                name_regex=f"^{re.escape(r.sheet)}$", sheet_column=src.sheet.sheet_column
+            )
     report = validate(probe, {"main": wb})
     if not report.ok:
         return None, "; ".join(f"{i.where}: {i.message}" for i in report.issues[:2])
@@ -677,7 +719,7 @@ def _evaluate(
     if left_out:
         problems.append(f"Not found in the sheet, left out of the output: {', '.join(left_out)}.")
     return Candidate(
-        region=p.id,
+        region=",".join(r.id for r in regions),
         spec=dump_spec(spec),
         score=round(score, 6),
         reasons=reasons,
@@ -699,8 +741,11 @@ def synthesize(
     candidates: list[Candidate] = []
     questions: list[Question] = []
     proposals = proposal_regions(wb, file_id)
-    if answers.get("region"):
-        proposals = [p for p in proposals if p.id == answers["region"]]
+    chosen = [r for r in answers.get("region", "").split(",") if r]
+    if len(chosen) > 1:
+        return _synthesize_merged(target, wb, proposals, chosen, answers, knowledge)
+    if chosen:
+        proposals = [p for p in proposals if p.id == chosen[0]]
     asked: list[tuple[float, list[Question]]] = []
     notes: list[str] = []
     unmatched: list[tuple[Proposal, list[str]]] = []
@@ -723,7 +768,7 @@ def synthesize(
         if spec is None:
             notes.append(f"{p.id} ({p.sheet!r}): {reasons[0]}")
             continue
-        candidate, why = _evaluate(target, p, spec, reasons, scores, wb, grain)
+        candidate, why = _evaluate(target, [p], spec, reasons, scores, wb, grain)
         if candidate:
             candidates.append(candidate)
         else:
@@ -769,3 +814,54 @@ def synthesize(
             )
         ],
     )
+
+
+def _synthesize_merged(
+    target: Target,
+    wb: Workbook,
+    proposals: list[Proposal],
+    chosen: list[str],
+    answers: dict[str, str],
+    knowledge: Knowledge | None,
+) -> SynthReport:
+    """Several tables the user ticked, stacked into one output. Every table must carry the
+    target; a table that does not is reported, never silently skipped, because the user
+    asked for exactly these."""
+    picked = [p for p in proposals if p.id in chosen]
+    unknown = [r for r in chosen if r not in {p.id for p in picked}]
+    if unknown:
+        return SynthReport(status="none", notes=[f"No such table: {', '.join(unknown)}."])
+    built: list[tuple[PipelineSpec, str]] = []
+    reasons: list[str] = []
+    scores_all: dict[str, float] = {}
+    grain: list[str] = list(target.grain)
+    questions: list[Question] = []
+    for k, p in enumerate(picked):
+        names, types, rows = _proposal_info(p)
+        mapping, scores, qs = match_columns(target, names, types, answers, knowledge)
+        questions.extend(qs)
+        missing = [
+            c.name
+            for c in target.columns
+            if c.required and not c.from_header and c.name not in mapping and c.name not in scores
+        ]
+        if missing:
+            return SynthReport(
+                status="none",
+                questions=questions[:5],
+                notes=[f"{p.id} ({p.sheet!r}): no header matches {', '.join(missing)}."],
+            )
+        spec, why, g = _build(target, p, mapping, names, types, rows, prefix=f"t{k + 1}_")
+        if spec is None:
+            return SynthReport(status="none", notes=[f"{p.id} ({p.sheet!r}): {why[0]}"])
+        built.append((spec, f"t{k + 1}_selected"))
+        reasons.extend(why)
+        scores_all.update({f"{k}:{n}": v for n, v in scores.items()})
+        grain = list(dict.fromkeys(grain + g))
+    spec = _merge(target, built)
+    reasons.append(f"Stacked {len(picked)} tables into {target.name}.")
+    candidate, why = _evaluate(target, picked, spec, reasons, scores_all, wb, grain)
+    if candidate is None:
+        return SynthReport(status="none", notes=[f"The merged tables were dropped: {why}"])
+    status = "ok" if candidate.score >= 0.85 else "ask"
+    return SynthReport(status=status, best=candidate, questions=questions[:5])

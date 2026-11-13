@@ -511,3 +511,65 @@ def test_a_drafted_target_builds_without_edits():
     assert [c.name for c in t.columns] == ["region", "item", "qty"]
     assert t.grain == ["region", "item"]
     assert synthesize(t, wb, answers={"region": table["region"]}).status == "ok"
+
+
+def test_pivot_subtotals_with_the_word_last_are_dropped():
+    wb = book([["Prov", "Qty"], ["ACEH", 1], ["ACEH Total", 1], ["BALI", 2]])
+    t = target(
+        [TargetColumn(name="prov", type="text"), TargetColumn(name="qty", type="float")], ["prov"]
+    )
+    report = synthesize(t, wb)
+    assert [r["prov"] for r in report.best.preview] == ["ACEH", "BALI"]
+
+
+def _two_groups() -> Workbook:
+    xl = openpyxl.Workbook()
+    xl.remove(xl.active)
+    for d in range(1, 61):
+        ws = xl.create_sheet(f"2026-03-{d:02d}" if d <= 31 else f"2026-04-{d - 31:02d}")
+        ws.append(["Item", "Qty"])
+        ws.append(["a", 1])
+        ws.append(["b", 2])
+    for m in ("Jan", "Feb", "Mar"):
+        ws = xl.create_sheet(m)
+        ws.append(["Barang", "Jumlah"])
+        ws.append(["a", 10])
+    ws = xl.create_sheet("2026-04-31")  # same name shape, other layout: left out, but shown
+    ws.append(["Barang", "Jumlah", "Extra"])
+    ws.append(["a", 1, 1])
+    buf = io.BytesIO()
+    xl.save(buf)
+    return Workbook.open(buf.getvalue())
+
+
+def _item_qty() -> Target:
+    return target(
+        [
+            TargetColumn(name="item", type="text", hints=["Item", "Barang"]),
+            TargetColumn(name="qty", type="float", hints=["Qty", "Jumlah"]),
+        ],
+        ["item"],
+    )
+
+
+def test_draft_lists_groups_with_size_range_and_left_out_sheets():
+    from excel_etl.synth import draft_targets
+
+    tables = draft_targets(_two_groups())
+    daily = next(t for t in tables if t["sheets"] == 60)
+    assert (daily["first"], daily["last"]) == ("2026-03-01", "2026-04-29")
+    assert daily["left_out"] == ["2026-04-31"]
+
+
+def test_several_ticked_groups_are_stacked_into_one_output():
+    from excel_etl.synth import draft_targets
+
+    wb = _two_groups()
+    ids = [t["region"] for t in draft_targets(wb) if t["sheets"] > 1]
+    assert len(ids) == 2
+    report = synthesize(_item_qty(), wb, answers={"region": ",".join(ids)})
+    assert report.status == "ok", report.text()
+    assert report.best.region == ",".join(ids)
+    assert "union" in report.best.spec
+    # 60 daily sheets x (1 + 2) + 3 months x 10 -- both groups end up in the one output
+    assert _sum_run(report, wb, "qty") == (60 * 2 + 3, 60 * 3 + 30)
