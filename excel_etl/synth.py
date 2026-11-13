@@ -169,15 +169,15 @@ def proposal_regions(wb: Workbook, file_id: str = "F1") -> list[Proposal]:
     groups = {i: (idx, pat) for idx, pat in _shape_groups(wb) for i in idx}
     out: list[Proposal] = []
     for i, sheet in enumerate(wb.sheets):
+        grouped = groups.get(i)
+        if grouped and _representative(grouped[0], wb) != i:
+            continue
         grid = SheetGrid(wb, sheet.name)
         for j, region in enumerate(detect_regions(wb, sheet.name, grid), start=1):
             if not region.header_rows:
                 continue
             role = region_role(wb, sheet.name, region.box)
             if role not in ("source", "mixed"):
-                continue
-            grouped = groups.get(i)
-            if grouped and _representative(grouped[0], wb) != i:
                 continue
             members = [wb.sheets[k].name for k in grouped[0]] if grouped else [sheet.name]
             out.append(
