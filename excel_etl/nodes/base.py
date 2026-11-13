@@ -178,6 +178,8 @@ def catalog(name: str | None = None) -> str:
             rows.append(f"{n}: {about} | {_field_names(_REGISTRY[n])}")
         return "\n".join(rows)
     wanted = [w.strip() for w in name.split(",") if w.strip()]
+    if not wanted:
+        return catalog()
     return "\n\n".join(_describe(w) for w in wanted)
 
 
@@ -228,7 +230,17 @@ def check_arity(n: Node, count: int) -> None:
 def infer(n: Node, inputs: list[Schema]) -> Schema:
     """Columns a node produces from the columns it reads. Raises NodeError, never a stack trace."""
     check_arity(n, len(inputs))
-    return n.infer_schema(inputs)
+    out = n.infer_schema(inputs)
+    # duckdb treats `Item` and `ITEM` as one name and renames the second to `ITEM_1`, so the
+    # run would not give what was promised. Checked once here instead of in every node.
+    seen: dict[str, str] = {}
+    for c in out:
+        if (other := seen.setdefault(c.name.casefold(), c.name)) != c.name:
+            raise NodeError(
+                f"{n.name}: columns {other!r} and {c.name!r} differ only in letter case, "
+                "which duckdb treats as one name; use the same spelling or another name"
+            )
+    return out
 
 
 def connect(write_dir: Path | None = None) -> duckdb.DuckDBPyConnection:

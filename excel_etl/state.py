@@ -82,6 +82,15 @@ class LoadRecord(_Model):
     at: str
 
 
+class PlannedLoad(_Model):
+    """The last load plan, so `record_load` in a later turn knows what it answers."""
+
+    output: str
+    platform: str
+    table: str
+    ref: str  # the spec version the plan was made for
+
+
 class JobState(_Model):
     job_id: str
     version: int = Field(default=0, ge=0)  # how many times it was saved; the optimistic lock
@@ -93,6 +102,7 @@ class JobState(_Model):
     binds: dict[str, BindRecord] = {}  # source name -> where it was found last time
     last_run: RunReport | None = None
     loads: list[LoadRecord] = Field(default=[], max_length=200)  # newest last
+    planned: PlannedLoad | None = None
 
     @model_validator(mode="after")
     def _consistent(self) -> JobState:
@@ -123,6 +133,8 @@ def add_file(
     """Register a file, or replace the one with this id (a new month's upload keeps its id
     and gets a new hash). `role` maps the spec's `file_role` to it.
     """
+    if role is not None and not isinstance(role, str):
+        raise StateError(f"role must be text, got {type(role).__name__}")
     try:
         ref = FileRef(id=file_id, filename=filename, sha256=sha256)
     except ValidationError as e:

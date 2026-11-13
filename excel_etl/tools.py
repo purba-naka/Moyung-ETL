@@ -10,8 +10,9 @@ an error says what to change. Arguments are plain strings, numbers, booleans, en
 of strings, so a provider's tool schema never needs `anyOf` or `$ref` (DESIGN section 11). A
 spec travels as a JSON string. Files are named `F1`, `F2`, ... in the order of `state.files`.
 
-Tools that change the job (`save_spec`, `rebind`, `run_pipeline`, `ask_human`) go through
-`Job.update`, so with a store they are saved at once and a second writer gets a conflict error.
+Tools that change the job (`save_spec`, `rebind`, `run_pipeline`, `ask_human`, `plan_load`)
+go through `Job.update`, so with a store they are saved at once and a second writer gets a
+conflict error.
 
 ponytail: a text result is cut at 24000 characters (about 6k tokens) with `truncated: true`;
 the inspect tools page themselves, the others are short. Upgrade: `offset` on every tool.
@@ -43,6 +44,7 @@ from excel_etl.state import (
     Job,
     JobState,
     LoadRecord,
+    PlannedLoad,
     StateConflict,
     StateError,
     add_file,
@@ -143,8 +145,6 @@ class JobTools:
         self.provider = provider
         self.out_dir = out_dir
         self.per_version = per_version  # write into out_dir/v<N> so a rerun keeps older files
-        # (output, platform, table) of the last plan_load, so record_load answers a real plan
-        self._last_plan: tuple[str, str, str] | None = None
 
     # --- helpers -----------------------------------------------------------------------------
 
@@ -216,22 +216,22 @@ class JobTools:
     ) -> dict:
         """Host: record the result of a load plan it ran for `output` (rows loaded, ok or
         failed, and a short note such as the error). The library loads nothing itself."""
-        last = self._state.last_run
-        plan = self._last_plan
-        if last is None or plan is None or plan[0] != output:
+        plan = self._state.planned
+        if plan is None or plan.output != output:
             raise StateError(f"no load plan was made for {output!r}; call plan_load first")
         rec = LoadRecord(
             output=output,
-            platform=plan[1],
-            table=plan[2],
+            platform=plan.platform,
+            table=plan.table,
             status=status,
             rows=rows,
-            ref=f"v{self._version()}",
+            ref=plan.ref,
             note=" ".join(note.split())[:500],
             at=datetime.now(UTC).isoformat(timespec="seconds"),
         )
         self.job.update(lambda s: s.model_copy(update={"loads": [*s.loads, rec][-200:]}))
-        return {"text": f"recorded load of {output} to {plan[1]} {plan[2]}: {status}, {rows} rows"}
+        where = f"{plan.platform} {plan.table}"
+        return {"text": f"recorded load of {output} to {where}: {status}, {rows} rows"}
 
     # --- the agent's tools -------------------------------------------------------------------
 
@@ -354,6 +354,8 @@ class JobTools:
     def node_catalog(self, node: str = "") -> dict:
         """The step types for a spec. Without `node`: one line each. With a name: its
         description and config fields (`*` = required)."""
+        if not isinstance(node, str):
+            raise ValueError("node must be a node name (text), such as 'cast'")
         return {"text": catalog(node or None)}
 
     @_tool
@@ -417,7 +419,9 @@ class JobTools:
         return self._commit(patch_spec(h.current.spec, patch_json), note)
 
     def _commit(self, spec: PipelineSpec, note: str) -> dict:
-        if isinstance(note, str) and len(note) > MAX_NOTE:
+        if not isinstance(note, str):
+            raise ValueError("note must be text")
+        if len(note) > MAX_NOTE:
             raise ValueError(f"the note is {len(note)} characters; keep it under {MAX_NOTE}")
         files = self._open_all(spec)
         report = validate(spec, files)
@@ -562,15 +566,28 @@ class JobTools:
         stat = next((o for o in rep.outputs if o.name == output), None)
         if stat is None:
             raise StateError(f"the last run did not write {output!r}; run again")
-        if why := gate(s.hitl, "before_load", ref=f"v{self._version()}"):
+        ref = f"v{self._version()}"
+        if why := gate(s.hitl, "before_load", ref=ref):
             raise StateError(f"{why}. Use ask_human (confirm) and stop; the host approves.")
+        if rep.ref != ref:
+            raise StateError(
+                f"the last run was made for {rep.ref or 'an older spec'}, not {ref}; "
+                "run_pipeline again before planning the load"
+            )
+        sha = {f.id: f.sha256 for f in s.files}
+        for role, made_from in rep.files.items():
+            if sha.get(s.roles.get(role, "")) != made_from:
+                raise StateError(
+                    f"file {role!r} changed since the last run; run_pipeline again first"
+                )
         cols, _ = file_columns(stat.path)
         found = tuple(_split_column(c) for c in existing_columns) or None
         plan = plan_load(
             platform, output, stat.path, out.load.table, out.load.mode, out.load.keys, cols,
             Where(database=database, schema_name=schema, stage=stage), found,
         )  # fmt: skip
-        self._last_plan = (output, plan.platform, out.load.table)
+        planned = PlannedLoad(output=output, platform=plan.platform, table=out.load.table, ref=ref)
+        self.job.update(lambda st: st.model_copy(update={"planned": planned}))
         return {"text": plan.text() + "\nThe host runs these steps, then calls record_load."}
 
     @_tool

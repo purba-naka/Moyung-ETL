@@ -142,6 +142,9 @@ class Location:
     last: int  # last row of the table (0-based), by the `end` rule of the source
     below: int  # filled rows after `last`: data the `end` rule cut off
     errors: int  # cells of the table holding an Excel error; they are read as NULL
+    # first row (0-based) the region finder sees as data, when header_rows reaches it: the
+    # column names then hold data values. None when the header stops above the data.
+    data_in_header: int | None = None
 
 
 def locate(wb: Workbook, source: Source) -> Location:
@@ -190,7 +193,8 @@ def _locate_in(wb: Workbook, source: Source, sheet: str, how: How) -> Location:
     last, below = _table_end(g, hdr[-1], left, right, source.region.blank_gap)
     bad = wb.error_cells(sheet) or frozenset()
     errors = sum(1 for r, c in bad if hdr[-1] < r <= last and left <= c <= right)
-    return Location(sheet, how, top, left, right, names, g, last, below, errors)
+    deep = reg.data_start if len(hdr) > 1 and hdr[-1] >= reg.data_start else None
+    return Location(sheet, how, top, left, right, names, g, last, below, errors, deep)
 
 
 def _table_end(g: SheetGrid, header_last: int, left: int, right: int, gap: int) -> tuple[int, int]:
@@ -315,6 +319,20 @@ def read_locations(
             con.execute(f"DROP TABLE IF EXISTS {quote(part)}")
 
 
+def _as_text(v: object) -> str | None:
+    """A cell in a text column, written the way Excel shows it: TRUE, and 30:00:00 for a
+    duration (Python would say True and '1 day, 6:00:00')."""
+    if v is None or isinstance(v, str):
+        return v
+    if isinstance(v, bool):
+        return "TRUE" if v else "FALSE"
+    if isinstance(v, timedelta):
+        s = int(v.total_seconds())
+        sign, s = ("-", -s) if s < 0 else ("", s)
+        return f"{sign}{s // 3600}:{s % 3600 // 60:02d}:{s % 60:02d}"
+    return str(v)
+
+
 def read_location(
     loc: Location, source: Source, con: duckdb.DuckDBPyConnection, name: str
 ) -> Relation:
@@ -332,7 +350,7 @@ def read_location(
     types = [_type([v for v in col if v is not None]) for col in cols]
     # a text column holding other kinds (a `JAN` label among dates) keeps each as its text form
     cols = [
-        [v if v is None or isinstance(v, str) else str(v) for v in col] if t == "VARCHAR" else col
+        [_as_text(v) for v in col] if t == "VARCHAR" else col
         for col, t in zip(cols, types, strict=True)
     ]
     con.execute(f"DROP TABLE IF EXISTS {quote(name)}")
