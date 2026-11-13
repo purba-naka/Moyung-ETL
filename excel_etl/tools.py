@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import functools
 import inspect
+import json
 import os
 from collections.abc import Callable
 from datetime import UTC, datetime
@@ -52,6 +53,7 @@ from excel_etl.state import (
     open_ref,
     read_file,
 )
+from excel_etl.synth import source_from_region
 from excel_etl.versions import MAX_NOTE, SpecHistory
 from excel_etl.workbook import Workbook, WorkbookError
 
@@ -248,6 +250,7 @@ class JobTools:
             "compare_sheets",
             "formula_lineage",
             "propose_datasets",
+            "source_for_region",
             "node_catalog",
             "lookup_knowledge",
             "ask_human",
@@ -349,6 +352,24 @@ class JobTools:
         """Tables worth loading as datasets (typed sources), for a person to choose from."""
         fid, wb = self._file(file)
         return encode.propose_datasets(wb, fid, offset, limit)
+
+    @_tool
+    def source_for_region(self, region_id: str, file_role: str = "") -> dict:
+        """The `sources` entry for one table from `sheet_regions` (id like F1.S2.R1), as JSON
+        text to paste into save_spec or edit_spec. The header texts and sheet name are read
+        from the file, so you do not type them; a table repeated on same-shaped sheets comes
+        back with name_regex + sheet_column. `file_role` is the role of that file (see
+        job_summary); empty means the only role there is."""
+        head = region_id.split(".")[0] if isinstance(region_id, str) and "." in region_id else "F1"
+        fid, wb = self._file(head)
+        ref = self._state.files[int(fid[1:]) - 1]
+        roles = [r for r, f in self._state.roles.items() if f == ref.id]
+        role = file_role or (roles[0] if len(roles) == 1 else "")
+        if not role:
+            known = ", ".join(self._state.roles) or "none"
+            raise StateError(f"which role is {fid}? give file_role; roles: {known}")
+        entry = source_from_region(wb, fid, region_id, role)
+        return {"text": json.dumps(entry, ensure_ascii=False)}
 
     @_tool
     def node_catalog(self, node: str = "") -> dict:
