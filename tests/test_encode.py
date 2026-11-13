@@ -109,9 +109,17 @@ def test_workbook_map_groups_same_shape_without_changing_sheet_ids() -> None:
     assert "F1.S2|m02" not in text
 
 
-def test_shape_group_with_different_name_patterns_says_names_differ() -> None:
+def test_shape_group_with_different_name_patterns_lists_the_names() -> None:
     text = workbook_map(_same_table_sheets(["alpha", "beta", "gamma"]), "F1")["text"]
-    assert "+2 same shape" in text and "names differ" in text
+    assert "+2 same shape" in text
+    assert "name_regex (?:alpha/beta/gamma)" in text  # `|` is shown as `/` in the map
+    assert "names differ" not in text
+
+
+def test_shape_group_with_too_many_odd_names_says_names_differ() -> None:
+    names = [f"sheet_{chr(97 + i % 26)}{i}_" + "x" * 16 for i in range(30)]  # max 31 chars
+    text = workbook_map(_same_table_sheets(names), "F1")["text"]
+    assert "same shape" in text and "names differ" in text
 
 
 def test_two_same_shape_sheets_are_not_grouped() -> None:
@@ -189,3 +197,10 @@ def test_sample_sheet_regions_budget(sample_path) -> None:
         text = sheet_regions(wb, "F1", name)["text"]
         assert len(text) / 4 < 1000, (name, len(text))
     assert "hdr 4-5" in sheet_regions(wb, "F1", "(N) PKG")["text"]
+
+
+def test_template_sheets_with_the_same_layout_do_not_spoil_the_dated_pattern() -> None:
+    names = ["Template", "Copy of Template"] + [f"2026-01-{d:02d}" for d in range(1, 21)]
+    text = workbook_map(_same_table_sheets(names), "F1")["text"]
+    assert "name_regex [0-9]{4}" in text.replace("\\-", "-"), text
+    assert "Template" not in text.split("same shape")[1]

@@ -113,6 +113,9 @@ def _compact(n: int) -> str:
     return f"{n / 1000:.1f}k" if n >= 1000 else str(n)
 
 
+_MAX_LISTED_NAMES = 600  # characters of sheet names a generated name_regex may list
+
+
 def _shape_groups(wb: Workbook) -> list[tuple[list[int], str | None]]:
     """Sheet indexes with the same first table header and a safe common name pattern."""
     if (hit := wb.memo.get("shape_groups")) is not None:
@@ -129,15 +132,43 @@ def _shape_groups(wb: Workbook) -> list[tuple[list[int], str | None]]:
     for indexes in shapes.values():
         if len(indexes) < 3:
             continue
-        patterns = {
-            re.sub(r"[0-9]+", lambda m: f"[0-9]{{{len(m[0])}}}", re.escape(all_names[i]))
-            for i in indexes
-        }
-        pattern = patterns.pop() if len(patterns) == 1 else None
-        if pattern is not None and any(
-            i not in indexes and re.fullmatch(pattern, name) for i, name in enumerate(all_names)
-        ):
-            pattern = None
+        by_pattern: dict[str, list[int]] = {}
+        for i in indexes:
+            shape = re.sub(r"[0-9]+", lambda m: f"[0-9]{{{len(m[0])}}}", re.escape(all_names[i]))
+            by_pattern.setdefault(shape, []).append(i)
+        pattern = None
+        if len(by_pattern) > 1:
+            # One name shape holds nearly all sheets (dated days) and a few others share the
+            # layout too (Template, Copy of Template): the shape wins and the rest are not read.
+            top, members = max(by_pattern.items(), key=lambda kv: len(kv[1]))
+            if len(members) >= 3 and len(indexes) - len(members) <= max(2, len(indexes) // 10):
+                pattern = top
+                indexes = members
+        elif by_pattern:
+            pattern = next(iter(by_pattern))
+        if pattern is None:
+            # No shared look (Jan..Dec, Hari 1..Hari 25, names typed by hand): list the names.
+            # The pattern is the group itself, so no outsider can match it. A long list is
+            # still a legal regex, but a spec nobody can read; past the cap, names differ.
+            listed = "|".join(re.escape(all_names[i]) for i in indexes)
+            if len(listed) <= _MAX_LISTED_NAMES:
+                groups.append((indexes, f"(?:{listed})"))
+                continue
+        if pattern is not None:
+            # A few same-named sheets with a different layout (a broken day, a typo in a
+            # header) must not cost the whole group its pattern, so they are excluded by name.
+            # More than one outsider per ten members means the name says little about the
+            # shape (three months and one odd one is not a pattern): give up then.
+            outsiders = [
+                name
+                for i, name in enumerate(all_names)
+                if i not in indexes and re.fullmatch(pattern, name)
+            ]
+            if len(outsiders) * 10 > len(indexes):
+                pattern = None
+            elif outsiders:
+                skip = "|".join(re.escape(n) for n in outsiders)
+                pattern = f"(?!(?:{skip})$){pattern}"
         groups.append((indexes, pattern))
     wb.memo["shape_groups"] = groups
     return groups

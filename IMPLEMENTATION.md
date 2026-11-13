@@ -17,6 +17,10 @@ Perbarui setiap selesai satu item (lihat AGENTS.md §7).
 
 ## Planned (belum dikerjakan, urut)
 
+**target-driven `synth`** (usul 2026-11-12): S0-S4 selesai (lihat Log). Lanjut S5 (belajar
+   `col:` -> glossary + jalur `auto` bila `no_spec`), lalu S6 opsional (tanya user dulu).
+   Rencana lengkap di §Rencana target-driven.
+
 (Contoh ekspresi di katalog dan node `window` selesai 2026-11-08. Fase 7 (rencana muat ke Snowflake, Databricks, BigQuery) selesai 2026-11-09 kecuali uji di akun sungguhan; lihat Log.)
 
 0. **Sumber multi-sheet (`name_regex`)** (usul 2026-11-11, PRIORITAS). Rencana lengkap di
@@ -47,6 +51,220 @@ Perbarui setiap selesai satu item (lihat AGENTS.md §7).
 3. **Menunggu pihak lain:** 6.3 (uji skema lewat LiteLLM, bersama rekan), tes di Linux
    (CI Ubuntu sudah dipasang), uji muat di akun Snowflake, Databricks dan BigQuery sungguhan
    (SQL belum pernah dijalankan di platform aslinya), pemilik schema target.
+
+## Rencana target-driven (`synth`) — S0-S4 selesai 2026-11-12, lanjut S5
+
+Ditulis untuk dikerjakan model mana pun, satu fase per sesi. Baca seluruh bagian ini dulu.
+Ragu = tanya user, jangan menebak (AGENTS.md §7).
+
+### Masalah
+User ingin menyatakan **data hasil yang diinginkan** (kolom, tipe, grain) lewat form, lalu
+sistem membuat spec sendiri **tanpa agent LLM**. Sekarang spec hanya lahir dari agent (chat)
+atau ketik JSON. `auto.py` hanya menjalankan spec yang sudah ada.
+
+### Tujuan (perilaku yang diminta)
+1. User mengisi **Target** (form di lab, bukan JSON): daftar kolom keluaran + grain + aturan.
+2. `synthesize(target, workbook)` (deterministik, tanpa LLM) mencari region, mencocokkan kolom,
+   merakit beberapa kandidat spec, menjalankannya, memberi skor, dan mengembalikan yang terbaik
+   + alasan tiap langkah + pratinjau.
+3. Bila ragu (dua kolom cocok mirip, tak ada kandidat lolos) -> **pertanyaan form** (pilih
+   salah satu), bukan agent. Jawaban dikirim balik sebagai `answers`, synth diulang.
+4. Spec yang disetujui di-publish ke folder specs yang sama; `auto` memakainya seperti biasa.
+5. Agent hanya cadangan terakhir, di sisi lab (host), dengan konteks sempit. Library tidak
+   pernah memanggil LLM.
+
+### Keputusan (sudah diputuskan, jangan diubah tanpa tanya user)
+- Satu modul baru `excel_etl/synth.py`. Tidak ada dependency baru (fuzzy = `difflib` stdlib).
+- `synth` HANYA merakit spec dari node yang sudah ada lalu memanggil `validate`/`run` yang ada.
+  Tidak ada jalur eksekusi kedua. Spec hasil = `PipelineSpec` biasa (bisa dibaca/diubah agent).
+- Urutan langkah kanonik, tetap (membatasi ruang pencarian):
+  `source -> fill_down -> drop_rows -> unpivot|unpivot_groups -> rename -> cast -> filter -> select`.
+  Langkah yang tak perlu dilewati. Tidak ada join di versi 1.
+- Kandidat region hanya role `source`/`mixed` dari proposal (derived TIDAK pernah dipilih).
+- Bentuk long/wide TIDAK disimpan sebagai field: diturunkan dari ada/tidaknya kolom target
+  `from_header` (state minimal).
+- Ekspresi filter dari user lewat `sqlexpr` (batas trust sama dengan input agent).
+- Generik: tidak ada nama kolom/sheet BALANSITAS di kode atau aturan tebakan
+  (lihat §Status, aturan user). Pola total/subtotal = regex yang bisa diganti di Target.
+
+### Kontrak (tulis persis ini, nama publik stabil)
+
+```python
+# excel_etl/synth.py
+class TargetColumn(_Model):  # _Model = extra="forbid"
+    name: Ident  # nama kolom keluaran
+    type: Literal["text", "int", "float", "date", "datetime", "bool"]
+    hints: list[str] = []  # teks header lain yang boleh cocok ("Qty", "Jumlah")
+    from_header: bool = False  # nilai diambil dari LABEL header (bulan, pabrik), bukan sel
+    required: bool = True
+
+
+class Target(_Model):
+    name: Ident  # jadi nama output + nama spec saat publish
+    columns: list[TargetColumn] = Field(min_length=1)
+    grain: list[str] = Field(min_length=1)  # subset nama columns; satu baris = satu kombinasi
+    total_regex: str = r"(?i)^\s*(sub\s*)?(total|jumlah|grand total)\b"
+    filters: list[str] = []  # ekspresi SQL skalar, dicek sqlexpr
+    # validator: grain ⊆ columns; nama unik (casefold); maks 1 kolom from_header per
+    # unpivot sederhana; kolom nilai (bukan grain, bukan from_header) >= 1 bila ada from_header;
+    # total_regex compile; tiap filter lolos sqlexpr.
+
+
+class Question(_Model):
+    id: str  # deterministik: "col:<target col>" / "region"
+    text: str
+    options: list[str]  # header asli / region id
+
+
+class Candidate(_Model):
+    region: str  # "F1.S3.R1"
+    spec: str  # PipelineSpec JSON (dump_spec)
+    score: float  # 0..1
+    reasons: list[str]  # satu kalimat per langkah, untuk user
+    problems: list[str]  # kenapa skor turun
+    preview: list[dict] = []  # <= 20 baris output, hanya kandidat terbaik
+
+
+class SynthReport(_Model):
+    status: Literal["ok", "ask", "none"]  # ok = best lolos ambang; ask = ada Question; none = gagal
+    best: Candidate | None = None
+    others: list[Candidate] = []  # maks 2
+    questions: list[Question] = []
+
+    def text(self) -> str: ...
+
+
+def synthesize(
+    target: Target,
+    wb: Workbook,
+    file_id: str = "F1",
+    answers: dict[str, str] | None = None,
+    knowledge: Knowledge | None = None,
+) -> SynthReport: ...
+```
+
+`answers`: `{"col:Qty": "Ton", "region": "F1.S3.R1"}`. Jawaban menang atas skor.
+`knowledge.glossary` (istilah -> header) dipakai sebagai hint tambahan.
+
+### Algoritma (deterministik, urutan tetap)
+1. **Region kandidat**: refactor `encode._proposals` agar ada fungsi terstruktur
+   `proposal_regions(wb, file_id) -> list[Proposal]` (region id, sheet, `Region`, role, pola
+   `name_regex` bila sheet berulang). `_proposals` memformat teks DARI fungsi ini (satu sumber
+   kebenaran; tes `test_propose.py` harus tetap hijau tanpa diubah).
+2. **Kolom region**: `column_names(g, region)` + tipe per kolom (pakai fungsi tipe yang sama
+   dengan `source._type`, jangan tulis ulang).
+3. **Cocokkan** tiap kolom target non-`from_header` ke header, skor:
+   jawaban user = 1.0; casefold sama dengan `name` = 1.0; sama dengan hint/glossary = 0.95;
+   leaf header (`A|B` -> `B`) sama = 0.9; `difflib.SequenceMatcher` ratio x 0.8 bila >= 0.75.
+   Tipe tak cocok (`type_fits`) -> skor x 0.5. Satu header hanya untuk satu kolom target
+   (greedy dari skor tertinggi, tie-break urutan kolom = deterministik).
+   **Ragu** bila skor 2 header teratas beda < 0.1 dan keduanya >= 0.6 -> `Question("col:X")`.
+4. **from_header**: kolom yang tidak terpakai untuk grain/atribut dan bertipe angka adalah
+   kandidat "kolom berulang".
+   - Region punya `groups` (ColumnGroup) dan target punya >= 2 kolom nilai -> `unpivot_groups`
+     (pattern dari label group, measure = kolom nilai target).
+   - Selain itu -> `unpivot` dengan `columns` = kolom berulang, `name_column` = kolom from_header,
+     `value_column` = satu kolom nilai target.
+5. **fill_down**: kolom grain bertipe text yang punya sel kosong di tengah data (merged / label
+   di baris pertama blok). **drop_rows**: `drop_regex = target.total_regex` pada kolom grain
+   text pertama, plus `blank=True`. Cek di S0 apakah total_rows region sudah dibuang saat baca;
+   bila ya, drop_rows hanya untuk label yang lolos.
+6. **rename** header -> nama target; **cast** ke tipe target (`strict=False`); **filter** per
+   ekspresi; **select** urutan kolom target. Output `{target.name: {input: <step terakhir>}}`.
+   Checks otomatis: `not_null` grain, `unique` grain.
+7. **Variasi kandidat** (maks 3 per region, maks 5 region teratas menurut skor pencocokan):
+   dengan/tanpa fill_down, unpivot vs unpivot_groups bila keduanya mungkin. Tidak lebih.
+8. **Evaluasi**: `validate(spec, {"main": wb})`; gagal -> kandidat dibuang dengan alasan.
+   Lolos -> `run` ke `tempfile.TemporaryDirectory()`, baca parquet dengan duckdb:
+   `coverage` = kolom target required yang terpetakan / total required;
+   `fill` = 1 - rata-rata rasio NULL kolom target (cast gagal = NULL);
+**S0 — Verifikasi asumsi (SELESAI 2026-11-12).** Probe `probe_synth.py` sudah dihapus.
+- [x] **`read_region` TIDAK membuang `Region.total_rows`.** Pada fixture, `total_rows=(3,)`
+  tetapi baris `Total` tetap muncul di relation. `drop_rows` wajib bila pola total cocok.
+- [x] Header 2 tingkat menjadi `Plant A|Ton`, `Plant A|Rate`, ...; satu `ColumnGroup` berisi
+  `labels=('Ton','Rate')`, `parents=('Plant A','Plant B')`, `period=2`, `count=2`.
+- [x] Lima kali `run` + baca parquet di `TemporaryDirectory` berhasil di Windows: 0,367 s total.
+- [x] BALANSITAS: proposal 19,016 s (447 region proposal); **budget 15 s BELUM lolos**.
+  Pembagian waktu: lineage 4,083 s; `_shape_groups` 10,573 s; semua region 1,541 s (3825 region).
+  S1 wajib memakai cache `wb.memo` untuk `proposal_regions` dan membuat `_shape_groups` menyimpan
+  hasilnya (sekarang dipanggil ulang tanpa memo). Jangan menghapus grouping multi-sheet.
+  Batas S1: panggilan proposal kedua < 1 s; panggilan pertama BALANSITAS diukur ulang, target
+  < 15 s. Bila masih > 15 s, catat dan tanya user sebelum optimasi lain.
+- [x] `Ident` menerima `hasil`, `hasil_etl`, `Kuantitas`; menolak `Hasil ETL` dan `Tahun-2026`.
+  UI menampilkan aturan identifier; jangan mengganti tipe menjadi string bebas.
+### Fase (urut; satu fase per sesi; tiap fase: P2-P5 + §6 verifikasi + Log)
+
+**S0 — Verifikasi asumsi (WAJIB, tanpa kode produksi).** Skrip probe (nama `probe_synth.py`,
+JANGAN `ast.py`/nama modul stdlib), hapus setelah selesai. Catat jawaban di sini:
+- [ ] Apakah `read_region` membuang `Region.total_rows`? (menentukan langkah 5)
+- [ ] Bentuk `column_names` untuk header 2 tingkat (`PARENT|LEAF`) dan isi `ColumnGroup`.
+- [ ] `run` ke direktori temp lalu baca parquet di Windows: aman? (gotcha 16: unlink dir)
+- [ ] Waktu `proposal_regions` + 5 kali `run` pada BALANSITAS (budget: synth < 15 s).
+- [ ] Apakah `Ident` cocok untuk nama target dari user (spasi? huruf Indonesia?).
+
+**S1 — Target + pencocokan (tanpa spec) — SELESAI 2026-11-12.** `synth.py`: model Target/TargetColumn/Question,
+`proposal_regions` (refactor encode), fungsi `match_columns(target, names, types, answers,
+knowledge) -> (mapping, scores, questions)`.
+Tes `tests/test_synth.py`: validator Target (grain bukan kolom, nama dobel beda huruf, filter
+berbahaya `read_text(...)` ditolak, regex rusak); pencocokan exact/hint/leaf/fuzzy; tipe salah
+menurunkan skor; header dipakai sekali; ragu -> Question; jawaban menang; deterministik
+(urutan kolom diacak di input -> hasil sama). `test_propose.py` hijau tanpa perubahan.
+
+**S2 — Rakit spec — SELESAI 2026-11-12.** `build_spec(target, proposal, mapping) -> PipelineSpec` mengikuti
+langkah 4-6 + `reasons`. Tes: fixture sintetis (lihat bawah) menghasilkan spec yang
+`validate` ok; spec fixture (b) setara `etl-e2e-lab/tests/golden_spec.json` secara struktur
+(node sama, urutan sama).
+
+**S3 — Evaluasi + skor + `synthesize` — SELESAI 2026-11-12.** Langkah 7-9. Tes per fixture: status yang diharapkan;
+fixture derived tak pernah terpilih; fixture ambigu -> `ask` dengan `col:`; dengan `answers`
+-> `ok`; skor deterministik (jalankan 2x sama). Sampel BALANSITAS (`-m sample`) hanya sanity:
+waktu < 15 s, tidak crash.
+
+**S4 — Lab — SELESAI 2026-11-12.** Endpoint: `POST /jobs/{id}/synth` (bukan `/synth` upload:
+file sudah ada di job; `answers` untuk menjawab `col:`), `POST /jobs/{id}/synth/publish`
+(spec + target -> `LAB_DATA/specs/<name>.json` + `LAB_DATA/targets/<name>.json`). UI `index.html`
+tab "Target":
+tabel baris kolom (name, type select, hints, from_header checkbox, grain checkbox, required),
+isian total_regex & filters, tombol Jalankan; hasil: reasons, problems, tabel preview, pertanyaan
+sebagai `<select>` + tombol Jawab (kirim ulang dengan answers), tombol Publish.
+`aria-label` di tiap kontrol dinamis (aksesibilitas). Tes `tests/test_server.py`: alur synth ->
+ask -> answer -> ok -> publish -> `/auto` memakai spec itu. Jalankan uvicorn dengan
+`--reload --reload-dir lab` (gotcha etl-e2e-lab).
+
+**S5 — Belajar + jalur auto.** Jawaban `col:` disimpan ke `knowledge.glossary` (hint -> header)
+lewat host, supaya file berikutnya tidak bertanya lagi. `auto()` tetap seperti sekarang;
+lab: bila `auto` = `no_spec` dan ada `targets/*.json`, coba `synthesize` per target, status `ok`
+-> run, selain itu tampilkan pertanyaan. Library `auto.py` tidak diubah kecuali user minta.
+
+**S6 — (opsional, tanya user dulu) cadangan agent.** Hanya di lab: status `none`/`ask` yang
+tak dijawab -> tombol "Minta agent" yang mengirim Target + 3 kandidat + problems (bukan workbook
+utuh) sebagai pesan pertama chat. Ukur token vs alur chat biasa.
+
+### Fixture sintetis (openpyxl, di `tests/test_synth.py`; JANGAN meniru BALANSITAS)
+a. Tabel datar rapi: Tanggal | Produk | Qty -> target sama, nama beda huruf.
+b. Wide bulan + kolom region merged + baris `Total` (= `messy_report` lab) -> target long
+   Region, Item, Month(from_header), Qty.
+c. Header 2 tingkat blok berulang `PlantA|Ton, PlantA|Rate, PlantB|Ton ...` -> target
+   Tanggal, Plant(from_header), Ton, Rate (unpivot_groups).
+d. Dua sheet sama bentuk (`2025`, `2026`) -> satu source `name_regex`.
+e. Sheet ringkasan berformula atas sheet (a) -> tidak pernah terpilih.
+f. Header ambigu `Qty` dan `Qty Plan`, target `Quantity` -> `ask`.
+g. Tidak ada yang cocok -> `none` dengan problems jelas.
+
+### Jangan (jebakan yang sudah pernah terjadi, lihat memory gotchas)
+- Jangan tulis kode lewat bash heredoc (terpotong diam-diam). Pakai tool write/edit; setelah
+  tulis: `grep -c ""` + ruff.
+- `edit_lines`: baca ulang setelah tiap edit; `ruff format` mengubah file -> baca ulang.
+- duckdb: `fetchall()[0][0]`, bukan `fetchone()`; urutan baris tak dijamin tanpa ORDER BY.
+- Bind kosong tidak mengevaluasi konstanta: skor HARUS dari `run`, bukan `validate` saja.
+- Nama kolom beda huruf saja ditolak spec; casefold di pencocokan.
+- Jangan tambahkan tool agent baru di `tools.py` untuk fitur ini (bukan permukaan agent).
+- Tes yang tidak bisa gagal (`or True`) dilarang; mutasi cek: ubah ambang/bobot, tes harus merah.
+
+### Pertanyaan terbuka (tanyakan user sebelum S4/S6)
+- Ambang `ok` 0.85 dan bobot skor: angka awal, sesuaikan setelah S3 dengan data nyata.
+- Spec hasil synth perlu approval HITL (gate lab) atau cukup klik Publish?
+- Bila dua spec cocok di `auto` (synth vs agent), mana yang menang (sekarang: urutan nama)?
 
 ## Rencana multi-sheet (`name_regex`)
 
@@ -695,6 +913,9 @@ Tersisa:
 
 | Tanggal | Apa |
 |---|---|
+| 2026-11-12 | Perbaiki total pada `synth`: `drop_rows` memeriksa setiap kolom grain teks, bukan hanya yang pertama; default `total_regex` menambah awalan `jml.` dan `rekap` (hanya awal label, bukan substring nama data); kolom total tidak menjadi kandidat unpivot, termasuk blok `TOTAL|...` yang dibuang sebelum `unpivot_groups`. Steelman satu drop_rows lebih ringkas, tetapi label total di kolom kunci kedua tetap lolos; langkah berurutan menang dan test urutan node disesuaikan. 1236 tes + 25 skip, ruff bersih; 18 tes non-live lab lulus (3 live dibatasi HTTP 429). E2E pupuk lewat HTTP synth `ok` (0,962915), run 156 sheet/517.608 baris; nol baris total pada kabupaten/kode kab. Target uji masih memiliki 936 duplikasi grain dan NULL hasil cast, dilaporkan sebagai masalah kualitas, bukan disembunyikan. |
+
+| 2026-11-12 | S1-S4 synth selesai. `excel_etl/synth.py`: `Target`/`TargetColumn` (ident, grain subset kolom, maks satu `from_header`, `total_regex`, filter lewat `check_expression`), `proposal_regions` (memo `wb.memo`, hanya role source/mixed), `match_columns` (jawaban user 1,0 / exact casefold 1,0 / hint+glossary 0,95 / leaf 0,9 / fuzzy `difflib`*0,8 bila >= 0,75; ragu bila dua teratas beda < 0,1; tipe tak cocok *0,5; header blok berulang dicocokkan per nama leaf), `_build` (fill_down bila grain text bolong; drop_rows total; unpivot|unpivot_groups dari from_header; rename, cast, filter, select; `source_sheet` bila `name_regex`), `_evaluate` (run ke temp dir + skor 0,35 coverage + 0,25 fill + 0,25 unique + 0,15 match; null/unique dihitung dari seluruh hasil lewat SQL, bukan 20 baris pratinjau), `synthesize` (ok >= 0,85 / ask / none; kandidat lain tanpa preview). Lab: `/jobs/{id}/synth` + `/jobs/{id}/synth/publish`, tab Target (form kolom, pertanyaan `select` + `aria-label`, pratinjau, publish). Uji live localhost: synth ok skor 1,0 -> publish -> `/auto` memakai spec. 1204 unit + 25 skip; ruff bersih; lab 20 tes lulus. |
 | 2026-11-11 | M4 selesai: lab job `m4_daily`, workbook harian 161 sheet, agent 181,5 detik; 1 source + 5 steps, 6 save_spec (5 gagal), output 80.698 baris x28 kolom; publish `m4_daily_stock`, `/auto` ok sebelum dan sesudah P6. Satu sheet tanggal tak sebentuk dikecualikan eksplisit agent. Dokumentasi README/DESIGN/docstring/prompt diperbarui; byte UTF-8 rusak di DESIGN diperbaiki. P6 tiga reviewer: perbaiki typing union inkompatibel -> VARCHAR, tabel kedua tak hilang, rebind casefold, escaping regex pipe, hanya source yang dikelompokkan, docstring group. 1198 unit +25 skip, ruff check/format seluruh repo lulus. |
 | 2026-11-11 | M3 selesai: `_shape_groups` memoized mengelompokkan >=3 sheet berdasarkan header region pertama; pola digit `[0-9]{n}` hanya diusulkan bila tak cocok ke sheet luar; map/proposal satu baris per grup, ID asli dan paging sheet tetap. Budget 150 sheet <1500 char. 1193 unit +25 skip lulus. |
 | 2026-11-11 | M2 selesai: rebind memakai `locate_all`; record multi menyimpan sheet pertama, gabungan kolom, jumlah sheet; perubahan nama/jumlah sheet bukan diff; sheet cocok yang gagal -> drift, 0 cocok -> missing. `save_spec` memperingatkan >=3 source dengan role/anchor sama; docstring, prompt lab, label graph menjelaskan `name_regex`. 1186 unit + 25 skip; lab 16 tes non-live relevan lulus, assertion lama 6-vs-7 tab tetap gagal di luar M2. |
@@ -745,3 +966,4 @@ Tersisa:
 | 2026-11-08 | `Node.examples` (config + catatan) dicetak oleh `catalog(node)`; 10 contoh `derive`, 6 `filter` (teks, regex, tanggal, CASE, nullif untuk bagi-0 yang jadi `inf`). Node `window` (13 fungsi: sum/avg/min/max/count berjalan atau total grup, row_number, rank, dense_rank, lag, lead, first_value, last_value, share; `partition_by`, `order_by` dengan `-`, `offset`); urutan baris dijaga lewat `__pos`, seri diputus oleh posisi tabel, `rank` memakai seri yang sama; `Sort._keys` jadi `_order_keys` bersama; pesan ekspresi dengan OVER kini menunjuk node `window`. `tests/test_node_examples.py` (tiap contoh dijalankan, nilai dicek, katalog mencetak persis), `tests/test_window.py` (76 kasus melawan referensi Python pada 4 bentuk data: banyak grup kecil, satu grup, kunci NULL, banyak seri; tipe, tepi, penolakan, 200k baris ~1 s). Mutasi: 22, semua mati (satu NOOP karena sed, diulang). Sampel BALANSITAS 16 lulus. |
 | 2026-11-08 | `skills/`: 4 skill format Agent Skills (`excel-etl-understand`, `-build-spec` + `references/patterns.md`, `-run-verify`, `-recycle`), agnostik agent. `tests/test_skills.py` (31): format (nama = folder, deskripsi, <= 150 baris, aturan Do not / Stop and ask), semua nama tool/node/setting ada di kode, 21 tool agent semua disebut, tiap snippet JSON valid dan dibangun lewat node, langkah wide-to-long dijalankan. Temuan: DESIGN menulis peran sheet `dashboard/chart_data/form`, kode hanya `source/mixed/derived/empty`; DESIGN diperbaiki, skill memakai peran nyata. 15 mutasi mati. |
 | 2026-11-09 | Fase 7: muat hasil ETL ke warehouse sebagai RENCANA, bukan koneksi. `Output.load` (`LoadTarget`: table, mode replace/append/merge, keys; ditolak: merge tanpa keys, keys di luar merge, csv, dua output ke satu tabel; `"load": null` tidak ikut di dump). `excel_etl/load.py`: `Profile` per platform (Snowflake, Databricks, BigQuery: kutip, panjang nama, aturan nama, peta tipe, dari dokumentasi vendor yang dibaca 2026-11-08), `plan_load` (kolom dari file parquet, bukan spec; langkah upload/create/copy/merge/cleanup + SQL), `compare_target` (DESCRIBE host vs file: kolom baru, tipe lain, kolom lebih), `file_columns`. Checkpoint baru `before_load` (default required, per versi spec); tool agent `plan_load` (tool ke-22) dan tool host `record_load` (`JobState.loads`); skill `excel-etl-load`. Semua nama lewat `Profile.quote`, semua nilai lewat `_literal`, jalur stage divalidasi. Tes: `test_load.py` (100 kasus, termasuk parse tiap pernyataan dalam dialek aslinya bila `sqlglot` ada), `test_load_flow.py` (alur dari spec ke tabel di duckdb lokal untuk replace, append, merge), `test_pipeline.py`, skills/readme. Mutasi 50, semua mati. BELUM TERBUKTI: SQL tidak pernah dijalankan di Snowflake, Databricks atau BigQuery; dua hal sengaja ditandai di peringatan rencana (timestamp tanpa zona ke BigQuery DATETIME; batas panjang nama kolom Databricks tidak ditemukan di dokumen, dipakai 255). |
+| 2026-11-12 | Scan bug `synth` + perbaikan (3 subagent: adversarial, auditor, pengguna; 1229 tes hijau). **Diperbaiki:** (1) `match_columns`: blok `grup\|metrik` dikenali walau kolom kunci > 1; jawaban `col:` menang mutlak (skor 2.0, dibatasi 1.0 di laporan) sehingga tak ada loop HITL; prefix hint 0.85; `_` dianggap spasi. (2) `_build`: kolom opsional tak ketemu dilewati dari `cast/select` (+ catatan di `problems`); header sumber tak terpakai yang sama nama dengan kolom target di-`select` keluar; `source_sheet` dipilih bebas-bentrok (casefold, `_free_name`) dan ikut `keep` unpivot; kolom `int` yang dibulatkan dicatat di `reasons`. (3) `SynthReport.notes`: alasan region dibuang (validasi/run/tak ada data), batas 40 region, header yang dilihat bila tak ada yang cocok. `_evaluate` mengembalikan `(kandidat, alasan)`; `run().warnings` masuk `problems`. (4) `_shape_groups`: nama sheet tak berpola dicantumkan sebagai `(?:a\|b\|...)` (batas 600 karakter); sheet bentuk-sama bernama beda (Template) tak merusak pola bertanggal; pengecualian sheet rusak lewat lookahead. `_representative`: wakil grup = sheet pertama yang berisi angka, bukan template kosong. (5) `regions.is_data`: `nums >= 1 and nums*2 >= texts` (tabel teks+teks+angka kini punya header). (6) `sqlexpr.check_expression`: ekspresi harus valid juga TANPA pembungkus `SELECT (...)`; `val) OR (1=1` ditolak (sebelumnya kurung tak seimbang lolos dan memutus filter lain). (7) `cast.decimal` (`"."`/`","`) + `Target.decimal`: teks `1.234,56`/`2.000` dibaca benar; hanya menyentuh kolom teks. (8) `Workbook._cal_lock`: calamine tidak thread-safe (`Already borrowed`). **Belum:** baris total tak dikenal (`Jml.`, `Rekap`), kolom `Total` di kanan ikut unpivot, tabel kedua dalam satu sheet (hanya peringatan run), tabel transpos, header tanggal/angka, sheet bernama mirip dengan isi beda ikut tergabung tanpa tanda, ambang prefix tanpa panjang minimum, `_cache`/`meta`/`_scan` tak terkunci, `proposals[:40]` hanya dicatat. File `nul` di root `excel-etl` (artefak Windows) tak bisa dihapus dari shell; hapus manual. |

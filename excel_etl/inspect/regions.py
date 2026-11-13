@@ -129,7 +129,7 @@ class SheetGrid:
         )
         texts = sum(isinstance(v, str) for v in cells)
         # ponytail: a header row of numeric years reads as data; upgrade: use bold/fill from meta
-        return nums >= max(1, texts)
+        return nums >= 1 and nums * 2 >= texts
 
 
 _NEIGHBORS = tuple((dr, dc) for dr in (-1, 0, 1) for dc in (-1, 0, 1) if dr or dc)

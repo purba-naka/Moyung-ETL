@@ -131,9 +131,10 @@ def _aggregates() -> frozenset[str]:
     return _AGGREGATES
 
 
-def _parse(expr: str) -> dict:
+def _parse(expr: str, wrap: bool = True) -> dict:
     con = duckdb.connect()
-    raw = con.execute("SELECT json_serialize_sql(?)", [f"SELECT ({expr}) AS __e"]).fetchone()[0]
+    sql = f"SELECT ({expr}) AS __e" if wrap else f"SELECT {expr} AS __e"
+    raw = con.execute("SELECT json_serialize_sql(?)", [sql]).fetchone()[0]
     return json.loads(raw)
 
 
@@ -183,6 +184,11 @@ def check_expression(expr: str) -> str:
     if not bare:
         raise _fail(text, "must be one expression, nothing around it (no FROM, WHERE, UNION, ...)")
     _walk(items[0], text)
+    # Last layer. The wrapper `SELECT (<expr>)` forgives a stray `)` or `(`: `val) OR (1=1`
+    # passes every check above, and once a caller joins several checked texts with AND, the OR
+    # escapes its own brackets. The text must also be one expression with no wrapper at all.
+    if _parse(text, wrap=False).get("error"):
+        raise _fail(text, "brackets do not match, or this is not one expression")
     return text
 
 
