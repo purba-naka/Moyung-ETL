@@ -11,6 +11,7 @@ import io
 import os
 import posixpath
 import re
+import threading
 import warnings
 import zipfile
 import zlib
@@ -187,6 +188,9 @@ class Workbook:
             Sheet(m.name, _visibility(m.visible)) for m in self._cal.sheets_metadata
         )
         self._names = {s.name for s in self.sheets}
+        # Workbooks are cached and shared, and a host may read one from several threads.
+        # calamine's reader is not thread safe ("Already borrowed"), so its calls take turns.
+        self._cal_lock = threading.Lock()
         self._values: dict[str, Grid] = {}
         self._merged: dict[str, tuple[tuple[int, int, int, int], ...]] = {}
         self._meta: dict[str, dict[tuple[int, int], CellMeta]] = {}
@@ -328,8 +332,9 @@ class Workbook:
                     f"(limit {_MAX_CELLS:,}); a stray value far from the data is the usual cause"
                 )
             try:
-                cs = self._cal.get_sheet_by_name(sheet)
-                rows = cs.to_python(skip_empty_area=False)
+                with self._cal_lock:
+                    cs = self._cal.get_sheet_by_name(sheet)
+                    rows = cs.to_python(skip_empty_area=False)
             except CalamineError as e:
                 raise WorkbookError(f"damaged file, cannot read sheet {sheet!r}: {e!r}") from e
             self._values[sheet] = tuple(tuple(_normalize(v) for v in row) for row in rows)
@@ -340,7 +345,8 @@ class Workbook:
         self._check(sheet)
         if sheet not in self._merged:
             try:
-                ranges = self._cal.get_sheet_by_name(sheet).merged_cell_ranges or []
+                with self._cal_lock:
+                    ranges = self._cal.get_sheet_by_name(sheet).merged_cell_ranges or []
             except CalamineError as e:
                 raise WorkbookError(f"damaged file, cannot read sheet {sheet!r}: {e!r}") from e
             self._merged[sheet] = tuple(sorted((r0, c0, r1, c1) for (r0, c0), (r1, c1) in ranges))

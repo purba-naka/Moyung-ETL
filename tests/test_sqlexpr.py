@@ -246,3 +246,14 @@ def test_a_sleep_cannot_hold_a_run_even_when_it_reaches_the_engine() -> None:
 def test_a_window_function_in_an_expression_points_to_the_window_step() -> None:
     with pytest.raises(NodeError, match="use the window node"):
         check_expression("sum(a) OVER (ORDER BY b)")
+
+
+@pytest.mark.parametrize("text", ["val) OR (1=1", "a) AND (b", "(a", "a)", "f(a))"])
+def test_unbalanced_brackets_are_refused_even_though_the_wrapper_would_forgive_them(text):
+    with pytest.raises(NodeError):
+        check_expression(text)
+
+
+@pytest.mark.parametrize("text", ["val > 2", "(a + b) * 2", "coalesce(a, 'x)')", "a IN (1, 2)"])
+def test_balanced_expressions_still_pass(text):
+    assert check_expression(text) == text

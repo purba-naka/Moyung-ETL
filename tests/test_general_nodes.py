@@ -126,6 +126,21 @@ def test_cast_strict_fails_and_decimal_date() -> None:
     assert [c.type for c in schema_of(out)] == ["DECIMAL(5,1)", "DATE"]
 
 
+def test_cast_decimal_comma_reads_indonesian_numbers_in_text_cells() -> None:
+    rel = _rel("select * from (values ('1.234,56'), ('2.000'), ('300,5'), ('-'), (' 7 ')) v(x)")
+    out = _run("cast", {"types": {"x": "double"}, "decimal": ","}, rel)
+    assert out.fetchall() == [(1234.56,), (2000.0,), (300.5,), (None,), (7.0,)]
+    # without it the same text is misread: "2.000" is two, and "1.234,56" is lost
+    plain = _run("cast", {"types": {"x": "double"}}, rel).fetchall()
+    assert plain[0] == (None,) and plain[1] == (2.0,)
+
+
+def test_cast_decimal_comma_leaves_real_numbers_and_text_targets_alone() -> None:
+    rel = _rel("select 1234.5::double n, '1.5' t")
+    out = _run("cast", {"types": {"n": "double", "t": "varchar"}, "decimal": ","}, rel)
+    assert out.fetchall() == [(1234.5, "1.5")]
+
+
 def test_cast_errors() -> None:
     with pytest.raises(NodeError, match="no column 'q'"):
         infer(build("cast", {"types": {"q": "date"}}), [schema_of(_rel(_T))])

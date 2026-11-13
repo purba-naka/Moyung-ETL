@@ -91,11 +91,16 @@ class Cast(Node):
     `strict` false (default) turns a value that does not fit into NULL, so a stray label does
     not stop the run; true fails on the first one. Text to DATE/TIMESTAMP reads ISO text
     (`2026-01-31`); another date format needs `derive` with `strptime`.
+
+    `decimal` is how numbers are written in TEXT cells: "." (default, `1,234.56`) or ","
+    (`1.234,56`, the Indonesian way). With "," the dots are dropped and the comma becomes the
+    point before the cast, so `2.000` is 2000. It only touches text, so real numbers are safe.
     """
 
     class Config(NodeConfig):
         types: dict[str, str] = Field(min_length=1)
         strict: bool = False
+        decimal: Literal[".", ","] = "."
 
         @model_validator(mode="after")
         def _known_types(self) -> Cast.Config:
@@ -111,8 +116,16 @@ class Cast(Node):
         (rel,) = inputs
         self.infer_schema([schema_of(rel)])
         fn = "CAST" if self.config.strict else "TRY_CAST"
+        schema = {c.name: c.type for c in schema_of(rel)}
+
+        def source(c: str, t: str) -> str:
+            numeric = bool(NUMERIC_TYPE.match(t))
+            if self.config.decimal == "," and numeric and schema[c] == "VARCHAR":
+                return f"replace(replace(trim({quote(c)}), '.', ''), ',', '.')"
+            return quote(c)
+
         sets = ", ".join(
-            f"{fn}({quote(c)} AS {t}) AS {quote(c)}" for c, t in self.config.types.items()
+            f"{fn}({source(c, t)} AS {t}) AS {quote(c)}" for c, t in self.config.types.items()
         )
         return rel.project(f"* REPLACE ({sets})")
 
