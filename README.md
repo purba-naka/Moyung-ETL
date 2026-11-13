@@ -86,7 +86,7 @@ You turn raw Excel files into clean tables with a pipeline spec.
 4. Add `checks` (not_null, unique, range, accepted_values, reconcile) for what must hold.
 5. run_pipeline. If a tool says a person must approve, ask_human and stop.
 6. A new file for the same job: rebind_sources. exact/shifted = run again. drift/missing =
-   repair the spec, save_spec with a note saying what changed.
+   repair the spec with edit_spec (only the changed steps) and a note saying what changed.
 Every tool returns {"text": ...} or {"error": ...}. An error says what to change: change it.
 Never guess a column name; copy it from a tool result.
 ```
@@ -226,7 +226,7 @@ order are kept.
 | Group | Tools |
 |---|---|
 | Look at a file | `workbook_map`, `sheet_regions`, `render_range`, `profile_region`, `find_text`, `compare_sheets`, `formula_lineage`, `propose_datasets` |
-| Write a pipeline | `node_catalog`, `save_spec`, `get_spec`, `validate_spec`, `spec_history` |
+| Write a pipeline | `node_catalog`, `save_spec`, `edit_spec`, `get_spec`, `validate_spec`, `spec_history` |
 | Run and recycle | `run_pipeline`, `last_run`, `rebind_sources`, `plan_load` |
 | People and context | `ask_human`, `pending_questions`, `lookup_knowledge`, `job_summary`, `list_files` |
 | Host only | `add_file`, `answer`, `approve`, `reload_job`, `record_load` |

@@ -28,7 +28,7 @@ from excel_etl.tools import JobTools
 
 tools = JobTools(Job.open("job1", FileStore("state")), my_files, out_dir="out/job1")
 tools.add_file("upload-17", "Balance Jan.xlsx", role="main")
-agent_functions = tools.agent_tools()  # 22 plain methods; give them to the agent
+agent_functions = tools.agent_tools()  # 23 plain methods; give them to the agent
 ```
 
 Job ids are lower case letters, digits and `_ . -` (so they are safe file names on Windows).

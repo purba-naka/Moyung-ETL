@@ -165,15 +165,30 @@ def _fields(cls: type[Node]) -> str:
 def catalog(name: str | None = None) -> str:
     """What an agent needs to write a step: each node's purpose and config fields.
 
-    Without `name`, one line per node. With a name, the full docstring and the fields
-    (`*` = required). An unknown name raises NodeError listing the known ones.
+    Without `name`, one line per node with its config fields (`*` = required), enough to
+    write most steps without asking again. With a name (or several, comma separated), the
+    full docstring, the fields and examples. An unknown name raises NodeError listing the
+    known ones.
     """
     if name is None:
         rows = []
         for n in names():
             first = (_REGISTRY[n].__doc__ or "").strip().split("\n\n")[0]
-            rows.append(f"{n}: {' '.join(first.split())[:110] or '(no description)'}")
+            about = " ".join(first.split())[:110] or "(no description)"
+            rows.append(f"{n}: {about} | {_field_names(_REGISTRY[n])}")
         return "\n".join(rows)
+    wanted = [w.strip() for w in name.split(",") if w.strip()]
+    return "\n\n".join(_describe(w) for w in wanted)
+
+
+def _field_names(cls: type[Node]) -> str:
+    """Config field names only, `*` on the required ones: the short form of `_fields`."""
+    schema = cls.Config.model_json_schema()
+    need = set(schema.get("required", []))
+    return ", ".join(f"{k}{'*' if k in need else ''}" for k in schema.get("properties", {})) or "-"
+
+
+def _describe(name: str) -> str:
     cls = _REGISTRY.get(name)
     if cls is None:
         raise NodeError(f"unknown node {name!r}; nodes: {', '.join(names())}")
