@@ -18,9 +18,22 @@ type Orientation = Literal["rows", "columns", "matrix"]
 _MAX_HEADER = 4
 _MAX_PERIOD = 8
 _RUN = 3
-# ponytail: English and Indonesian words only, so "Total Blue" also counts as a total;
-# upgrade: bold/fill from Workbook.meta, or a per-workbook word list.
-_TOTAL = re.compile(r"^\s*(grand\s+|sub\s*-?\s*)?(total|jumlah)\b", re.IGNORECASE)
+# One rule for "this row is a total", shared with `synth` so a label is never a total in one
+# place and data in another. The two used to differ: this one missed "Rekap" and "Jml.", and
+# synth missed "Grand Total" and "Sub-Total".
+# ponytail: English and Indonesian words only, so "Total Care" also counts as a total;
+# upgrade: check that the row adds up the rows above, or read bold/fill from Workbook.meta.
+TOTAL_LABEL = (
+    r"(?i)^\s*(?:(?:grand\s+|sub\s*-?\s*)?(?:total|jumlah|rekap)\b|jml(?:\.|\b))|\btotal\s*$"
+)
+_TOTAL = re.compile(TOTAL_LABEL)
+# A matrix has a period (month or year) across its header: the same measure for each. Most
+# tables with a text first column are plain records, so "text in column A" alone says nothing.
+# ponytail: months and years only; upgrade: a per-workbook word list (plants, regions).
+_PERIOD = re.compile(
+    r"^(?:(?:jan|feb|mar|apr|mei|may|jun|jul|agu|aug|sep|okt|oct|nov|des|dec)[a-z]*\.?|(?:19|20)\d{2})$",
+    re.IGNORECASE,
+)
 _NUMERIC = (int, float, bool, date, datetime, time, timedelta)
 # A merge bigger than this only marks its top-left cell. Real header merges are a few
 # dozen cells; a file that merges a million cells should not cost a million dict entries.
@@ -313,9 +326,16 @@ def _analyze(g: SheetGrid, box: Box, split: bool = True) -> list[Region]:
     noise = _components(above & g.filled)
     lbl_col = min(data_cols)
     has_labels = sum(isinstance(g.get(rr, lbl_col), str) for rr in data) * 2 >= len(data)
+    periods = sum(
+        _PERIOD.match(str(g.label(h, c)).strip()) is not None
+        for h in header
+        for c in range(lbl_col + 1, right + 1)
+        if g.label(h, c) is not None
+    )
     # ponytail: "columns" doubles as "no header found"; upgrade: a separate flag if a
     # headerless table needs to be told apart from a table whose columns are the records.
-    orient: Orientation = "matrix" if header and has_labels else "rows" if header else "columns"
+    matrix = has_labels and periods >= 2
+    orient: Orientation = ("matrix" if matrix else "rows") if header else "columns"
     totals = tuple(
         rr
         for rr in data

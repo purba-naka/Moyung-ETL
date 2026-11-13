@@ -20,7 +20,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from excel_etl.engine import run, validate
 from excel_etl.inspect.encode import column_names
 from excel_etl.inspect.lineage import region_role
-from excel_etl.inspect.regions import Region, SheetGrid, detect_regions
+from excel_etl.inspect.regions import TOTAL_LABEL, Region, SheetGrid, detect_regions
 from excel_etl.knowledge import Knowledge
 from excel_etl.nodes.base import _NAME_PATTERN, NodeError
 from excel_etl.nodes.source import _type, type_fits
@@ -61,8 +61,7 @@ class Target(_Model):
     name: Ident
     columns: list[TargetColumn] = Field(min_length=1)
     grain: list[str] = Field(min_length=1)
-    # Pivot tables put the word last ("JAMBI Total"), hand-made reports put it first.
-    total_regex: str = r"(?i)^\s*(?:(?:sub\s*)?(?:total|jumlah|rekap)\b|jml(?:\.|\b))|\btotal\s*$"
+    total_regex: str = TOTAL_LABEL
     filters: list[str] = []
     decimal: Literal[".", ","] = "."  # how numbers typed as text read: 1,234.56 or 1.234,56
 
