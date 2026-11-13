@@ -346,9 +346,15 @@ def detect_regions(wb: Workbook, sheet: str, grid: SheetGrid | None = None) -> l
     The order is what `F1.S12.R{n}` numbers. Blocks smaller than 2x2 are left out as notes.
     Pass `grid` when you already built one for this sheet.
     """
+    # The map, the wizard and the shape groups all read the same sheets. The memo lives as long
+    # as the cached Workbook, and a sheet's grid never changes, so the first answer stays right.
+    key = f"regions:{sheet}"
+    if (hit := wb.memo.get(key)) is not None:
+        return hit
     g = grid or SheetGrid(wb, sheet)
     out = []
     for box in _components(g.filled):
         if box[2] > box[0] and box[3] > box[1]:
             out.extend(_analyze(g, box))
+    wb.memo[key] = out
     return out

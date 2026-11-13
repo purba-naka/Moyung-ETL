@@ -16,8 +16,80 @@ Perbarui setiap selesai satu item (lihat AGENTS.md §7).
 1. Synth S5 (jawaban `col:` -> glossary, jalur `auto` bila `no_spec`); S6 opsional, tanya user dulu.
 2. Spec builder (Planned no. 2): putuskan dulu draf di `JobState` atau terpisah, dan apakah 23 -> ~28 tool aman untuk provider.
 3. Integrasi MCP: MC1-MC3 selesai; sisa uji nyata di client dan P6. Lalu plugin Maki (pribadi).
-4. Menunggu pihak lain: 6.3 bersama rekan, uji load di akun sungguhan. Sisa lama: temuan P6 Fase 1/2 di §Temuan (`_fit` streaming).
+4. ~~Percepat `draft_targets`~~ SELESAI 2026-11-13 (D1-D2, lihat Log). Sisa ~8,7 s = sekali baca semua sheet; bila masih terasa lambat, tanya user dulu (kandidat: `_shape_groups` hanya baca baris atas).
+5. Menunggu pihak lain: 6.3 bersama rekan, uji load di akun sungguhan. Sisa lama: temuan P6 Fase 1/2 di §Temuan (`_fit` streaming).
 5. Pertanyaan terbuka di bagian bawah (batas dataset per job, pemilik target schema Snowflake, retensi versi).
+
+## Rencana percepat draft (D1-D2) — SELESAI 2026-11-13
+
+Spec untuk model mana pun: kerjakan persis ini, tidak lebih. Baca AGENTS.md dulu.
+
+### Masalah (terukur 2026-11-13, file stok pupuk 161 sheet, di luar repo)
+Tombol "Find tables" di lab = `draft_targets` -> `proposal_regions` (`excel_etl/synth.py:162`).
+Panggilan pertama 20,8 s, kedua 0,1 s (`wb.memo` sudah bekerja). Lambat hanya saat cold.
+Sebab ada di library, bukan di lab:
+- `detect_regions` jalan 2x per sheet: sekali di `_shape_groups` (`excel_etl/inspect/encode.py:119`),
+  sekali lagi di `proposal_regions`. Hasil tidak disimpan.
+- `proposal_regions` membangun `SheetGrid` + `detect_regions` + `region_role` untuk sheet anggota
+  grup, lalu membuangnya (cek `_representative` baru di dalam loop region).
+Sudah dicoba di luar repo (monkeypatch): D1+D2 = 20,8 s -> 14,2 s, hasil sama (9 tabel).
+Sisa ~14 s = sekali baca semua sheet (values 4,0 + grid 3,5 + detect 5,4 + role 1,6 s). Itu batas
+desain sekarang; JANGAN dikejar di rencana ini.
+
+### D1 — memo `detect_regions` per sheet
+File: `excel_etl/inspect/regions.py`, fungsi `detect_regions` (sekitar baris 343).
+- Awal fungsi: `key = f"regions:{sheet}"`; bila `(hit := wb.memo.get(key)) is not None`: `return hit`.
+- Akhir: `wb.memo[key] = out` lalu `return out`.
+- `grid` tidak masuk key: grid sheet selalu sama untuk workbook yang sama.
+- List disimpan apa adanya (dicek: tak ada pemanggil yang mengubah hasilnya).
+- Satu komentar "why" pendek: wizard dan peta workbook membaca sheet yang sama; memo hidup
+  selama Workbook di-cache.
+Semua pemanggil (`encode.py`, `nodes/source.py`, `synth.py`) otomatis ikut. Jangan memo `SheetGrid`.
+
+### D2 — lewati sheet anggota grup lebih awal
+File: `excel_etl/synth.py`, `proposal_regions`.
+Pindahkan ke baris pertama badan `for i, sheet in enumerate(wb.sheets):` (sebelum `SheetGrid`):
+```python
+grouped = groups.get(i)
+if grouped and _representative(grouped[0], wb) != i:
+    continue
+```
+Hapus dua baris yang sama di dalam loop region. Baris `members = ...` tetap di tempatnya.
+Perilaku sama: syaratnya tidak bergantung pada region.
+
+### Tes (satu tes baru di `tests/test_synth.py`)
+Pakai fixture yang ada `_two_groups()` (64 sheet):
+```python
+def test_draft_detects_each_sheet_at_most_once(monkeypatch):
+    from excel_etl.inspect import regions
+    from excel_etl.synth import draft_targets
+
+    wb = _two_groups()
+    wb.memo.clear()  # the cache may hold this file from another test
+    calls = []
+    real = regions._analyze
+    monkeypatch.setattr(regions, "_analyze", lambda g, box: calls.append(g) or real(g, box))
+    first = draft_targets(wb)
+    assert len({id(g) for g in calls}) <= len(wb.sheets)  # one grid per sheet at most
+    assert draft_targets(wb) == first
+```
+Sebelum D1 tes ini harus GAGAL (jalankan dulu untuk membuktikan), sesudah D1 lulus.
+Tanpa tes waktu (AGENTS §8 P3).
+
+### Verifikasi (urut)
+1. `uv run ruff check . && uv run ruff format --check .`
+2. `uv run pytest -q` semua hijau (terutama test_synth, test_multi_sheet, test_encode, test_regions).
+3. Ukur manual (opsional, file asli di luar repo):
+   `PYTHONPATH=. uv run python -c "import time;from excel_etl.workbook import Workbook;from excel_etl.synth import draft_targets;wb=Workbook.open(r'<file>');t=time.perf_counter();r=draft_targets(wb);print(round(time.perf_counter()-t,1),len(r))"`
+   Harapan: ~14 s (dari ~21 s), `len(r)` tetap 9.
+4. Isi Log (angka sebelum/sesudah) + ubah Berikutnya no. 4 jadi selesai.
+
+### Jangan
+- Jangan Rust, thread, multiprocessing, cache ke disk, dependency baru.
+- Jangan ubah `_components`, `SheetGrid`, `lineage`, `region_role`, kontrak tool, atau lab/server.
+- Jangan ubah hasil (ID region, urutan, grup, pola).
+- Bila sesudah D1-D2 masih lambat: catat angka, tanya user. Kandidat berikut (BUKAN sekarang):
+  `_shape_groups` menentukan kunci bentuk dari baris atas sheet saja.
 
 ## Planned (belum dikerjakan, urut)
 
@@ -944,6 +1016,7 @@ Tersisa:
 
 | Tanggal | Apa |
 |---|---|
+| 2026-11-13 | D1-D2 percepat `draft_targets` (branch `percepat-draft-targets`): `detect_regions` di-memo per sheet di `wb.memo` (`regions.py`), dan `proposal_regions` melewati sheet anggota grup sebelum membangun grid (`synth.py`). Satu tes baru (`test_draft_detects_each_sheet_at_most_once`; gagal sebelum D1, 128 grid untuk 64 sheet). File stok pupuk 161 sheet: 20,8 s -> 8,7 s, tetap 9 tabel (lebih baik dari perkiraan 14 s karena `_representative` dan `region_role` ikut terhindar). 1272 tes + 25 skip, ruff bersih. |
 | 2026-11-13 | MC1-MC3 + MC4 sebagian: `integrations/mcp_server.py` (satu file). `serve` = stdio MCP dengan `add_file` + 23 tool agent; tool host tidak diekspos. Perintah lain = sisi manusia (`approve`, `answer`, `record_load`, nama tool apa pun) pada state-dir yang sama. `JobTools` dibuat baru per panggilan agar approve dari proses lain langsung terlihat (tanpa konflik versi). `file_id` = path, ditolak bila di luar `--allow-dir`. Output `<state-dir>/out/<job>/v<N>`. Tes `tests/test_mcp_server.py`: schema datar, alur, path traversal, approve lintas proses, `excel_etl` tidak import `mcp`. 1271 tes + 25 skip, ruff bersih; smoke stdio `initialize` ok. Sisa: uji nyata di client (Claude Code/Cursor/Maki). |
 | 2026-11-12 | Perbaiki total pada `synth`: `drop_rows` memeriksa setiap kolom grain teks, bukan hanya yang pertama; default `total_regex` menambah awalan `jml.` dan `rekap` (hanya awal label, bukan substring nama data); kolom total tidak menjadi kandidat unpivot, termasuk blok `TOTAL|...` yang dibuang sebelum `unpivot_groups`. Steelman satu drop_rows lebih ringkas, tetapi label total di kolom kunci kedua tetap lolos; langkah berurutan menang dan test urutan node disesuaikan. 1236 tes + 25 skip, ruff bersih; 18 tes non-live lab lulus (3 live dibatasi HTTP 429). E2E pupuk lewat HTTP synth `ok` (0,962915), run 156 sheet/517.608 baris; nol baris total pada kabupaten/kode kab. Target uji masih memiliki 936 duplikasi grain dan NULL hasil cast, dilaporkan sebagai masalah kualitas, bukan disembunyikan. |
 

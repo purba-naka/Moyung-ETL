@@ -573,3 +573,17 @@ def test_several_ticked_groups_are_stacked_into_one_output():
     assert "union" in report.best.spec
     # 60 daily sheets x (1 + 2) + 3 months x 10 -- both groups end up in the one output
     assert _sum_run(report, wb, "qty") == (60 * 2 + 3, 60 * 3 + 30)
+
+
+def test_draft_detects_each_sheet_at_most_once(monkeypatch):
+    from excel_etl.inspect import regions
+    from excel_etl.synth import draft_targets
+
+    wb = _two_groups()
+    wb.memo.clear()  # the cache may hold this file from another test
+    calls = []
+    real = regions._analyze
+    monkeypatch.setattr(regions, "_analyze", lambda g, box: calls.append(g) or real(g, box))
+    first = draft_targets(wb)
+    assert len({id(g) for g in calls}) <= len(wb.sheets)  # one grid per sheet at most
+    assert draft_targets(wb) == first
