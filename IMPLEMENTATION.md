@@ -14,7 +14,7 @@ Perbarui setiap selesai satu item (lihat AGENTS.md §7).
 ## Berikutnya
 
 1. Synth S5 (jawaban `col:` -> glossary, jalur `auto` bila `no_spec`); S6 opsional, tanya user dulu.
-2. Spec builder (Planned no. 2): putuskan dulu draf di `JobState` atau terpisah, dan apakah 23 -> ~28 tool aman untuk provider.
+2. ~~Spec builder~~ SELESAI 2026-11-13 dalam versi kecil (satu tool `source_for_region`, 24 tool); lihat Log. Builder step/output/check ditunda sampai ada data kegagalan baru.
 3. Integrasi MCP: MC1-MC3 selesai; sisa uji nyata di client dan P6. Lalu plugin Maki (pribadi).
 4. ~~Percepat `draft_targets`~~ SELESAI 2026-11-13 (D1-D2, lihat Log). Sisa ~8,7 s = sekali baca semua sheet; bila masih terasa lambat, tanya user dulu (kandidat: `_shape_groups` hanya baca baris atas).
 5. Menunggu pihak lain: 6.3 bersama rekan, uji load di akun sungguhan. Sisa lama: temuan P6 Fase 1/2 di §Temuan (`_fit` streaming).
@@ -133,7 +133,7 @@ Tanpa tes waktu (AGENTS §8 P3).
    menyetujui sendiri. Terukur: tiap panggilan sekitar 0,7 s (impor duckdb 0,26 s); bila terasa,
    pertimbangkan proses yang tetap hidup. Perlu diputuskan: hanya Maki atau banyak agent
    (server tipis), dan di mana batas `AGENTS.md` ("bukan MCP server") berlaku: untuk `excel_etl/`.
-2. **Tool pembangun spec (spec builder)** (usul 2026-11-11, dari uji etl-e2e-lab). Masalah: agent
+2. **Tool pembangun spec (spec builder)** — DIPERSEMPIT 2026-11-13: hanya `source_for_region` yang dibangun (lihat Log); sisanya di bawah ini ditunda. (usul 2026-11-11, dari uji etl-e2e-lab). Masalah: agent
    menulis seluruh JSON spec sendiri lalu `save_spec`; model lemah salah nama field, menyalin nama
    dari contoh, salah bentuk `header_anchor`, tiap salah = satu putaran gagal (maks 5). Usul: tool
    bertahap yang mengubah DRAF spec di state (bukan versi): `spec_add_source(region_id, name)`
@@ -1016,6 +1016,7 @@ Tersisa:
 
 | Tanggal | Apa |
 |---|---|
+| 2026-11-13 | Spec builder versi kecil (branch `spec-builder`): satu tool baru `source_for_region(region_id, file_role)` (24 tool agent, bukan ~29). Ukur dasar dari 17 job nyata (`etl-e2e-lab/**/events.jsonl`, 56 `save_spec`): 41 tersimpan, 15 gagal: 9 header/anchor tidak ada di sheet, 5 konfigurasi step, 1 field spec salah (`name_regex requires sheet_column`). Asumsi lama (model salah nama field) hanya 1 dari 15, jadi draf di `JobState` + 6 tool tidak dibangun. Tool memakai ulang logika `synth._build` (`source_from_region` di `synth.py`): `header_anchor`/`header_rows`/`sheet` dibaca dari region terdeteksi, grup sheet sebentuk dapat `name_regex` + `sheet_column`. Uji pada file stok pupuk 161 sheet: 9 dari 9 entry diterima `validate`. 3 tes baru di `test_tools.py`; README, skill `build-spec`, HANDOVER, tes jumlah tool (23 -> 24, MCP 24 -> 25) diperbarui. 1275 tes + 25 skip, ruff bersih. Belum diuji live dengan model non-frontier (user memilih tanpa rerun lab); bila `save_spec` gagal tetap sering, lihat kandidat builder step. |
 | 2026-11-13 | D1-D2 percepat `draft_targets` (branch `percepat-draft-targets`): `detect_regions` di-memo per sheet di `wb.memo` (`regions.py`), dan `proposal_regions` melewati sheet anggota grup sebelum membangun grid (`synth.py`). Satu tes baru (`test_draft_detects_each_sheet_at_most_once`; gagal sebelum D1, 128 grid untuk 64 sheet). File stok pupuk 161 sheet: 20,8 s -> 8,7 s, tetap 9 tabel (lebih baik dari perkiraan 14 s karena `_representative` dan `region_role` ikut terhindar). 1272 tes + 25 skip, ruff bersih. |
 | 2026-11-13 | MC1-MC3 + MC4 sebagian: `integrations/mcp_server.py` (satu file). `serve` = stdio MCP dengan `add_file` + 23 tool agent; tool host tidak diekspos. Perintah lain = sisi manusia (`approve`, `answer`, `record_load`, nama tool apa pun) pada state-dir yang sama. `JobTools` dibuat baru per panggilan agar approve dari proses lain langsung terlihat (tanpa konflik versi). `file_id` = path, ditolak bila di luar `--allow-dir`. Output `<state-dir>/out/<job>/v<N>`. Tes `tests/test_mcp_server.py`: schema datar, alur, path traversal, approve lintas proses, `excel_etl` tidak import `mcp`. 1271 tes + 25 skip, ruff bersih; smoke stdio `initialize` ok. Sisa: uji nyata di client (Claude Code/Cursor/Maki). |
 | 2026-11-12 | Perbaiki total pada `synth`: `drop_rows` memeriksa setiap kolom grain teks, bukan hanya yang pertama; default `total_regex` menambah awalan `jml.` dan `rekap` (hanya awal label, bukan substring nama data); kolom total tidak menjadi kandidat unpivot, termasuk blok `TOTAL|...` yang dibuang sebelum `unpivot_groups`. Steelman satu drop_rows lebih ringkas, tetapi label total di kolom kunci kedua tetap lolos; langkah berurutan menang dan test urutan node disesuaikan. 1236 tes + 25 skip, ruff bersih; 18 tes non-live lab lulus (3 live dibatasi HTTP 429). E2E pupuk lewat HTTP synth `ok` (0,962915), run 156 sheet/517.608 baris; nol baris total pada kabupaten/kode kab. Target uji masih memiliki 936 duplikasi grain dan NULL hasil cast, dilaporkan sebagai masalah kualitas, bukan disembunyikan. |

@@ -28,7 +28,7 @@ from excel_etl.tools import JobTools
 
 tools = JobTools(Job.open("job1", FileStore("state")), my_files, out_dir="out/job1")
 tools.add_file("upload-17", "Balance Jan.xlsx", role="main")
-agent_functions = tools.agent_tools()  # 23 plain methods; give them to the agent
+agent_functions = tools.agent_tools()  # 24 plain methods; give them to the agent
 ```
 
 Job ids are lower case letters, digits and `_ . -` (so they are safe file names on Windows).
@@ -133,7 +133,7 @@ For any MCP client (Claude Code, Cursor, Maki, ...). Install with the extra: `uv
   "--state-dir", "<state>", "--allow-dir", "<excel folder>", "serve"]}}}
 ```
 
-The model gets `add_file` (a path under `--allow-dir`) plus the 23 agent tools. The human side
+The model gets `add_file` (a path under `--allow-dir`) plus the 24 agent tools. The human side
 runs as a command on the same state: `python integrations/mcp_server.py --state-dir <state>
 --allow-dir <dir> approve after_propose_datasets gilbert` (also `answer`, `record_load`).
 
