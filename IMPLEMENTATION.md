@@ -5,19 +5,23 @@ Perbarui setiap selesai satu item (lihat AGENTS.md §7).
 
 ## Status
 
-- Fase 1-5 selesai, Fase 6: 6.1 (`tools.py`), 6.2 (`README.md`) dan ringkasan serah (`HANDOVER.md`) selesai. P6 dijalankan tiap fase (Fase 3-6 dikerjakan sendiri, tanpa subagent).
+- Fase 1-7 selesai (Fase 7: rencana load, belum diuji di akun sungguhan). Multi-sheet M1-M4, hemat token L1-L5 dan synth S0-S4 selesai. P6 dijalankan tiap fase (Fase 3-6 dikerjakan sendiri, tanpa subagent).
 - Temuan P6 Fase 3-4, 3-5 dan 6 sudah dibersihkan (§Temuan P6 ... dibersihkan 2026-11-07); yang sengaja tersisa ada di bagian itu.
+- 2026-11-13: perbaikan dari diagnosa bug (load basi, `record_load` antar turn, nama beda huruf, patch/argumen bertipe salah); lihat Log.
 - Berikutnya: **serah `HANDOVER.md` ke rekan; 6.3 uji skema tool lewat LiteLLM ke >= 2 provider bersama rekan.**
 - **Aturan kerja (dari user): BALANSITAS hanya satu contoh, bukan patokan bentuk.** Node berbasis pola umum dan config eksplisit; tes memakai beberapa bentuk sintetis berbeda; sampel hanya sanity.
 
 ## Berikutnya
 
-1. Lihat "Planned" di bawah (plugin coding agent). 6.3 bersama rekan. Setelah itu: temuan lama P6 Fase 1/2 di §Temuan (error cell sudah diperingatkan; `_fit` streaming tersisa).
-2. Pertanyaan terbuka di bagian bawah (batas dataset per job, pemilik target schema Snowflake, retensi versi).
+1. Synth S5 (jawaban `col:` -> glossary, jalur `auto` bila `no_spec`); S6 opsional, tanya user dulu.
+2. Spec builder (Planned no. 2): putuskan dulu draf di `JobState` atau terpisah, dan apakah 23 -> ~28 tool aman untuk provider.
+3. Integrasi MCP: MC1-MC3 selesai; sisa uji nyata di client dan P6. Lalu plugin Maki (pribadi).
+4. Menunggu pihak lain: 6.3 bersama rekan, uji load di akun sungguhan. Sisa lama: temuan P6 Fase 1/2 di §Temuan (`_fit` streaming).
+5. Pertanyaan terbuka di bagian bawah (batas dataset per job, pemilik target schema Snowflake, retensi versi).
 
 ## Planned (belum dikerjakan, urut)
 
-**hemat token agent (L1-L5)** (usul 2026-11-13, dari log 16 job nyata): tool yang paling boros adalah
+**hemat token agent (L1-L5)** — SELESAI 2026-11-13 (lihat Log). (usul 2026-11-13, dari log 16 job nyata): tool yang paling boros adalah
    `save_spec` (33% karakter hasil tool), `node_catalog` (19%, 99 panggilan), `run_pipeline` (7%), dan
    loop error (`unpivot` gagal konversi, "not saved"). Docstring 22 tool hanya ~1k token: tidak dikerjakan.
    L1 `catalog()` ringkas memuat field config + `node_catalog("a,b")`; L2 hasil `save_spec` hanya schema step
@@ -32,9 +36,25 @@ Perbarui setiap selesai satu item (lihat AGENTS.md §7).
 
 (Contoh ekspresi di katalog dan node `window` selesai 2026-11-08. Fase 7 (rencana muat ke Snowflake, Databricks, BigQuery) selesai 2026-11-09 kecuali uji di akun sungguhan; lihat Log.)
 
-0. **Sumber multi-sheet (`name_regex`)** (usul 2026-11-11, PRIORITAS). Rencana lengkap di
+0. **Sumber multi-sheet (`name_regex`)** — SELESAI 2026-11-11 (M1-M4). (usul 2026-11-11). Rencana lengkap di
    §Rencana multi-sheet di bawah. Kerjakan fase M1 -> M4 berurutan, satu fase per sesi.
-1. **Plugin coding agent** (ingatkan user). Maki: folder terpisah (`integrations/maki/`), tanpa
+1. **Integrasi MCP opsional** (diputuskan user 2026-11-13). Library `excel_etl/` tetap bukan MCP;
+   MCP = integrasi opsional di `integrations/mcp/`, dipasang lewat extra `excel-etl[mcp]`
+   (dependency `mcp` hanya di extra; `excel_etl` tidak boleh import `mcp`, dijaga test).
+   - MC1 server stdio satu file: FastMCP, proses tetap hidup, daftar otomatis dari
+     `JobTools.agent_tools()` (23 tool, docstring = deskripsi), `FileStore` di `--state-dir`,
+     satu job per proses (`--job`), `file_id` = path disk dibatasi `--allow-dir`.
+   - MC2 tool host: `add_file` boleh untuk agent (path divalidasi). `answer`/`approve`/
+     `record_load`/`reload_job` TIDAK diekspos ke model (agent tak boleh menyetujui sendiri);
+     default: CLI kecil `python -m integrations.mcp.host ...` pada state-dir yang sama.
+   - MC3 test: client MCP in-memory, `list_tools` = 23 tool tanpa `anyOf`/`$ref`, alur
+     add_file -> workbook_map -> save_spec -> run_pipeline di workbook sintetis; uji nyata di client.
+   - MC4 dokumen: bagian HANDOVER (cara daftar di client), §Keputusan, AGENTS §2 diperjelas.
+   - Dilewati: HTTP/SSE + auth (tambah bila server dipakai bersama), banyak job per proses.
+   - Diputuskan user 2026-11-13: client target = semua (hanya fitur MCP inti: tools via stdio,
+     tanpa prompts/resources/sampling karena dukungan client berbeda); host via CLI terpisah;
+     plugin Maki TIDAK diganti, tetap dibuat nanti untuk pemakaian pribadi (setelah MC4).
+   Catatan lama plugin Maki: folder terpisah (`integrations/maki/`), tanpa
    menyentuh `excel_etl/`. Jembatan satu file Python (satu tool per proses, state di
    `FileStore`, `file_id` = path di disk), `register_tool` Lua untuk 21 tool agent, perintah slash
    untuk sisi host (`add_file`, `answer`, `approve`, `reload_job`) agar agent tidak bisa
@@ -590,6 +610,7 @@ Tersisa (disengaja):
 | Tanggal | Keputusan | Alasan |
 |---|---|---|
 | 2026-11-05 | Library Python murni, bukan framework/plugin/MCP | host (PINTER) yang mengorkestrasi |
+| 2026-11-13 | MCP = integrasi opsional `integrations/mcp_server.py`, extra `[mcp]` (`mcp>=2`, SDK resmi; hanya untuk integrasi, dipilih karena stdio+schema dari type hint, tanpa wrapper per tool) | user ingin dipakai semua client MCP; library tetap tanpa `mcp` |
 | 2026-11-05 | calamine untuk nilai + openpyxl lazy untuk formula/style | 1,0 s vs 16 s (15 MB, 72 sheet) |
 | 2026-11-05 | duckdb sebagai engine + SQL skalar sebagai expression | volume bervariasi, tanpa expression language sendiri |
 | 2026-11-05 | Spec pakai anchor semantik untuk recycle | tiap file beda bentuk, alamat sel tidak stabil |
@@ -923,6 +944,7 @@ Tersisa:
 
 | Tanggal | Apa |
 |---|---|
+| 2026-11-13 | MC1-MC3 + MC4 sebagian: `integrations/mcp_server.py` (satu file). `serve` = stdio MCP dengan `add_file` + 23 tool agent; tool host tidak diekspos. Perintah lain = sisi manusia (`approve`, `answer`, `record_load`, nama tool apa pun) pada state-dir yang sama. `JobTools` dibuat baru per panggilan agar approve dari proses lain langsung terlihat (tanpa konflik versi). `file_id` = path, ditolak bila di luar `--allow-dir`. Output `<state-dir>/out/<job>/v<N>`. Tes `tests/test_mcp_server.py`: schema datar, alur, path traversal, approve lintas proses, `excel_etl` tidak import `mcp`. 1271 tes + 25 skip, ruff bersih; smoke stdio `initialize` ok. Sisa: uji nyata di client (Claude Code/Cursor/Maki). |
 | 2026-11-12 | Perbaiki total pada `synth`: `drop_rows` memeriksa setiap kolom grain teks, bukan hanya yang pertama; default `total_regex` menambah awalan `jml.` dan `rekap` (hanya awal label, bukan substring nama data); kolom total tidak menjadi kandidat unpivot, termasuk blok `TOTAL|...` yang dibuang sebelum `unpivot_groups`. Steelman satu drop_rows lebih ringkas, tetapi label total di kolom kunci kedua tetap lolos; langkah berurutan menang dan test urutan node disesuaikan. 1236 tes + 25 skip, ruff bersih; 18 tes non-live lab lulus (3 live dibatasi HTTP 429). E2E pupuk lewat HTTP synth `ok` (0,962915), run 156 sheet/517.608 baris; nol baris total pada kabupaten/kode kab. Target uji masih memiliki 936 duplikasi grain dan NULL hasil cast, dilaporkan sebagai masalah kualitas, bukan disembunyikan. |
 
 | 2026-11-12 | S1-S4 synth selesai. `excel_etl/synth.py`: `Target`/`TargetColumn` (ident, grain subset kolom, maks satu `from_header`, `total_regex`, filter lewat `check_expression`), `proposal_regions` (memo `wb.memo`, hanya role source/mixed), `match_columns` (jawaban user 1,0 / exact casefold 1,0 / hint+glossary 0,95 / leaf 0,9 / fuzzy `difflib`*0,8 bila >= 0,75; ragu bila dua teratas beda < 0,1; tipe tak cocok *0,5; header blok berulang dicocokkan per nama leaf), `_build` (fill_down bila grain text bolong; drop_rows total; unpivot|unpivot_groups dari from_header; rename, cast, filter, select; `source_sheet` bila `name_regex`), `_evaluate` (run ke temp dir + skor 0,35 coverage + 0,25 fill + 0,25 unique + 0,15 match; null/unique dihitung dari seluruh hasil lewat SQL, bukan 20 baris pratinjau), `synthesize` (ok >= 0,85 / ask / none; kandidat lain tanpa preview). Lab: `/jobs/{id}/synth` + `/jobs/{id}/synth/publish`, tab Target (form kolom, pertanyaan `select` + `aria-label`, pratinjau, publish). Uji live localhost: synth ok skor 1,0 -> publish -> `/auto` memakai spec. 1204 unit + 25 skip; ruff bersih; lab 20 tes lulus. |

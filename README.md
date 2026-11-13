@@ -123,9 +123,10 @@ Nothing in the library connects to anything or holds a password.
 
 `mode`: `replace` (swap the table), `append` (add rows), `merge` (update rows with the same
 `keys`, add the rest). The agent calls `plan_load(platform, output, database, schema, stage)`
-after a person approves `before_load` for that spec version; the result lists the steps
-(send the file, make the table, copy, merge) with the SQL of each. The host runs them and calls
-`tools.record_load(output, status, rows, note)`.
+after a person approves `before_load` for that spec version, and only when the last run was
+made from that version and the files registered now; the result lists the steps (send the
+file, make the table, copy, merge) with the SQL of each. The host runs them and calls
+`tools.record_load(output, status, rows, note)`, in the same turn or a later one.
 
 | Platform | Notes |
 |---|---|

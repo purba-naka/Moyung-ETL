@@ -17,7 +17,7 @@ Pemilik: Gilbert (komponen). Rekan menyambungkan ke PINTER (arsitektur/agent loo
 
 - **Tanpa** import `google.adk`, `fastapi`, `litellm`, `sqlalchemy`, atau modul
   `pinter-be-refactor`. Host yang membungkus. Library harus jalan berdiri sendiri.
-- **Bukan MCP server.** Permukaan publik = fungsi Python di `excel_etl/tools.py`.
+- **`excel_etl/` bukan MCP server.** Permukaan publik = fungsi Python di `excel_etl/tools.py`. MCP = integrasi opsional di `integrations/mcp_server.py` (extra `[mcp]`); `excel_etl` tidak boleh import `mcp` (dijaga test).
 - **Library tidak memblok untuk HITL.** `ask_human` mengembalikan `PendingQuestion`;
   host yang menyampaikan ke user.
 - **Library tidak menyimpan state sendiri** kecuali lewat `StateStore` yang diberikan

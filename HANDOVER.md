@@ -51,8 +51,9 @@ each one gives a flat schema (checked for all of them: no `anyOf`, `oneOf`, `$re
 | `tools.answer(question_id, reply)` | The person answered what the agent asked with `ask_human`. |
 | `tools.approve(checkpoint, by, ref)` | The person said "go". `ref` names what they approved, e.g. `v3`; left empty it is the saved spec version at that moment. |
 | `tools.reload_job()` | After an error with `"conflict": true`: another writer saved first. Repeat the failed call after. |
+| `tools.record_load(output, status, rows, note)` | You ran the steps of a load plan. Works in a later turn too: the plan is kept in the state. |
 
-Do not give these four to the agent. If it could approve, the checkpoints would mean nothing.
+Do not give these five to the agent. If it could approve, the checkpoints would mean nothing.
 
 ### Approval flow
 
@@ -69,6 +70,12 @@ Checkpoints (default policy):
 | `after_spec` | optional | `run_pipeline` refuses only if you set it to `required` |
 | `after_run` | required_if_fail | reminder in the `run_pipeline` text; does not block |
 | `before_load` | required | `plan_load` refuses until approved for this spec version |
+
+`plan_load` also refuses a run that is out of date: one made for another spec version, or
+from a file that was registered again since. The agent then runs the pipeline again. A job
+saved before this check existed has no version on its last run, so it needs one more
+`run_pipeline` before its first `plan_load`. `plan_load` saves the plan in the state, so with
+a store it can get a conflict error like the other tools that change the job.
 | `on_rebind_drift` | required | reminder in the `rebind_sources` text; does not block |
 
 Approvals are tied to `ref`: `run_pipeline` passes `v<N>` of the saved spec, so an approval given
@@ -115,6 +122,20 @@ tools.job.update(
   you `add_file` it again.
 - `FileStore` is safe for several processes on one machine. A shared store of yours needs
   compare-and-set on the version (see Limits).
+
+## Optional: as an MCP server
+
+For any MCP client (Claude Code, Cursor, Maki, ...). Install with the extra: `uv sync --extra mcp`.
+
+```json
+{"mcpServers": {"excel-etl": {"command": "uv", "args": ["run", "--directory", "<path>/excel-etl",
+  "--extra", "mcp", "python", "integrations/mcp_server.py",
+  "--state-dir", "<state>", "--allow-dir", "<excel folder>", "serve"]}}}
+```
+
+The model gets `add_file` (a path under `--allow-dir`) plus the 23 agent tools. The human side
+runs as a command on the same state: `python integrations/mcp_server.py --state-dir <state>
+--allow-dir <dir> approve after_propose_datasets gilbert` (also `answer`, `record_load`).
 
 ## Limits you should know
 
