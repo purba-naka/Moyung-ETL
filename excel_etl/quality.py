@@ -68,6 +68,12 @@ class Range(_OnTable):
     def _some_bound(self) -> Range:
         if self.min is None and self.max is None:
             raise ValueError("give min, max or both")
+        try:
+            above = self.min is not None and self.max is not None and self.min > self.max
+        except TypeError:  # a number and a date text: the run says which one does not fit
+            above = False
+        if above:
+            raise ValueError(f"min {self.min} is above max {self.max}; no row could pass")
         return self
 
 

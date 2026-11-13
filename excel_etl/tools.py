@@ -10,8 +10,9 @@ an error says what to change. Arguments are plain strings, numbers, booleans, en
 of strings, so a provider's tool schema never needs `anyOf` or `$ref` (DESIGN section 11). A
 spec travels as a JSON string. Files are named `F1`, `F2`, ... in the order of `state.files`.
 
-Tools that change the job (`save_spec`, `rebind`, `run_pipeline`, `ask_human`) go through
-`Job.update`, so with a store they are saved at once and a second writer gets a conflict error.
+Tools that change the job (`save_spec`, `rebind`, `run_pipeline`, `ask_human`, `plan_load`)
+go through `Job.update`, so with a store they are saved at once and a second writer gets a
+conflict error.
 
 ponytail: a text result is cut at 24000 characters (about 6k tokens) with `truncated: true`;
 the inspect tools page themselves, the others are short. Upgrade: `offset` on every tool.
@@ -36,13 +37,14 @@ from excel_etl.knowledge import lookup_knowledge
 from excel_etl.load import LoadError, Where, file_columns, plan_load
 from excel_etl.nodes import Column, NodeError, catalog
 from excel_etl.nodes.base import describe
-from excel_etl.pipeline import PipelineSpec, SpecError, dump_spec, parse_spec
+from excel_etl.pipeline import PipelineSpec, SpecError, dump_spec, parse_spec, patch_spec
 from excel_etl.rebind import rebind
 from excel_etl.state import (
     FileProvider,
     Job,
     JobState,
     LoadRecord,
+    PlannedLoad,
     StateConflict,
     StateError,
     add_file,
@@ -107,6 +109,21 @@ def _tool(fn: Callable[..., dict]) -> Callable[..., dict]:
     return wrapper
 
 
+def _changed_tables(old: PipelineSpec | None, new: PipelineSpec) -> set[str] | None:
+    """Tables whose columns may differ from the last saved version: new or edited sources and
+    steps, and everything downstream of them. None (list all) for a first version. A repeat
+    save then shows only what the agent just touched; the rest is already in its context."""
+    if old is None:
+        return None
+    before = {k: v.model_dump() for k, v in old.sources.items()}
+    before.update({s.id: s.model_dump() for s in old.steps})
+    changed = {k for k, v in new.sources.items() if before.get(k) != v.model_dump()}
+    for step in new.steps:
+        if before.get(step.id) != step.model_dump() or changed & set(step.inputs):
+            changed.add(step.id)
+    return changed
+
+
 def _split_column(text: str) -> Column:
     """`name type` (the last word or `type(p,s)` is the type) -> Column. The type is kept as the
     platform wrote it; `compare_target` only looks at its family."""
@@ -128,8 +145,6 @@ class JobTools:
         self.provider = provider
         self.out_dir = out_dir
         self.per_version = per_version  # write into out_dir/v<N> so a rerun keeps older files
-        # (output, platform, table) of the last plan_load, so record_load answers a real plan
-        self._last_plan: tuple[str, str, str] | None = None
 
     # --- helpers -----------------------------------------------------------------------------
 
@@ -201,22 +216,22 @@ class JobTools:
     ) -> dict:
         """Host: record the result of a load plan it ran for `output` (rows loaded, ok or
         failed, and a short note such as the error). The library loads nothing itself."""
-        last = self._state.last_run
-        plan = self._last_plan
-        if last is None or plan is None or plan[0] != output:
+        plan = self._state.planned
+        if plan is None or plan.output != output:
             raise StateError(f"no load plan was made for {output!r}; call plan_load first")
         rec = LoadRecord(
             output=output,
-            platform=plan[1],
-            table=plan[2],
+            platform=plan.platform,
+            table=plan.table,
             status=status,
             rows=rows,
-            ref=f"v{self._version()}",
+            ref=plan.ref,
             note=" ".join(note.split())[:500],
             at=datetime.now(UTC).isoformat(timespec="seconds"),
         )
         self.job.update(lambda s: s.model_copy(update={"loads": [*s.loads, rec][-200:]}))
-        return {"text": f"recorded load of {output} to {plan[1]} {plan[2]}: {status}, {rows} rows"}
+        where = f"{plan.platform} {plan.table}"
+        return {"text": f"recorded load of {output} to {where}: {status}, {rows} rows"}
 
     # --- the agent's tools -------------------------------------------------------------------
 
@@ -238,6 +253,7 @@ class JobTools:
             "ask_human",
             "pending_questions",
             "save_spec",
+            "edit_spec",
             "get_spec",
             "validate_spec",
             "rebind_sources",
@@ -338,6 +354,8 @@ class JobTools:
     def node_catalog(self, node: str = "") -> dict:
         """The step types for a spec. Without `node`: one line each. With a name: its
         description and config fields (`*` = required)."""
+        if not isinstance(node, str):
+            raise ValueError("node must be a node name (text), such as 'cast'")
         return {"text": catalog(node or None)}
 
     @_tool
@@ -386,13 +404,31 @@ class JobTools:
         files first; a spec with problems is not saved. `note` says why (needed from v2).
         Repeated sheets use one source: sheet={"name_regex":"day-[0-9]{2}",
         "sheet_column":"source_sheet"}; full names match and every match must hold the table."""
-        if isinstance(note, str) and len(note) > MAX_NOTE:
+        return self._commit(parse_spec(spec_json), note)
+
+    @_tool
+    def edit_spec(self, patch_json: str, note: str = "") -> dict:
+        """Change the saved spec without sending all of it again; saved as the next version
+        like save_spec. patch_json: {"steps": [step, ...] (same id = replace that step, new id
+        = added before the step that reads it, else at the end), "remove": ["step_id"],
+        "sources": {"name": source or null}, "outputs": {"name": output or null}}.
+        Use it for repairs; use save_spec for a first version or a rewrite."""
+        h = self._state.history
+        if h is None:
+            raise StateError("no spec saved yet; use save_spec for the first version")
+        return self._commit(patch_spec(h.current.spec, patch_json), note)
+
+    def _commit(self, spec: PipelineSpec, note: str) -> dict:
+        if not isinstance(note, str):
+            raise ValueError("note must be text")
+        if len(note) > MAX_NOTE:
             raise ValueError(f"the note is {len(note)} characters; keep it under {MAX_NOTE}")
-        spec = parse_spec(spec_json)
         files = self._open_all(spec)
         report = validate(spec, files)
         if not report.ok:
             return {"saved": False, "text": "not saved\n" + report.text()}
+
+        previous = self._state.history.current.spec if self._state.history else None
 
         def apply(s: JobState) -> JobState:
             if s.history is None:
@@ -417,7 +453,9 @@ class JobTools:
         return {
             "saved": True,
             "version": self._version(),
-            "text": f"saved v{self._version()}\n" + report.text() + warn,
+            "text": f"saved v{self._version()}\n"
+            + report.text(_changed_tables(previous, spec))
+            + warn,
         }
 
     def _open_all(self, spec: PipelineSpec) -> dict[str, Workbook] | None:
@@ -488,7 +526,7 @@ class JobTools:
             target = target / f"v{self._version()}"
         rep = run(spec, files, target, hitl=s.hitl, ref=f"v{self._version()}")
         self.job.update(lambda st: st.model_copy(update={"last_run": rep}))
-        text = rep.text()
+        text = rep.text(full=False)
         if why := gate(self._state.hitl, "after_run", failed=rep.status != "ok"):
             text += f"\nask the person before going on: {why}"
         return {"ok": rep.status == "ok", "text": text}
@@ -528,15 +566,28 @@ class JobTools:
         stat = next((o for o in rep.outputs if o.name == output), None)
         if stat is None:
             raise StateError(f"the last run did not write {output!r}; run again")
-        if why := gate(s.hitl, "before_load", ref=f"v{self._version()}"):
+        ref = f"v{self._version()}"
+        if why := gate(s.hitl, "before_load", ref=ref):
             raise StateError(f"{why}. Use ask_human (confirm) and stop; the host approves.")
+        if rep.ref != ref:
+            raise StateError(
+                f"the last run was made for {rep.ref or 'an older spec'}, not {ref}; "
+                "run_pipeline again before planning the load"
+            )
+        sha = {f.id: f.sha256 for f in s.files}
+        for role, made_from in rep.files.items():
+            if sha.get(s.roles.get(role, "")) != made_from:
+                raise StateError(
+                    f"file {role!r} changed since the last run; run_pipeline again first"
+                )
         cols, _ = file_columns(stat.path)
         found = tuple(_split_column(c) for c in existing_columns) or None
         plan = plan_load(
             platform, output, stat.path, out.load.table, out.load.mode, out.load.keys, cols,
             Where(database=database, schema_name=schema, stage=stage), found,
         )  # fmt: skip
-        self._last_plan = (output, plan.platform, out.load.table)
+        planned = PlannedLoad(output=output, platform=plan.platform, table=out.load.table, ref=ref)
+        self.job.update(lambda st: st.model_copy(update={"planned": planned}))
         return {"text": plan.text() + "\nThe host runs these steps, then calls record_load."}
 
     @_tool

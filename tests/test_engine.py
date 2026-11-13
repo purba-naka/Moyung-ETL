@@ -785,3 +785,35 @@ def test_a_step_that_kept_every_row_has_no_note(tmp_path) -> None:
     steps = [{"id": "all", "node": "filter", "inputs": ["s"], "config": {"where": "Qty > 0"}}]
     notes, rep = _stat_notes(_spec(sources={"s": _src("S", "Qty")}, steps=steps), book, tmp_path)
     assert notes["all"] == "" and "kept rows" not in rep.text()
+
+
+def test_more_header_rows_than_the_table_has_warns_that_data_became_names():
+    wb = Workbook.open(make_xlsx({"S": [["Item", "N"], ["a", 1], ["b", 2], ["c", 3]]}))
+    deep = validate(_spec(sources={"s": _src("S", "Item", rows=3)}), {"f": wb})
+    assert any("header_rows 3" in w and "became column names" in w for w in deep.warnings)
+    fine = validate(_spec(sources={"s": _src("S", "Item")}), {"f": wb})
+    assert not any("header_rows" in w for w in fine.warnings)
+
+
+def test_a_mixed_column_writes_booleans_and_long_durations_the_way_excel_shows_them(tmp_path):
+    from datetime import timedelta
+
+    wb = Workbook.open(
+        make_xlsx({"S": [["Item", "N", "T"], ["a", True, timedelta(hours=30)], ["b", 2, "x"]]})
+    )
+    spec = _spec(sources={"s": _src("S", "Item")}, outputs={"o": {"input": "s", "format": "csv"}})
+    assert run(spec, {"f": wb}, tmp_path).status == "ok"
+    rows = list(csv.reader((tmp_path / "o.csv").open(encoding="utf-8")))
+    assert rows[1] == ["a", "TRUE", "30:00:00"]
+
+
+def test_an_unsupported_cast_is_not_blamed_on_mixed_text():
+    from excel_etl.engine import _explain
+    from excel_etl.pipeline import Step
+
+    con = duckdb.connect()
+    with pytest.raises(duckdb.ConversionException) as caught:
+        con.execute("SELECT CAST(1 AS DATE)")
+    step = Step(id="d", node="derive", inputs=["s"])
+    text = _explain(caught.value, step, {})
+    assert "mixes text" not in text and "VARCHAR" in text

@@ -30,7 +30,7 @@ from excel_etl.nodes.source import (
     read_locations,
     type_fits,
 )
-from excel_etl.pipeline import PipelineSpec, Source
+from excel_etl.pipeline import PipelineSpec, Source, Step
 from excel_etl.quality import CheckResult, check_schema, run_checks
 from excel_etl.workbook import Workbook, WorkbookError
 
@@ -84,6 +84,31 @@ def _columns(cols: tuple[Column, ...], limit: int = 40) -> str:
     return shown + (f", ... ({len(cols)} columns)" if len(cols) > limit else "")
 
 
+def _explain(e: Exception, step: Step, schemas: dict[str, Schema]) -> str:
+    """The first line of a duckdb error, plus what to try for the two mistakes seen most in
+    real sessions. Without this the agent guesses and retries several times."""
+    first = str(e).splitlines()[0]
+    if isinstance(e, duckdb.ConversionException) and "Unimplemented type for cast" in first:
+        return (
+            f"{first}. duckdb has no direct cast between these types; cast through VARCHAR "
+            "first, or use a function such as make_date or strptime."
+        )
+    if isinstance(e, duckdb.ConversionException):
+        return (
+            f"{first}. A column mixes text with numbers or dates (a label row, a footnote). "
+            "Add a cast step before this one (a value that does not fit becomes NULL), or "
+            "drop_rows with keep_type to remove the label rows."
+        )
+    if isinstance(e, duckdb.BinderException) and "not found" in first:
+        have = "; ".join(
+            f"{t}: {', '.join(c.name for c in schemas[t][:15])}"
+            for t in step.inputs
+            if t in schemas
+        )
+        return f"{first} Columns this step reads: {have or 'unknown'}."
+    return first
+
+
 class ValidationReport(_Report):
     ok: bool
     issues: tuple[Issue, ...]
@@ -92,10 +117,15 @@ class ValidationReport(_Report):
     # worked out (no file given, or an earlier step failed)
     schemas: dict[str, tuple[Column, ...]]
 
-    def text(self) -> str:
+    def text(self, only: set[str] | None = None) -> str:
+        """`only` limits the table listing to those names (what a repeat save changed)."""
         head = "ok" if self.ok else f"{len(self.issues)} problem(s)"
         lines = [f"validate: {head}, {len(self.schemas)} tables known"]
-        lines += [f"  {name}: {_columns(cols)}" for name, cols in self.schemas.items()]
+        lines += [
+            f"  {name}: {_columns(cols)}"
+            for name, cols in self.schemas.items()
+            if only is None or name in only
+        ]
         lines += [f"  {i.where}: {i.message}" for i in self.issues]
         lines += [f"  warning: {w}" for w in self.warnings]
         return "\n".join(lines)
@@ -109,14 +139,26 @@ class RunReport(_Report):
     outputs: tuple[OutputStat, ...]
     seconds: float
     checks: tuple[CheckResult, ...] = ()
+    # what the run read: the spec version and file_role -> sha256, so a load can tell that
+    # its parquet file was made from the spec and files of now
+    ref: str | None = None
+    files: dict[str, str] = {}
 
-    def text(self) -> str:
+    def text(self, full: bool = True) -> str:
+        """`full=False` is for an agent that only needs to act: on success the outputs, on
+        failure the steps that went wrong. Steps that ran fine and said nothing are left out
+        (they only repeat what the agent just wrote); `full=True` lists every step."""
         lines = [f"run: {self.status}, {self.seconds:.2f}s"]
+        failed = {i.where.removeprefix("steps.") for i in self.issues}
         for n in self.nodes:
+            if not full and not n.note and n.id not in failed and n.rows_out > 0:
+                continue
             rows = f"{n.rows_in}->{n.rows_out} rows"
             lines.append(f"  {n.id}|{n.node}|{rows}|{n.columns} cols|{n.seconds:.2f}s")
             if n.note:
                 lines.append(f"    {n.note}")
+        if not full and len(lines) < 1 + len(self.nodes):
+            lines.insert(1, f"  ({len(self.nodes)} steps ran; only the ones to look at are listed)")
         for c in self.checks:
             mark = "pass" if c.passed else ("FAIL" if c.severity == "error" else "warn")
             lines.append(
@@ -221,6 +263,14 @@ def _load_sources(
                 f"{where}: {errors} cell(s) hold an Excel error (#DIV/0!, #N/A ...) and are "
                 f"read as empty; fix them in the workbook, or use fill_missing after the read"
             )
+        for loc in locs:
+            if loc.data_in_header is not None:
+                st.warnings.append(
+                    f"{where}: header_rows {source.region.header_rows} reaches row "
+                    f"{loc.data_in_header + 1} of sheet {loc.sheet!r}, which sheet_regions sees "
+                    "as data, so data values became column names; check header_rows"
+                )
+                break
         if (below := sum(loc.below for loc in locs)) > 0:
             st.warnings.append(
                 f"{where}: {below} more filled row(s) lie below the table after "
@@ -279,7 +329,7 @@ def _run_steps(
             rels = [con.table(i) for i in step.inputs]
             n.run(rels).create(step.id)
         except (NodeError, duckdb.Error) as e:
-            st.issue(where, f"failed while running {step.node}: {str(e).splitlines()[0]}")
+            st.issue(where, f"failed while running {step.node}: {_explain(e, step, st.schemas)}")
             del st.schemas[step.id]
             continue
         actual = schema_of(con.table(step.id))
@@ -427,6 +477,8 @@ def run(
         outputs=() if failed else tuple(outputs),
         checks=tuple(results),
         seconds=round(time.perf_counter() - t0, 3),
+        ref=ref,
+        files={role: f.sha256 for role, f in files.items() if isinstance(f, Workbook)},
     )
 
 

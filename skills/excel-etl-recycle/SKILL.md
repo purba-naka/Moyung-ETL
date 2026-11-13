@@ -31,7 +31,7 @@ Tool names may carry a prefix in your host.
    `sheet_regions`, `profile_region`, `compare_sheets` (old sheet against the candidate).
 5. Decide the smallest change: a new header text in `header_anchor`, a changed
    `header_rows`, a new `expect_columns` entry, a renamed column in a later step.
-6. `get_spec`, edit only the parts that drifted, `save_spec` with a `note` that says what
+6. `edit_spec(patch_json, note)` with only the steps that drifted (same id replaces it), with a `note` that says what
    changed and why ("header 'Ton' renamed 'Tonnage' in sheet Production").
 7. `spec_history` shows the versions and diffs. Check that the diff holds only what you meant.
 8. `validate_spec`, then run and verify (`excel-etl-run-verify`).

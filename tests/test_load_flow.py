@@ -262,3 +262,28 @@ def test_a_run_that_failed_cannot_be_planned_for_loading(tmp_path) -> None:
     t.approve("after_propose_datasets", "dina")  # an approval is for one version: v2 now
     assert t.run_pipeline()["ok"] is False
     assert "run the pipeline successfully first" in t.plan_load("snowflake", "clean")["error"]
+
+
+def test_plan_load_refuses_a_run_made_for_another_spec_version_or_file(tmp_path) -> None:
+    t = _tools(tmp_path, {"table": "sales"})
+    t.save_spec(_spec({"table": "sales", "mode": "append"}), "append now")
+    t.approve("before_load", "dina")  # v2 approved, but the parquet on disk is from v1
+    assert "made for v1" in t.plan_load("snowflake", "clean")["error"]
+
+    t.approve("after_propose_datasets", "dina")
+    t.run_pipeline()
+    assert "COPY INTO" in t.plan_load("snowflake", "clean")["text"]
+    t.provider.blob = make_xlsx({"Data": [*ROWS, ["C", "urea", 1]]})  # next month's upload
+    t.add_file("a", "feb.xlsx", "f")
+    assert "file 'f' changed" in t.plan_load("snowflake", "clean")["error"]
+
+
+def test_record_load_works_from_a_new_tools_object_and_keeps_the_plan_ref(tmp_path) -> None:
+    t = _tools(tmp_path, {"table": "sales"})
+    t.approve("before_load", "dina")
+    t.plan_load("bigquery", "clean", "p", "d", "gs://b")
+    t.save_spec(_spec({"table": "sales", "mode": "append"}), "append now")  # moves on to v2
+    later = JobTools(Job.from_state(t.job.state_json()), t.provider, tmp_path / "out")
+    assert later.record_load("clean", "ok", 3)["text"].endswith("ok, 3 rows")
+    rec = later.job.state.loads[-1]
+    assert (rec.platform, rec.table, rec.ref) == ("bigquery", "sales", "v1")

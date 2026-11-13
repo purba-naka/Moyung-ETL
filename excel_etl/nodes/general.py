@@ -513,6 +513,15 @@ class Window(Node):
     def infer_schema(self, inputs: list[Schema]) -> Schema:
         (schema,) = inputs
         check_reserved(schema, self.name)
+        name = self.config.name
+        if other := next(
+            (c.name for c in schema if c.name != name and c.name.casefold() == name.casefold()),
+            None,
+        ):  # duckdb would rename the new column to `QTY_1` without a word
+            raise NodeError(
+                f"{self.name}: columns {other!r} and {name!r} differ only in letter case, "
+                "which duckdb treats as one name; use the same spelling or another name"
+            )
         return shape([schema], lambda n: self._sql(n[0], schema), self.name)
 
     def run(self, inputs: list[Relation]) -> Relation:

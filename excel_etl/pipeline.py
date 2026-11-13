@@ -7,6 +7,7 @@ checks the shape of a spec; node names and configs are checked by `engine.valida
 
 from __future__ import annotations
 
+import json
 import re
 from typing import Annotated, Any, Literal
 
@@ -260,6 +261,60 @@ def parse_spec(text: str) -> PipelineSpec:
         msg = describe(e, "spec")
         hint = "\nThe spec must be JSON (YAML is not supported)." if "json" in msg.lower() else ""
         raise SpecError(msg + hint) from None
+
+
+def patch_spec(spec: PipelineSpec, patch_json: str) -> PipelineSpec:
+    """Apply a small edit instead of rewriting the whole spec.
+
+    The patch is JSON: `steps` (a list of steps: one whose id exists replaces it in place, a
+    new one goes right before the first step that reads it, else at the end), `remove` (step
+    ids), `sources` and `outputs` (objects: a name replaces that entry, `null` removes it).
+    The result is checked like any spec, so a step still read by another one cannot be
+    removed. Raises SpecError.
+    """
+    try:
+        patch = json.loads(patch_json)
+    except (TypeError, ValueError) as e:
+        raise SpecError(f"the patch must be a JSON object: {e}") from None
+    if not isinstance(patch, dict):
+        raise SpecError("the patch must be a JSON object")
+    unknown = set(patch) - {"steps", "remove", "sources", "outputs"}
+    if unknown:
+        raise SpecError(
+            f"patch: {sorted(unknown)} is not a setting here; use steps, remove, sources, outputs"
+        )
+    remove, new_steps = patch.get("remove", []), patch.get("steps", [])
+    if not isinstance(remove, list) or not all(isinstance(r, str) for r in remove):
+        raise SpecError('patch: remove must be a list of step ids, such as ["clean"]')
+    if not isinstance(new_steps, list) or not all(isinstance(s, dict) for s in new_steps):
+        raise SpecError("patch: steps must be a list of step objects")
+    for key in ("sources", "outputs"):
+        if not isinstance(patch.get(key) or {}, dict):
+            raise SpecError(f"patch: {key} must be an object of name -> {key[:-1]} or null")
+    data = spec.model_dump(mode="json")
+    steps: list[dict] = data["steps"]
+    for gone in remove:
+        if gone not in {s["id"] for s in steps}:
+            raise SpecError(f"remove: there is no step {gone!r}")
+        steps[:] = [s for s in steps if s["id"] != gone]
+    for new in new_steps:
+        if "id" not in new:
+            raise SpecError("steps: each step needs an id")
+        at = next((i for i, s in enumerate(steps) if s["id"] == new["id"]), None)
+        if at is not None:
+            steps[at] = new
+            continue
+        reader = next(
+            (i for i, s in enumerate(steps) if new["id"] in s.get("inputs", [])), len(steps)
+        )
+        steps.insert(reader, new)
+    for key in ("sources", "outputs"):
+        for name, value in (patch.get(key) or {}).items():
+            if value is None:
+                data[key].pop(name, None)
+            else:
+                data[key][name] = value
+    return parse_spec(json.dumps(data))
 
 
 def dump_spec(spec: PipelineSpec) -> str:

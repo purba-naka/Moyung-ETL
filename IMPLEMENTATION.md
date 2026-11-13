@@ -5,17 +5,30 @@ Perbarui setiap selesai satu item (lihat AGENTS.md §7).
 
 ## Status
 
-- Fase 1-5 selesai, Fase 6: 6.1 (`tools.py`), 6.2 (`README.md`) dan ringkasan serah (`HANDOVER.md`) selesai. P6 dijalankan tiap fase (Fase 3-6 dikerjakan sendiri, tanpa subagent).
+- Fase 1-7 selesai (Fase 7: rencana load, belum diuji di akun sungguhan). Multi-sheet M1-M4, hemat token L1-L5 dan synth S0-S4 selesai. P6 dijalankan tiap fase (Fase 3-6 dikerjakan sendiri, tanpa subagent).
 - Temuan P6 Fase 3-4, 3-5 dan 6 sudah dibersihkan (§Temuan P6 ... dibersihkan 2026-11-07); yang sengaja tersisa ada di bagian itu.
+- 2026-11-13: perbaikan dari diagnosa bug (load basi, `record_load` antar turn, nama beda huruf, patch/argumen bertipe salah); lihat Log.
 - Berikutnya: **serah `HANDOVER.md` ke rekan; 6.3 uji skema tool lewat LiteLLM ke >= 2 provider bersama rekan.**
 - **Aturan kerja (dari user): BALANSITAS hanya satu contoh, bukan patokan bentuk.** Node berbasis pola umum dan config eksplisit; tes memakai beberapa bentuk sintetis berbeda; sampel hanya sanity.
 
 ## Berikutnya
 
-1. Lihat "Planned" di bawah (plugin coding agent). 6.3 bersama rekan. Setelah itu: temuan lama P6 Fase 1/2 di §Temuan (error cell sudah diperingatkan; `_fit` streaming tersisa).
-2. Pertanyaan terbuka di bagian bawah (batas dataset per job, pemilik target schema Snowflake, retensi versi).
+1. Synth S5 (jawaban `col:` -> glossary, jalur `auto` bila `no_spec`); S6 opsional, tanya user dulu.
+2. Spec builder (Planned no. 2): putuskan dulu draf di `JobState` atau terpisah, dan apakah 23 -> ~28 tool aman untuk provider.
+3. Integrasi MCP: MC1-MC3 selesai; sisa uji nyata di client dan P6. Lalu plugin Maki (pribadi).
+4. Menunggu pihak lain: 6.3 bersama rekan, uji load di akun sungguhan. Sisa lama: temuan P6 Fase 1/2 di §Temuan (`_fit` streaming).
+5. Pertanyaan terbuka di bagian bawah (batas dataset per job, pemilik target schema Snowflake, retensi versi).
 
 ## Planned (belum dikerjakan, urut)
+
+**hemat token agent (L1-L5)** — SELESAI 2026-11-13 (lihat Log). (usul 2026-11-13, dari log 16 job nyata): tool yang paling boros adalah
+   `save_spec` (33% karakter hasil tool), `node_catalog` (19%, 99 panggilan), `run_pipeline` (7%), dan
+   loop error (`unpivot` gagal konversi, "not saved"). Docstring 22 tool hanya ~1k token: tidak dikerjakan.
+   L1 `catalog()` ringkas memuat field config + `node_catalog("a,b")`; L2 hasil `save_spec` hanya schema step
+   yang baru/berubah; L3 `RunReport.text(full=False)` untuk tool (gagal: hanya node gagal + schema inputnya;
+   peringatan identik dirangkum); L4 petunjuk untuk error konversi/kolom hilang di `engine.py`;
+   L5 tool `edit_spec(patch_json, note)`: ganti/tambah/hapus step lewat jalur simpan yang sama dengan
+   `save_spec`. Ukuran: satu tes skenario membandingkan karakter hasil tool.
 
 **target-driven `synth`** (usul 2026-11-12): S0-S4 selesai (lihat Log). Lanjut S5 (belajar
    `col:` -> glossary + jalur `auto` bila `no_spec`), lalu S6 opsional (tanya user dulu).
@@ -23,9 +36,25 @@ Perbarui setiap selesai satu item (lihat AGENTS.md §7).
 
 (Contoh ekspresi di katalog dan node `window` selesai 2026-11-08. Fase 7 (rencana muat ke Snowflake, Databricks, BigQuery) selesai 2026-11-09 kecuali uji di akun sungguhan; lihat Log.)
 
-0. **Sumber multi-sheet (`name_regex`)** (usul 2026-11-11, PRIORITAS). Rencana lengkap di
+0. **Sumber multi-sheet (`name_regex`)** — SELESAI 2026-11-11 (M1-M4). (usul 2026-11-11). Rencana lengkap di
    §Rencana multi-sheet di bawah. Kerjakan fase M1 -> M4 berurutan, satu fase per sesi.
-1. **Plugin coding agent** (ingatkan user). Maki: folder terpisah (`integrations/maki/`), tanpa
+1. **Integrasi MCP opsional** (diputuskan user 2026-11-13). Library `excel_etl/` tetap bukan MCP;
+   MCP = integrasi opsional di `integrations/mcp/`, dipasang lewat extra `excel-etl[mcp]`
+   (dependency `mcp` hanya di extra; `excel_etl` tidak boleh import `mcp`, dijaga test).
+   - MC1 server stdio satu file: FastMCP, proses tetap hidup, daftar otomatis dari
+     `JobTools.agent_tools()` (23 tool, docstring = deskripsi), `FileStore` di `--state-dir`,
+     satu job per proses (`--job`), `file_id` = path disk dibatasi `--allow-dir`.
+   - MC2 tool host: `add_file` boleh untuk agent (path divalidasi). `answer`/`approve`/
+     `record_load`/`reload_job` TIDAK diekspos ke model (agent tak boleh menyetujui sendiri);
+     default: CLI kecil `python -m integrations.mcp.host ...` pada state-dir yang sama.
+   - MC3 test: client MCP in-memory, `list_tools` = 23 tool tanpa `anyOf`/`$ref`, alur
+     add_file -> workbook_map -> save_spec -> run_pipeline di workbook sintetis; uji nyata di client.
+   - MC4 dokumen: bagian HANDOVER (cara daftar di client), §Keputusan, AGENTS §2 diperjelas.
+   - Dilewati: HTTP/SSE + auth (tambah bila server dipakai bersama), banyak job per proses.
+   - Diputuskan user 2026-11-13: client target = semua (hanya fitur MCP inti: tools via stdio,
+     tanpa prompts/resources/sampling karena dukungan client berbeda); host via CLI terpisah;
+     plugin Maki TIDAK diganti, tetap dibuat nanti untuk pemakaian pribadi (setelah MC4).
+   Catatan lama plugin Maki: folder terpisah (`integrations/maki/`), tanpa
    menyentuh `excel_etl/`. Jembatan satu file Python (satu tool per proses, state di
    `FileStore`, `file_id` = path di disk), `register_tool` Lua untuk 21 tool agent, perintah slash
    untuk sisi host (`add_file`, `answer`, `approve`, `reload_job`) agar agent tidak bisa
@@ -581,6 +610,7 @@ Tersisa (disengaja):
 | Tanggal | Keputusan | Alasan |
 |---|---|---|
 | 2026-11-05 | Library Python murni, bukan framework/plugin/MCP | host (PINTER) yang mengorkestrasi |
+| 2026-11-13 | MCP = integrasi opsional `integrations/mcp_server.py`, extra `[mcp]` (`mcp>=2`, SDK resmi; hanya untuk integrasi, dipilih karena stdio+schema dari type hint, tanpa wrapper per tool) | user ingin dipakai semua client MCP; library tetap tanpa `mcp` |
 | 2026-11-05 | calamine untuk nilai + openpyxl lazy untuk formula/style | 1,0 s vs 16 s (15 MB, 72 sheet) |
 | 2026-11-05 | duckdb sebagai engine + SQL skalar sebagai expression | volume bervariasi, tanpa expression language sendiri |
 | 2026-11-05 | Spec pakai anchor semantik untuk recycle | tiap file beda bentuk, alamat sel tidak stabil |
@@ -908,14 +938,17 @@ Tersisa:
 - Batas jumlah dataset per job?
 - Pemilik target schema Snowflake (nama/tipe kolom)?
 - Retensi versi spec & RunReport?
+| 2026-11-13 | Hemat token agent L1-L5 (dari log 16 job nyata; docstring tool hanya ~1k token, tidak diubah). (L1) `catalog()` tanpa nama kini memuat field config per node (`types*, strict`) dan `node_catalog("cast, drop_rows")` menerima beberapa nama: satu panggilan menggantikan ~2 (dulu 99 panggilan, 15x `drop_rows`). (L2) `save_spec` dari versi 2 hanya menampilkan schema tabel yang berubah (`_changed_tables`: sumber/step baru atau diubah + hilirnya); `ValidationReport.text(only=)`. Terukur: 240 -> 54 karakter pada save ulang. (L3) `RunReport.text(full=False)` dipakai `run_pipeline`: step yang jalan mulus tanpa catatan dan berbaris > 0 dibuang; `last_run` tetap penuh. 537 -> 218 karakter. (L4) `engine._explain`: error konversi duckdb menyebut `cast`/`drop_rows keep_type`, kolom tak ditemukan menyebut kolom yang dibaca step itu. (L5) tool baru `edit_spec(patch_json, note)` dan `pipeline.patch_spec`: `steps` (id sama = ganti, id baru = disisip sebelum step pembacanya, atau di akhir), `remove`, `sources`/`outputs` (null = hapus); hasilnya lewat `_commit` yang sama dengan `save_spec` (validasi, versi, diff). 23 tool agent (dulu 22): HANDOVER, README, skill build-spec dan recycle diperbarui. **Belum:** pengukuran token nyata di host (butuh `usage_metadata`), tes `edit_spec` pada pola sheet berulang, peringatan `#DIV/0!` per sumber masih satu baris tiap sumber. |
 
 ## Log
 
 | Tanggal | Apa |
 |---|---|
+| 2026-11-13 | MC1-MC3 + MC4 sebagian: `integrations/mcp_server.py` (satu file). `serve` = stdio MCP dengan `add_file` + 23 tool agent; tool host tidak diekspos. Perintah lain = sisi manusia (`approve`, `answer`, `record_load`, nama tool apa pun) pada state-dir yang sama. `JobTools` dibuat baru per panggilan agar approve dari proses lain langsung terlihat (tanpa konflik versi). `file_id` = path, ditolak bila di luar `--allow-dir`. Output `<state-dir>/out/<job>/v<N>`. Tes `tests/test_mcp_server.py`: schema datar, alur, path traversal, approve lintas proses, `excel_etl` tidak import `mcp`. 1271 tes + 25 skip, ruff bersih; smoke stdio `initialize` ok. Sisa: uji nyata di client (Claude Code/Cursor/Maki). |
 | 2026-11-12 | Perbaiki total pada `synth`: `drop_rows` memeriksa setiap kolom grain teks, bukan hanya yang pertama; default `total_regex` menambah awalan `jml.` dan `rekap` (hanya awal label, bukan substring nama data); kolom total tidak menjadi kandidat unpivot, termasuk blok `TOTAL|...` yang dibuang sebelum `unpivot_groups`. Steelman satu drop_rows lebih ringkas, tetapi label total di kolom kunci kedua tetap lolos; langkah berurutan menang dan test urutan node disesuaikan. 1236 tes + 25 skip, ruff bersih; 18 tes non-live lab lulus (3 live dibatasi HTTP 429). E2E pupuk lewat HTTP synth `ok` (0,962915), run 156 sheet/517.608 baris; nol baris total pada kabupaten/kode kab. Target uji masih memiliki 936 duplikasi grain dan NULL hasil cast, dilaporkan sebagai masalah kualitas, bukan disembunyikan. |
 
 | 2026-11-12 | S1-S4 synth selesai. `excel_etl/synth.py`: `Target`/`TargetColumn` (ident, grain subset kolom, maks satu `from_header`, `total_regex`, filter lewat `check_expression`), `proposal_regions` (memo `wb.memo`, hanya role source/mixed), `match_columns` (jawaban user 1,0 / exact casefold 1,0 / hint+glossary 0,95 / leaf 0,9 / fuzzy `difflib`*0,8 bila >= 0,75; ragu bila dua teratas beda < 0,1; tipe tak cocok *0,5; header blok berulang dicocokkan per nama leaf), `_build` (fill_down bila grain text bolong; drop_rows total; unpivot|unpivot_groups dari from_header; rename, cast, filter, select; `source_sheet` bila `name_regex`), `_evaluate` (run ke temp dir + skor 0,35 coverage + 0,25 fill + 0,25 unique + 0,15 match; null/unique dihitung dari seluruh hasil lewat SQL, bukan 20 baris pratinjau), `synthesize` (ok >= 0,85 / ask / none; kandidat lain tanpa preview). Lab: `/jobs/{id}/synth` + `/jobs/{id}/synth/publish`, tab Target (form kolom, pertanyaan `select` + `aria-label`, pratinjau, publish). Uji live localhost: synth ok skor 1,0 -> publish -> `/auto` memakai spec. 1204 unit + 25 skip; ruff bersih; lab 20 tes lulus. |
+| 2026-11-13 | `synth`: beberapa grup sheet dicentang jadi SATU output. `answers["region"]` boleh berisi beberapa id dipisah koma; `_synthesize_merged` memanggil `_build(prefix="tN_")` per tabel (id source/step unik), `_merge` menumpuk dengan node `union` (by name) -> satu output `target.name`. Tiap tabel wajib memuat target (tidak ada yang dilewati diam-diam, kalau gagal status `none` + alasan). `_evaluate` menerima daftar region; probe memakai satu sheet wakil per sumber. `draft_targets` kini mengembalikan `sheets` (jumlah), `first`/`last` (urut nama), `left_out` (sheet bernama sama bentuk tapi layout beda, hanya info). Lab: tabel grup dengan checkbox + "Use selected". Total regex default juga menangkap "Total" di akhir; kolom kunci angka di kiri blok berulang jadi grain. Uji: stok pupuk (156 sheet) tetap ok 0.983; 2 grup sintetis (60 harian + 3 bulanan) tergabung benar. **Belum:** kolom beda nama antar grup (satu target, satu pemetaan `answers` untuk semua), peringatan sheet baru berlayout beda di Auto, cap `[:40]` tabel. |
 | 2026-11-11 | M4 selesai: lab job `m4_daily`, workbook harian 161 sheet, agent 181,5 detik; 1 source + 5 steps, 6 save_spec (5 gagal), output 80.698 baris x28 kolom; publish `m4_daily_stock`, `/auto` ok sebelum dan sesudah P6. Satu sheet tanggal tak sebentuk dikecualikan eksplisit agent. Dokumentasi README/DESIGN/docstring/prompt diperbarui; byte UTF-8 rusak di DESIGN diperbaiki. P6 tiga reviewer: perbaiki typing union inkompatibel -> VARCHAR, tabel kedua tak hilang, rebind casefold, escaping regex pipe, hanya source yang dikelompokkan, docstring group. 1198 unit +25 skip, ruff check/format seluruh repo lulus. |
 | 2026-11-11 | M3 selesai: `_shape_groups` memoized mengelompokkan >=3 sheet berdasarkan header region pertama; pola digit `[0-9]{n}` hanya diusulkan bila tak cocok ke sheet luar; map/proposal satu baris per grup, ID asli dan paging sheet tetap. Budget 150 sheet <1500 char. 1193 unit +25 skip lulus. |
 | 2026-11-11 | M2 selesai: rebind memakai `locate_all`; record multi menyimpan sheet pertama, gabungan kolom, jumlah sheet; perubahan nama/jumlah sheet bukan diff; sheet cocok yang gagal -> drift, 0 cocok -> missing. `save_spec` memperingatkan >=3 source dengan role/anchor sama; docstring, prompt lab, label graph menjelaskan `name_regex`. 1186 unit + 25 skip; lab 16 tes non-live relevan lulus, assertion lama 6-vs-7 tab tetap gagal di luar M2. |
@@ -967,3 +1000,4 @@ Tersisa:
 | 2026-11-08 | `skills/`: 4 skill format Agent Skills (`excel-etl-understand`, `-build-spec` + `references/patterns.md`, `-run-verify`, `-recycle`), agnostik agent. `tests/test_skills.py` (31): format (nama = folder, deskripsi, <= 150 baris, aturan Do not / Stop and ask), semua nama tool/node/setting ada di kode, 21 tool agent semua disebut, tiap snippet JSON valid dan dibangun lewat node, langkah wide-to-long dijalankan. Temuan: DESIGN menulis peran sheet `dashboard/chart_data/form`, kode hanya `source/mixed/derived/empty`; DESIGN diperbaiki, skill memakai peran nyata. 15 mutasi mati. |
 | 2026-11-09 | Fase 7: muat hasil ETL ke warehouse sebagai RENCANA, bukan koneksi. `Output.load` (`LoadTarget`: table, mode replace/append/merge, keys; ditolak: merge tanpa keys, keys di luar merge, csv, dua output ke satu tabel; `"load": null` tidak ikut di dump). `excel_etl/load.py`: `Profile` per platform (Snowflake, Databricks, BigQuery: kutip, panjang nama, aturan nama, peta tipe, dari dokumentasi vendor yang dibaca 2026-11-08), `plan_load` (kolom dari file parquet, bukan spec; langkah upload/create/copy/merge/cleanup + SQL), `compare_target` (DESCRIBE host vs file: kolom baru, tipe lain, kolom lebih), `file_columns`. Checkpoint baru `before_load` (default required, per versi spec); tool agent `plan_load` (tool ke-22) dan tool host `record_load` (`JobState.loads`); skill `excel-etl-load`. Semua nama lewat `Profile.quote`, semua nilai lewat `_literal`, jalur stage divalidasi. Tes: `test_load.py` (100 kasus, termasuk parse tiap pernyataan dalam dialek aslinya bila `sqlglot` ada), `test_load_flow.py` (alur dari spec ke tabel di duckdb lokal untuk replace, append, merge), `test_pipeline.py`, skills/readme. Mutasi 50, semua mati. BELUM TERBUKTI: SQL tidak pernah dijalankan di Snowflake, Databricks atau BigQuery; dua hal sengaja ditandai di peringatan rencana (timestamp tanpa zona ke BigQuery DATETIME; batas panjang nama kolom Databricks tidak ditemukan di dokumen, dipakai 255). |
 | 2026-11-12 | Scan bug `synth` + perbaikan (3 subagent: adversarial, auditor, pengguna; 1229 tes hijau). **Diperbaiki:** (1) `match_columns`: blok `grup\|metrik` dikenali walau kolom kunci > 1; jawaban `col:` menang mutlak (skor 2.0, dibatasi 1.0 di laporan) sehingga tak ada loop HITL; prefix hint 0.85; `_` dianggap spasi. (2) `_build`: kolom opsional tak ketemu dilewati dari `cast/select` (+ catatan di `problems`); header sumber tak terpakai yang sama nama dengan kolom target di-`select` keluar; `source_sheet` dipilih bebas-bentrok (casefold, `_free_name`) dan ikut `keep` unpivot; kolom `int` yang dibulatkan dicatat di `reasons`. (3) `SynthReport.notes`: alasan region dibuang (validasi/run/tak ada data), batas 40 region, header yang dilihat bila tak ada yang cocok. `_evaluate` mengembalikan `(kandidat, alasan)`; `run().warnings` masuk `problems`. (4) `_shape_groups`: nama sheet tak berpola dicantumkan sebagai `(?:a\|b\|...)` (batas 600 karakter); sheet bentuk-sama bernama beda (Template) tak merusak pola bertanggal; pengecualian sheet rusak lewat lookahead. `_representative`: wakil grup = sheet pertama yang berisi angka, bukan template kosong. (5) `regions.is_data`: `nums >= 1 and nums*2 >= texts` (tabel teks+teks+angka kini punya header). (6) `sqlexpr.check_expression`: ekspresi harus valid juga TANPA pembungkus `SELECT (...)`; `val) OR (1=1` ditolak (sebelumnya kurung tak seimbang lolos dan memutus filter lain). (7) `cast.decimal` (`"."`/`","`) + `Target.decimal`: teks `1.234,56`/`2.000` dibaca benar; hanya menyentuh kolom teks. (8) `Workbook._cal_lock`: calamine tidak thread-safe (`Already borrowed`). **Belum:** baris total tak dikenal (`Jml.`, `Rekap`), kolom `Total` di kanan ikut unpivot, tabel kedua dalam satu sheet (hanya peringatan run), tabel transpos, header tanggal/angka, sheet bernama mirip dengan isi beda ikut tergabung tanpa tanda, ambang prefix tanpa panjang minimum, `_cache`/`meta`/`_scan` tak terkunci, `proposals[:40]` hanya dicatat. File `nul` di root `excel-etl` (artefak Windows) tak bisa dihapus dari shell; hapus manual. |
+| 2026-11-13 | Perbaikan dari diagnosa bug. (1) `RunReport` mencatat `ref` (versi spec) dan `files` (role -> sha); `plan_load` menolak run yang dibuat untuk versi spec lain atau file yang sudah diganti, jadi parquet lama tidak lagi dimuat atas approval versi baru. (2) Rencana load terakhir disimpan di `JobState.planned`, bukan di memori `JobTools`: `record_load` di turn berikutnya (objek baru, sesuai HANDOVER) jalan, dan `ref` yang dicatat adalah versi saat plan dibuat. (3) `nodes.base.infer` menolak dua kolom yang hanya beda huruf besar/kecil (duckdb menamai ulang jadi `X_1`, run lalu gagal dengan pesan "bug in the node"); `window` mengecek namanya sendiri karena skemanya diturunkan lewat duckdb. (4) `patch_spec` memeriksa bentuk `remove`/`steps`/`sources`/`outputs`. (5) `note`, `node_catalog(node)`, `add_file(role)` bertipe salah jadi error biasa; `node_catalog(",")` = daftar lengkap. (6) Peringatan bila `header_rows` masuk ke baris yang dilihat `sheet_regions` sebagai data. (7) `range` dengan `min > max` ditolak di spec. (8) Petunjuk cast yang tidak didukung duckdb tidak lagi menyalahkan "teks campur angka" (tidak bisa ditangkap saat validate: NULL lolos cast). (9) Kolom teks campuran menulis bool sebagai `TRUE`/`FALSE` dan durasi sebagai `30:00:00`, seperti Excel. Tes: `tests/test_name_case.py` + tambahan di test_load_flow, test_tools, test_engine, test_quality. |
