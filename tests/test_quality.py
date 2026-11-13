@@ -652,3 +652,9 @@ def test_reconcile_where_through_the_engine_with_the_total_row_of_a_workbook(tmp
     bad = make_xlsx({"S": [["Item", "Qty"], ["pen", 2], ["ink", 1], ["Total", 9]]})
     rep = run(spec, {"f": bad}, tmp_path)
     assert rep.status == "failed" and "checks.total_ok" in rep.issues[0].where
+
+
+def test_range_with_min_above_max_is_refused_in_the_spec():
+    with pytest.raises(ValidationError, match="min 5 is above max 1"):
+        chk(kind="range", table="t", column="x", min=5, max=1)
+    chk(kind="range", table="t", column="d", min="2026-01-01", max="2026-12-31")

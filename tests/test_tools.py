@@ -619,3 +619,21 @@ def test_edit_spec_replaces_adds_and_removes_steps_in_one_small_call(tools):
     added = tools.edit_spec(json.dumps({"steps": [cast]}), "add cast")
     assert added["saved"] is True and added["version"] == 2
     assert "error" in tools.edit_spec(json.dumps({"remove": ["nope"]}))
+
+
+@pytest.mark.parametrize(
+    "patch",
+    ['{"remove": 5}', '{"remove": [["x"]]}', '{"steps": 3}', '{"steps": [5]}',
+     '{"sources": [1]}', '{"outputs": "x"}'],
+)  # fmt: skip
+def test_edit_spec_with_a_badly_shaped_patch_is_a_plain_error(tools, patch):
+    tools.save_spec(spec_json())
+    err = tools.edit_spec(patch, "n")["error"]
+    assert "internal error" not in err and "patch" in err
+
+
+def test_wrongly_typed_arguments_are_plain_errors(tools):
+    assert "internal error" not in tools.save_spec(spec_json(), None)["error"]
+    assert "internal error" not in tools.node_catalog(5)["error"]
+    assert "role" in tools.add_file("a", "jan.xlsx", 5)["error"]
+    assert tools.node_catalog(",")["text"] == tools.node_catalog()["text"]

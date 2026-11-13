@@ -88,6 +88,11 @@ def _explain(e: Exception, step: Step, schemas: dict[str, Schema]) -> str:
     """The first line of a duckdb error, plus what to try for the two mistakes seen most in
     real sessions. Without this the agent guesses and retries several times."""
     first = str(e).splitlines()[0]
+    if isinstance(e, duckdb.ConversionException) and "Unimplemented type for cast" in first:
+        return (
+            f"{first}. duckdb has no direct cast between these types; cast through VARCHAR "
+            "first, or use a function such as make_date or strptime."
+        )
     if isinstance(e, duckdb.ConversionException):
         return (
             f"{first}. A column mixes text with numbers or dates (a label row, a footnote). "
@@ -134,6 +139,10 @@ class RunReport(_Report):
     outputs: tuple[OutputStat, ...]
     seconds: float
     checks: tuple[CheckResult, ...] = ()
+    # what the run read: the spec version and file_role -> sha256, so a load can tell that
+    # its parquet file was made from the spec and files of now
+    ref: str | None = None
+    files: dict[str, str] = {}
 
     def text(self, full: bool = True) -> str:
         """`full=False` is for an agent that only needs to act: on success the outputs, on
@@ -254,6 +263,14 @@ def _load_sources(
                 f"{where}: {errors} cell(s) hold an Excel error (#DIV/0!, #N/A ...) and are "
                 f"read as empty; fix them in the workbook, or use fill_missing after the read"
             )
+        for loc in locs:
+            if loc.data_in_header is not None:
+                st.warnings.append(
+                    f"{where}: header_rows {source.region.header_rows} reaches row "
+                    f"{loc.data_in_header + 1} of sheet {loc.sheet!r}, which sheet_regions sees "
+                    "as data, so data values became column names; check header_rows"
+                )
+                break
         if (below := sum(loc.below for loc in locs)) > 0:
             st.warnings.append(
                 f"{where}: {below} more filled row(s) lie below the table after "
@@ -460,6 +477,8 @@ def run(
         outputs=() if failed else tuple(outputs),
         checks=tuple(results),
         seconds=round(time.perf_counter() - t0, 3),
+        ref=ref,
+        files={role: f.sha256 for role, f in files.items() if isinstance(f, Workbook)},
     )
 
 

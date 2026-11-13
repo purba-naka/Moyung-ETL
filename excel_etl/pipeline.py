@@ -283,14 +283,22 @@ def patch_spec(spec: PipelineSpec, patch_json: str) -> PipelineSpec:
         raise SpecError(
             f"patch: {sorted(unknown)} is not a setting here; use steps, remove, sources, outputs"
         )
+    remove, new_steps = patch.get("remove", []), patch.get("steps", [])
+    if not isinstance(remove, list) or not all(isinstance(r, str) for r in remove):
+        raise SpecError('patch: remove must be a list of step ids, such as ["clean"]')
+    if not isinstance(new_steps, list) or not all(isinstance(s, dict) for s in new_steps):
+        raise SpecError("patch: steps must be a list of step objects")
+    for key in ("sources", "outputs"):
+        if not isinstance(patch.get(key) or {}, dict):
+            raise SpecError(f"patch: {key} must be an object of name -> {key[:-1]} or null")
     data = spec.model_dump(mode="json")
     steps: list[dict] = data["steps"]
-    for gone in patch.get("remove", []):
+    for gone in remove:
         if gone not in {s["id"] for s in steps}:
             raise SpecError(f"remove: there is no step {gone!r}")
         steps[:] = [s for s in steps if s["id"] != gone]
-    for new in patch.get("steps", []):
-        if not isinstance(new, dict) or "id" not in new:
+    for new in new_steps:
+        if "id" not in new:
             raise SpecError("steps: each step needs an id")
         at = next((i for i, s in enumerate(steps) if s["id"] == new["id"]), None)
         if at is not None:
