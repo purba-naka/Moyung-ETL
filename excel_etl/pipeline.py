@@ -205,6 +205,16 @@ class PipelineSpec(_Model):
     steps: list[Step] = []
     outputs: dict[Ident, Output] = {}
     checks: dict[Ident, Check] = {}  # rules and totals to hold before anything is written
+    # source -> {column: why it is left out}; a person accepts these (`accept_exclusions`)
+    excluded: dict[Ident, dict[str, Annotated[str, StringConstraints(min_length=3)]]] = {}
+
+    @model_serializer(mode="wrap")
+    def _omit_empty_excluded(self, handler: Any) -> dict[str, Any]:
+        # most specs leave nothing out; an empty `excluded` in every get_spec is only noise
+        data = handler(self)
+        if not data.get("excluded"):
+            data.pop("excluded", None)
+        return data
 
     @model_validator(mode="after")
     def _names_and_wiring(self) -> PipelineSpec:
@@ -230,6 +240,11 @@ class PipelineSpec(_Model):
             for t in tables_of(chk):
                 if t not in known:
                     raise ValueError(f"check {name!r} reads {t!r}, which is not defined")
+        for name in self.excluded:
+            if name not in self.sources:
+                raise ValueError(f"excluded names {name!r}, which is not a source")
+        if any(not cols for cols in self.excluded.values()):
+            raise ValueError("excluded: give each source at least one column, or leave it out")
         files: dict[str, str] = {}
         for name, out in self.outputs.items():
             if out.input not in known:
@@ -278,17 +293,18 @@ def patch_spec(spec: PipelineSpec, patch_json: str) -> PipelineSpec:
         raise SpecError(f"the patch must be a JSON object: {e}") from None
     if not isinstance(patch, dict):
         raise SpecError("the patch must be a JSON object")
-    unknown = set(patch) - {"steps", "remove", "sources", "outputs"}
+    unknown = set(patch) - {"steps", "remove", "sources", "outputs", "excluded"}
     if unknown:
         raise SpecError(
-            f"patch: {sorted(unknown)} is not a setting here; use steps, remove, sources, outputs"
+            f"patch: {sorted(unknown)} is not a setting here; "
+            "use steps, remove, sources, outputs, excluded"
         )
     remove, new_steps = patch.get("remove", []), patch.get("steps", [])
     if not isinstance(remove, list) or not all(isinstance(r, str) for r in remove):
         raise SpecError('patch: remove must be a list of step ids, such as ["clean"]')
     if not isinstance(new_steps, list) or not all(isinstance(s, dict) for s in new_steps):
         raise SpecError("patch: steps must be a list of step objects")
-    for key in ("sources", "outputs"):
+    for key in ("sources", "outputs", "excluded"):
         if not isinstance(patch.get(key) or {}, dict):
             raise SpecError(f"patch: {key} must be an object of name -> {key[:-1]} or null")
     data = spec.model_dump(mode="json")
@@ -308,12 +324,12 @@ def patch_spec(spec: PipelineSpec, patch_json: str) -> PipelineSpec:
             (i for i, s in enumerate(steps) if new["id"] in s.get("inputs", [])), len(steps)
         )
         steps.insert(reader, new)
-    for key in ("sources", "outputs"):
+    for key in ("sources", "outputs", "excluded"):
         for name, value in (patch.get(key) or {}).items():
             if value is None:
-                data[key].pop(name, None)
+                data.get(key, {}).pop(name, None)
             else:
-                data[key][name] = value
+                data.setdefault(key, {})[name] = value
     return parse_spec(json.dumps(data))
 
 
