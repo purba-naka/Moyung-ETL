@@ -20,13 +20,13 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from excel_etl.engine import run, validate
 from excel_etl.inspect.encode import column_names
 from excel_etl.inspect.lineage import region_role
-from excel_etl.inspect.regions import Region, SheetGrid, detect_regions
+from excel_etl.inspect.regions import TOTAL_LABEL, Region, SheetGrid, detect_regions
 from excel_etl.knowledge import Knowledge
 from excel_etl.nodes.base import _NAME_PATTERN, NodeError
 from excel_etl.nodes.source import _type, type_fits
 from excel_etl.nodes.sqlexpr import check_expression
 from excel_etl.pipeline import Output, PipelineSpec, Step, dump_spec
-from excel_etl.workbook import Workbook
+from excel_etl.workbook import Workbook, WorkbookError
 
 Ident = str
 _TARGET_TYPES = {
@@ -61,8 +61,7 @@ class Target(_Model):
     name: Ident
     columns: list[TargetColumn] = Field(min_length=1)
     grain: list[str] = Field(min_length=1)
-    # Pivot tables put the word last ("JAMBI Total"), hand-made reports put it first.
-    total_regex: str = r"(?i)^\s*(?:(?:sub\s*)?(?:total|jumlah|rekap)\b|jml(?:\.|\b))|\btotal\s*$"
+    total_regex: str = TOTAL_LABEL
     filters: list[str] = []
     decimal: Literal[".", ","] = "."  # how numbers typed as text read: 1,234.56 or 1.234,56
 
@@ -194,6 +193,42 @@ def proposal_regions(wb: Workbook, file_id: str = "F1") -> list[Proposal]:
             )
     wb.memo[key] = out
     return out
+
+
+def source_from_region(wb: Workbook, file_id: str, region_id: str, role: str) -> dict:
+    """The `sources` entry for one detected table, ready to paste into a spec.
+
+    The header texts come from the sheet itself, so the agent never has to type them. A table
+    that repeats on same-shaped sheets gets `name_regex` + `sheet_column`, as in `_build`.
+    Raises WorkbookError when `region_id` is not a table of this file.
+    """
+    from excel_etl.inspect.encode import _region, _shape_groups
+
+    label, sheet, region, g = _region(wb, file_id, region_id)
+    if not region.header_rows:
+        raise WorkbookError(f"{label} has no header row (a note or KPI block): it is not a table")
+    groups = {i: (idx, pat) for idx, pat in _shape_groups(wb) for i in idx}
+    index = next(i for i, s in enumerate(wb.sheets) if s.name == sheet)
+    # only the first table of a sheet is what the group was measured on
+    first = next((r for r in detect_regions(wb, sheet, g) if r.header_rows), None)
+    grouped = groups.get(index) if first is not None and first.box == region.box else None
+    anchors = list(
+        dict.fromkeys(
+            str(g.label(r, c))
+            for r in region.header_rows
+            for c in range(region.box[1], region.box[3] + 1)
+            if g.label(r, c) is not None
+        )
+    )[:3]
+    if grouped and grouped[1]:
+        ref = {"name_regex": grouped[1], "sheet_column": "source_sheet"}
+    else:
+        ref = {"name": sheet}
+    return {
+        "file_role": role,
+        "sheet": ref,
+        "region": {"header_anchor": anchors, "header_rows": len(region.header_rows)},
+    }
 
 
 def _key(text: str) -> str:

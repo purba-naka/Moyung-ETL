@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import functools
 import inspect
+import json
 import os
 from collections.abc import Callable
 from datetime import UTC, datetime
@@ -52,6 +53,7 @@ from excel_etl.state import (
     open_ref,
     read_file,
 )
+from excel_etl.synth import source_from_region
 from excel_etl.versions import MAX_NOTE, SpecHistory
 from excel_etl.workbook import Workbook, WorkbookError
 
@@ -248,6 +250,7 @@ class JobTools:
             "compare_sheets",
             "formula_lineage",
             "propose_datasets",
+            "source_for_region",
             "node_catalog",
             "lookup_knowledge",
             "ask_human",
@@ -259,6 +262,7 @@ class JobTools:
             "rebind_sources",
             "run_pipeline",
             "last_run",
+            "verify_run",
             "plan_load",
             "spec_history",
         ]
@@ -351,6 +355,24 @@ class JobTools:
         return encode.propose_datasets(wb, fid, offset, limit)
 
     @_tool
+    def source_for_region(self, region_id: str, file_role: str = "") -> dict:
+        """The `sources` entry for one table from `sheet_regions` (id like F1.S2.R1), as JSON
+        text to paste into save_spec or edit_spec. The header texts and sheet name are read
+        from the file, so you do not type them; a table repeated on same-shaped sheets comes
+        back with name_regex + sheet_column. `file_role` is the role of that file (see
+        job_summary); empty means the only role there is."""
+        head = region_id.split(".")[0] if isinstance(region_id, str) and "." in region_id else "F1"
+        fid, wb = self._file(head)
+        ref = self._state.files[int(fid[1:]) - 1]
+        roles = [r for r, f in self._state.roles.items() if f == ref.id]
+        role = file_role or (roles[0] if len(roles) == 1 else "")
+        if not role:
+            known = ", ".join(self._state.roles) or "none"
+            raise StateError(f"which role is {fid}? give file_role; roles: {known}")
+        entry = source_from_region(wb, fid, region_id, role)
+        return {"text": json.dumps(entry, ensure_ascii=False)}
+
+    @_tool
     def node_catalog(self, node: str = "") -> dict:
         """The step types for a spec. Without `node`: one line each. With a name: its
         description and config fields (`*` = required)."""
@@ -411,7 +433,8 @@ class JobTools:
         """Change the saved spec without sending all of it again; saved as the next version
         like save_spec. patch_json: {"steps": [step, ...] (same id = replace that step, new id
         = added before the step that reads it, else at the end), "remove": ["step_id"],
-        "sources": {"name": source or null}, "outputs": {"name": output or null}}.
+        "sources": {"name": source or null}, "outputs": {"name": output or null},
+        "excluded": {"source": {"column": "why it is left out"} or null}}.
         Use it for repairs; use save_spec for a first version or a rewrite."""
         h = self._state.history
         if h is None:
@@ -538,6 +561,17 @@ class JobTools:
         return {"text": rep.text() if rep else "no run yet"}
 
     @_tool
+    def verify_run(self) -> dict:
+        """Where the numbers of the sources went in the last run, worked out by the library,
+        not by the spec's checks. Each number column with non-zero values is kept by an output,
+        `excluded` in the spec with a reason, or LOST. plan_load refuses a run with a lost
+        column; keep it, or add it to `excluded` (edit_spec) for a person to accept."""
+        rep = self._state.last_run
+        if rep is None or rep.verify is None:
+            return {"text": "no successful run yet; run_pipeline first"}
+        return {"ok": rep.verify.status != "unexplained", "text": rep.verify.text()}
+
+    @_tool
     def plan_load(
         self,
         platform: Literal["snowflake", "databricks", "bigquery"],
@@ -569,6 +603,16 @@ class JobTools:
         ref = f"v{self._version()}"
         if why := gate(s.hitl, "before_load", ref=ref):
             raise StateError(f"{why}. Use ask_human (confirm) and stop; the host approves.")
+        if rep.verify is not None and rep.verify.lost:
+            raise StateError(
+                f"the last run lost {len(rep.verify.lost)} number column(s) of the sources "
+                "(see verify_run); keep them in an output or list them in `excluded`"
+            )
+        if spec.excluded and (why := gate(s.hitl, "accept_exclusions", ref=ref)):
+            raise StateError(
+                f"{why}. The spec leaves columns out (`excluded`); use ask_human (confirm) "
+                "with the list from verify_run and stop; the host approves."
+            )
         if rep.ref != ref:
             raise StateError(
                 f"the last run was made for {rep.ref or 'an older spec'}, not {ref}; "

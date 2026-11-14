@@ -68,7 +68,7 @@ def spec_json(**over):
 def test_agent_tools_are_the_documented_fixed_list(tools):
     names = [f.__name__ for f in tools.agent_tools()]
     assert names[:3] == ["job_summary", "list_files", "workbook_map"]
-    assert len(names) == len(set(names)) == 23
+    assert len(names) == len(set(names)) == 25
     for banned in ("add_file", "answer", "approve", "reload_job", "record_load"):  # host only
         assert banned not in names
 
@@ -637,3 +637,34 @@ def test_wrongly_typed_arguments_are_plain_errors(tools):
     assert "internal error" not in tools.node_catalog(5)["error"]
     assert "role" in tools.add_file("a", "jan.xlsx", 5)["error"]
     assert tools.node_catalog(",")["text"] == tools.node_catalog()["text"]
+
+
+# --- source_for_region: the agent never types header texts ----------------------------------
+
+
+def test_source_for_region_gives_a_source_that_save_spec_accepts(tools):
+    src = json.loads(tools.source_for_region("F1.S1.R1")["text"])
+    assert src["file_role"] == "f" and src["sheet"] == {"name": "Sales"}
+    assert src["region"]["header_rows"] == 1 and "Item" in src["region"]["header_anchor"]
+    spec = json.loads(spec_json())
+    spec["sources"]["sales"] = src
+    assert tools.save_spec(json.dumps(spec))["saved"] is True
+
+
+def test_source_for_region_repeated_sheets_get_name_regex(blobs, tmp_path):
+    days = {f"2026-03-{d:02d}": [["Item", "Qty"], ["a", d], ["b", 2]] for d in range(1, 6)}
+    t = JobTools(Job(new_state("j2")), Provider({"a": make_xlsx(days)}), tmp_path / "o")
+    t.add_file("a", "days.xlsx", "main")
+    sheet = json.loads(t.source_for_region("F1.S1.R1")["text"])["sheet"]
+    assert sheet["sheet_column"] == "source_sheet" and "name" not in sheet
+    import re
+
+    assert all(re.fullmatch(sheet["name_regex"], n) for n in days)
+
+
+def test_source_for_region_says_what_to_fix(tools):
+    assert "not a region id" in tools.source_for_region("nonsense")["error"]
+    assert "R1..R1" in tools.source_for_region("F1.S1.R9")["error"]
+    tools.add_file("a", "jan.xlsx", "g")  # the same file under a second role
+    assert "which role is F1" in tools.source_for_region("F1.S1.R1")["error"]
+    assert json.loads(tools.source_for_region("F1.S1.R1", "g")["text"])["file_role"] == "g"

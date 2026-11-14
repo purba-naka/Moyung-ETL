@@ -272,3 +272,34 @@ def test_a_single_column_of_texts_is_a_list_not_a_table():
     one = [["Nama"]] + [[f"x{i}"] for i in range(6)]
     assert _verdict(one, bold=True) is False
     assert all(not hdr for hdr, _ in _regions(_text_book(one)))
+
+
+def _first(rows):
+    return detect_regions(Workbook.open(make_xlsx({"S": rows})), "S")[0]
+
+
+@pytest.mark.parametrize(
+    ("rows", "want"),
+    [
+        # records with a text first column are not matrices (the old rule called every one so)
+        ([["Bulan", "Qty", "Nilai"], ["JAN", 1, 2], ["FEB", 3, 4], ["MAR", 5, 6]], "rows"),
+        ([["Kabupaten", "Stok"], ["Bogor", 1], ["Depok", 2], ["Bekasi", 3]], "rows"),
+        # a period across the header is
+        (
+            [["Produk", "JAN", "FEB", "MAR"], ["Urea", 1, 2, 3], ["NPK", 4, 5, 6], ["ZA", 7, 8, 9]],
+            "matrix",
+        ),
+        (
+            [["Produk", "Januari", "Februari"], ["Urea", 1, 2], ["NPK", 3, 4], ["ZA", 5, 6]],
+            "matrix",
+        ),
+    ],
+)
+def test_matrix_needs_a_period_across_the_header(rows, want):
+    assert _first(rows).orientation == want
+
+
+@pytest.mark.parametrize("label", ["Total", "Grand Total", "Sub-Total", "Jml. Pupuk", "Rekap"])
+def test_total_row_labels_are_the_same_rule_synth_drops_by(label):
+    region = _first([["Item", "Qty"], ["a", 1], ["b", 2], [label, 3]])
+    assert region.total_rows == (3,)

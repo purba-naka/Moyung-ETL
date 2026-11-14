@@ -13,12 +13,38 @@ Perbarui setiap selesai satu item (lihat AGENTS.md §7).
 
 ## Berikutnya
 
+0. ~~Verifikasi cakupan (V1-V4)~~ SELESAI 2026-11-14 (lihat Log). Sisa: lab `etl-e2e-lab` belum menampilkan `verify` di UI / meneruskan `accept_exclusions`; P6 belum dijalankan; budget sample `(U) PKT` gagal (lama).
 1. Synth S5 (jawaban `col:` -> glossary, jalur `auto` bila `no_spec`); S6 opsional, tanya user dulu.
-2. Spec builder (Planned no. 2): putuskan dulu draf di `JobState` atau terpisah, dan apakah 23 -> ~28 tool aman untuk provider.
+2. ~~Spec builder~~ SELESAI 2026-11-13 dalam versi kecil (satu tool `source_for_region`, 24 tool); lihat Log. Builder step/output/check ditunda sampai ada data kegagalan baru.
 3. Integrasi MCP: MC1-MC3 selesai; sisa uji nyata di client dan P6. Lalu plugin Maki (pribadi).
 4. ~~Percepat `draft_targets`~~ SELESAI 2026-11-13 (D1-D2, lihat Log). Sisa ~8,7 s = sekali baca semua sheet; bila masih terasa lambat, tanya user dulu (kandidat: `_shape_groups` hanya baca baris atas).
 5. Menunggu pihak lain: 6.3 bersama rekan, uji load di akun sungguhan. Sisa lama: temuan P6 Fase 1/2 di §Temuan (`_fit` streaming).
 5. Pertanyaan terbuka di bagian bawah (batas dataset per job, pemilik target schema Snowflake, retensi versi).
+
+## Rencana verifikasi cakupan (V1-V4) — SELESAI 2026-11-14
+
+Masalah: run "ok" bisa membuang 69-89% angka sumber tanpa kabar (temuan B4 lab). Check di spec
+ditulis agent, jadi tidak menguji apa yang agent lupakan. Keputusan user 2026-11-14: tool dipakai
+agent dan host; selisih tanpa alasan memblok `plan_load` (run tetap tertulis); agregat + sampel
+nilai; kolom yang sengaja dibuang dideklarasikan di spec lalu dikonfirmasi manusia.
+
+Lokasi: `excel_etl/verify.py` (baru), dipanggil di `engine.run` sebelum `con.close` (tabel source
+dan output masih ada, tanpa baca ulang file); `RunReport.verify`; `PipelineSpec.excluded`;
+checkpoint `accept_exclusions` (`hitl.py`, default required); `tools.py`: tool agent `verify_run`,
+ringkasan di `run_pipeline`, gate di `plan_load`. Tes: `tests/test_verify.py`.
+
+- V1 neraca kolom: tiap kolom angka sumber dengan nilai non-nol = `used` | `excluded` | `lost`.
+  `used` bila nama (daun `PARENT|LEAF`) ada sebagai kolom atau nilai teks di output (unpivot), atau
+  jumlahnya sama dengan jumlah satu kolom output (rename). Status `ok` / `explained` / `unexplained`.
+- V2 nilai: kolom sumber yang namanya sama di output: jumlah dibandingkan (beda = peringatan bila
+  baris berkurang lewat step, bukan blok) dan sampel 20 nilai output harus ada di kolom sumber.
+- V3 gate: `plan_load` menolak `unexplained`; `excluded` tak kosong butuh `accept_exclusions`
+  untuk versi spec. Tool `verify_run` (25 tool). HANDOVER + README.
+- V4 ruff, pytest, sample BALANSITAS, Log.
+
+ponytail: pencocokan berbasis nama/jumlah, bukan peta kolom per node; rename + filter sekaligus
+bisa terbaca `lost` (positif palsu, aman: memblok, bukan meloloskan). Upgrade: tiap node
+melaporkan peta kolom in->out di `infer_schema`.
 
 ## Rencana percepat draft (D1-D2) — SELESAI 2026-11-13
 
@@ -133,7 +159,7 @@ Tanpa tes waktu (AGENTS §8 P3).
    menyetujui sendiri. Terukur: tiap panggilan sekitar 0,7 s (impor duckdb 0,26 s); bila terasa,
    pertimbangkan proses yang tetap hidup. Perlu diputuskan: hanya Maki atau banyak agent
    (server tipis), dan di mana batas `AGENTS.md` ("bukan MCP server") berlaku: untuk `excel_etl/`.
-2. **Tool pembangun spec (spec builder)** (usul 2026-11-11, dari uji etl-e2e-lab). Masalah: agent
+2. **Tool pembangun spec (spec builder)** — DIPERSEMPIT 2026-11-13: hanya `source_for_region` yang dibangun (lihat Log); sisanya di bawah ini ditunda. (usul 2026-11-11, dari uji etl-e2e-lab). Masalah: agent
    menulis seluruh JSON spec sendiri lalu `save_spec`; model lemah salah nama field, menyalin nama
    dari contoh, salah bentuk `header_anchor`, tiap salah = satu putaran gagal (maks 5). Usul: tool
    bertahap yang mengubah DRAF spec di state (bukan versi): `spec_add_source(region_id, name)`
@@ -1016,6 +1042,9 @@ Tersisa:
 
 | Tanggal | Apa |
 |---|---|
+| 2026-11-14 | V1-V4 verifikasi cakupan: `excel_etl/verify.py` (baru) dipanggil `engine.run` setelah output ditulis, hasil di `RunReport.verify`. Tiap kolom angka sumber dengan nilai non-nol = used/excluded/lost; status ok/explained/unexplained; sampel 20 nilai kolom bernama sama. Spec: field opsional `excluded` (source -> {kolom: alasan}), juga lewat `edit_spec`, dibuang dari dump bila kosong. Checkpoint baru `accept_exclusions` (default required). Tool agent ke-25 `verify_run`; `plan_load` menolak run dengan kolom lost, dan `excluded` tanpa approval untuk versi ini. Teks run ringkas: satu baris verify, lengkap bila ada yang lost. Tes `tests/test_verify.py` (9; mutasi: tanpa deteksi lost -> gagal). Sanity 14 job nyata etl-e2e-lab: 7 unexplained (mis. demo1 51/79 kolom, stok_kab 48/101, saya1 7/19 = pola B4), 5 ok. Sample `-m sample`: 15/16, gagal `test_sample_sheet_regions_budget` ((U) PKT 4087 char) sudah gagal sebelum perubahan ini. pytest 1293 hijau. |
+| 2026-11-13 | Temuan minor agent-eval `encode.py` (branch `spec-builder`). (1) `orientation` `matrix` sekarang butuh minimal 2 periode (bulan/tahun) di header kolom data, bukan sekadar teks di kolom pertama (`_PERIOD` di `regions.py`). Sebelumnya 159 dari 164 tabel file stok pupuk dan ±129 tabel BALANSITAS berlabel `matrix`; sesudahnya stok pupuk 0 matrix, BALANSITAS 122 -> 60. Label hanya tampil di `sheet_regions` (tidak dibaca kode lain). (2) Aturan total satu sumber: `TOTAL_LABEL` di `regions.py` dipakai juga oleh `Target.total_regex` di `synth.py`; dulu keduanya beda (regions tidak kenal `Rekap`/`Jml.`, synth tidak kenal `Grand Total`/`Sub-Total`); gabungan lama tidak ada yang hilang. Usulan 'blok tanpa header tidak punya baris total' DIBATALKAN: pada BALANSITAS 107 baris 'Total' di blok tanpa header adalah total sungguhan (mis. `BALANS UREA`), bukan KPI. Sisa yang sengaja tidak diubah: label berawalan Total ('Total Care', 'Jumlah Siswa') tetap terbaca total, dan blok KPI dashboard yang tanpa header tetap menandai barisnya total (`# ponytail` di `regions.py`; upgrade: cek apakah angka baris sama dengan jumlah baris di atasnya). 3 tes + 5 parametrize baru di `test_regions.py`. 1284 tes + 25 skip, ruff bersih. |
+| 2026-11-13 | Spec builder versi kecil (branch `spec-builder`): satu tool baru `source_for_region(region_id, file_role)` (24 tool agent, bukan ~29). Ukur dasar dari 17 job nyata (`etl-e2e-lab/**/events.jsonl`, 56 `save_spec`): 41 tersimpan, 15 gagal: 9 header/anchor tidak ada di sheet, 5 konfigurasi step, 1 field spec salah (`name_regex requires sheet_column`). Asumsi lama (model salah nama field) hanya 1 dari 15, jadi draf di `JobState` + 6 tool tidak dibangun. Tool memakai ulang logika `synth._build` (`source_from_region` di `synth.py`): `header_anchor`/`header_rows`/`sheet` dibaca dari region terdeteksi, grup sheet sebentuk dapat `name_regex` + `sheet_column`. Uji pada file stok pupuk 161 sheet: 9 dari 9 entry diterima `validate`. 3 tes baru di `test_tools.py`; README, skill `build-spec`, HANDOVER, tes jumlah tool (23 -> 24, MCP 24 -> 25) diperbarui. 1275 tes + 25 skip, ruff bersih. Belum diuji live dengan model non-frontier (user memilih tanpa rerun lab); bila `save_spec` gagal tetap sering, lihat kandidat builder step. |
 | 2026-11-13 | D1-D2 percepat `draft_targets` (branch `percepat-draft-targets`): `detect_regions` di-memo per sheet di `wb.memo` (`regions.py`), dan `proposal_regions` melewati sheet anggota grup sebelum membangun grid (`synth.py`). Satu tes baru (`test_draft_detects_each_sheet_at_most_once`; gagal sebelum D1, 128 grid untuk 64 sheet). File stok pupuk 161 sheet: 20,8 s -> 8,7 s, tetap 9 tabel (lebih baik dari perkiraan 14 s karena `_representative` dan `region_role` ikut terhindar). 1272 tes + 25 skip, ruff bersih. |
 | 2026-11-13 | MC1-MC3 + MC4 sebagian: `integrations/mcp_server.py` (satu file). `serve` = stdio MCP dengan `add_file` + 23 tool agent; tool host tidak diekspos. Perintah lain = sisi manusia (`approve`, `answer`, `record_load`, nama tool apa pun) pada state-dir yang sama. `JobTools` dibuat baru per panggilan agar approve dari proses lain langsung terlihat (tanpa konflik versi). `file_id` = path, ditolak bila di luar `--allow-dir`. Output `<state-dir>/out/<job>/v<N>`. Tes `tests/test_mcp_server.py`: schema datar, alur, path traversal, approve lintas proses, `excel_etl` tidak import `mcp`. 1271 tes + 25 skip, ruff bersih; smoke stdio `initialize` ok. Sisa: uji nyata di client (Claude Code/Cursor/Maki). |
 | 2026-11-12 | Perbaiki total pada `synth`: `drop_rows` memeriksa setiap kolom grain teks, bukan hanya yang pertama; default `total_regex` menambah awalan `jml.` dan `rekap` (hanya awal label, bukan substring nama data); kolom total tidak menjadi kandidat unpivot, termasuk blok `TOTAL|...` yang dibuang sebelum `unpivot_groups`. Steelman satu drop_rows lebih ringkas, tetapi label total di kolom kunci kedua tetap lolos; langkah berurutan menang dan test urutan node disesuaikan. 1236 tes + 25 skip, ruff bersih; 18 tes non-live lab lulus (3 live dibatasi HTTP 429). E2E pupuk lewat HTTP synth `ok` (0,962915), run 156 sheet/517.608 baris; nol baris total pada kabupaten/kode kab. Target uji masih memiliki 936 duplikasi grain dan NULL hasil cast, dilaporkan sebagai masalah kualitas, bukan disembunyikan. |

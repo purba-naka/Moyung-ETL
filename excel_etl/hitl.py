@@ -27,6 +27,7 @@ type Checkpoint = Literal[
     "after_run",
     "before_load",
     "on_rebind_drift",
+    "accept_exclusions",
 ]
 type Mode = Literal["off", "optional", "required", "required_if_fail"]
 type Kind = Literal["clarify", "confirm", "choose"]
@@ -38,6 +39,7 @@ CHECKPOINTS: tuple[str, ...] = (
     "after_run",
     "before_load",
     "on_rebind_drift",
+    "accept_exclusions",
 )
 _MAX_PENDING = 20
 _MAX_TEXT = 1000
@@ -62,6 +64,8 @@ class HitlPolicy(_Model):
             "after_run": "required_if_fail",
             "before_load": "required",
             "on_rebind_drift": "required",
+            # the spec's `excluded` columns: a person agrees that data may be left out
+            "accept_exclusions": "required",
         }
     )
     confidence_below: float | None = Field(default=0.7, ge=0, le=1)

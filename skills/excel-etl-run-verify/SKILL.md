@@ -17,7 +17,9 @@ Tool names may carry a prefix in your host.
 2. `validate_spec` on the saved spec. Fix what it lists before running.
 3. `run_pipeline`. The result has `ok` and `text`.
 4. `last_run` for the full report when `text` was cut.
-5. Read the report (next section). Tell the person what you found, in plain words.
+5. `verify_run`: where every number column of the sources went. Not `ok` means data was
+   left out (see "Lost data").
+6. Read the report (next section). Tell the person what you found, in plain words.
 
 ## Approval gates
 
@@ -45,6 +47,18 @@ Tool names may carry a prefix in your host.
   rows per step), fix the spec, save a new version, run again. Do not loosen the tolerance to
   make it pass unless the person says the difference is acceptable.
 - **Files written**: path, rows, columns. Confirm the names are the outputs you declared.
+
+## Lost data
+
+`verify_run` is the library's own check, not yours: every source column holding non-zero
+numbers must reach an output. A LOST column blocks `plan_load`.
+
+- Lost by mistake (a `select` that forgot it, a wrong `unpivot` pattern): fix the spec, run again.
+- Left out on purpose (a chart helper, a forecast): add it with `edit_spec`
+  `{"excluded": {"source": {"column": "why"}}}`, run again, then `ask_human` (confirm) with the
+  list of excluded columns and stop. A person accepts them (`accept_exclusions`), never you.
+- "sampled values are not in" lines: the values changed under the same name. Fine after a unit
+  conversion you meant; otherwise a step is wrong.
 
 ## Report to the person
 

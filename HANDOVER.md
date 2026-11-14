@@ -28,7 +28,7 @@ from excel_etl.tools import JobTools
 
 tools = JobTools(Job.open("job1", FileStore("state")), my_files, out_dir="out/job1")
 tools.add_file("upload-17", "Balance Jan.xlsx", role="main")
-agent_functions = tools.agent_tools()  # 23 plain methods; give them to the agent
+agent_functions = tools.agent_tools()  # 25 plain methods; give them to the agent
 ```
 
 Job ids are lower case letters, digits and `_ . -` (so they are safe file names on Windows).
@@ -77,6 +77,7 @@ saved before this check existed has no version on its last run, so it needs one 
 `run_pipeline` before its first `plan_load`. `plan_load` saves the plan in the state, so with
 a store it can get a conflict error like the other tools that change the job.
 | `on_rebind_drift` | required | reminder in the `rebind_sources` text; does not block |
+| `accept_exclusions` | required | `plan_load` refuses while the spec's `excluded` is not approved for this spec version |
 
 Approvals are tied to `ref`: `run_pipeline` passes `v<N>` of the saved spec, so an approval given
 for `v1` does not cover `v2`. Approve after the spec is saved; an approval recorded before any spec
@@ -116,6 +117,11 @@ tools.job.update(
 - Ids are stable: `F1` (file), `F1.S12` (sheet), `F1.S12.R2` (table).
 - Expressions the agent writes are scalar SQL checked before use: no subqueries, no file or
   system functions, no multiple statements. duckdb runs with external access off.
+- Every run is checked for lost data, apart from the spec's own checks: each source column
+  holding non-zero numbers must reach an output, or be listed in the spec's `excluded` with a
+  reason. `plan_load` refuses a run with a lost column (`verify_run`, `last_run.verify`).
+  Excluded columns need `approve("accept_exclusions", by, ref)`. The check matches by name and
+  sum, so a column both renamed and filtered reads as lost: it blocks, it never lets a loss by.
 - A failed run writes no file: outputs are written under a temporary name and moved into place
   only when every step and check passed.
 - Files are identified by sha256. A file that changed after it was registered is refused until
@@ -133,7 +139,7 @@ For any MCP client (Claude Code, Cursor, Maki, ...). Install with the extra: `uv
   "--state-dir", "<state>", "--allow-dir", "<excel folder>", "serve"]}}}
 ```
 
-The model gets `add_file` (a path under `--allow-dir`) plus the 23 agent tools. The human side
+The model gets `add_file` (a path under `--allow-dir`) plus the 25 agent tools. The human side
 runs as a command on the same state: `python integrations/mcp_server.py --state-dir <state>
 --allow-dir <dir> approve after_propose_datasets gilbert` (also `answer`, `record_load`).
 

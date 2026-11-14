@@ -16,7 +16,10 @@ Tool names may carry a prefix in your host.
 1. `lookup_knowledge` for rules and terms the person gave.
 2. For every node you plan to use, `node_catalog(node)`: exact config fields (`*` = required)
    and working examples. Never write a node config from memory.
-3. Sources first. Anchor on header text, not on cell addresses (see "Sources").
+3. Sources first: `source_for_region(region_id)` gives the entry for a table from
+   `sheet_regions` with its header texts and sheet name read from the file; paste it into the
+   spec instead of typing them (9 of 15 refused saves in real jobs were header texts that were
+   not on the sheet). Then adjust (see "Sources").
 4. Add steps one concern at a time, in this order: tidy the shape, fix types, derive, combine,
    summarise. `references/patterns.md` maps an Excel shape to the nodes that fix it.
 5. `save_spec(spec_json, note)`. It validates against the files and does not save a spec
