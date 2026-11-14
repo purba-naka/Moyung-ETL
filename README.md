@@ -228,7 +228,7 @@ order are kept.
 |---|---|
 | Look at a file | `workbook_map`, `sheet_regions`, `render_range`, `profile_region`, `find_text`, `compare_sheets`, `formula_lineage`, `propose_datasets`, `source_for_region` |
 | Write a pipeline | `node_catalog`, `save_spec`, `edit_spec`, `get_spec`, `validate_spec`, `spec_history` |
-| Run and recycle | `run_pipeline`, `last_run`, `rebind_sources`, `plan_load` |
+| Run and recycle | `run_pipeline`, `last_run`, `verify_run`, `rebind_sources`, `plan_load` |
 | People and context | `ask_human`, `pending_questions`, `lookup_knowledge`, `job_summary`, `list_files` |
 | Host only | `add_file`, `answer`, `approve`, `reload_job`, `record_load` |
 

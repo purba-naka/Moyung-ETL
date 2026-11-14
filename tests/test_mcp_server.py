@@ -39,7 +39,7 @@ async def test_mcp_tools_flat_and_flow(tmp_path: Path) -> None:
     async with Client(mcp_server.build_server(fresh)) as c:
         tools = (await c.list_tools()).tools
         names = [t.name for t in tools]
-        assert names[0] == "add_file" and len(names) == 25
+        assert names[0] == "add_file" and len(names) == 26
         assert not {"answer", "approve", "record_load", "reload_job"} & set(names)
         for t in tools:
             schema = json.dumps(t.input_schema)

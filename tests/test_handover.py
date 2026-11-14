@@ -120,7 +120,7 @@ def test_every_tool_the_handover_names_exists():
     names = {f.__name__ for f in t.agent_tools()}
     for host in ("add_file", "answer", "approve", "reload_job"):
         assert callable(getattr(t, host)) and host not in names
-    assert len(names) == 24 and "24 plain methods" in TEXT
+    assert len(names) == 25 and "25 plain methods" in TEXT
 
 
 def test_numbers_quoted_in_the_handover_match_the_code():

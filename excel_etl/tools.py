@@ -262,6 +262,7 @@ class JobTools:
             "rebind_sources",
             "run_pipeline",
             "last_run",
+            "verify_run",
             "plan_load",
             "spec_history",
         ]
@@ -432,7 +433,8 @@ class JobTools:
         """Change the saved spec without sending all of it again; saved as the next version
         like save_spec. patch_json: {"steps": [step, ...] (same id = replace that step, new id
         = added before the step that reads it, else at the end), "remove": ["step_id"],
-        "sources": {"name": source or null}, "outputs": {"name": output or null}}.
+        "sources": {"name": source or null}, "outputs": {"name": output or null},
+        "excluded": {"source": {"column": "why it is left out"} or null}}.
         Use it for repairs; use save_spec for a first version or a rewrite."""
         h = self._state.history
         if h is None:
@@ -559,6 +561,17 @@ class JobTools:
         return {"text": rep.text() if rep else "no run yet"}
 
     @_tool
+    def verify_run(self) -> dict:
+        """Where the numbers of the sources went in the last run, worked out by the library,
+        not by the spec's checks. Each number column with non-zero values is kept by an output,
+        `excluded` in the spec with a reason, or LOST. plan_load refuses a run with a lost
+        column; keep it, or add it to `excluded` (edit_spec) for a person to accept."""
+        rep = self._state.last_run
+        if rep is None or rep.verify is None:
+            return {"text": "no successful run yet; run_pipeline first"}
+        return {"ok": rep.verify.status != "unexplained", "text": rep.verify.text()}
+
+    @_tool
     def plan_load(
         self,
         platform: Literal["snowflake", "databricks", "bigquery"],
@@ -590,6 +603,16 @@ class JobTools:
         ref = f"v{self._version()}"
         if why := gate(s.hitl, "before_load", ref=ref):
             raise StateError(f"{why}. Use ask_human (confirm) and stop; the host approves.")
+        if rep.verify is not None and rep.verify.lost:
+            raise StateError(
+                f"the last run lost {len(rep.verify.lost)} number column(s) of the sources "
+                "(see verify_run); keep them in an output or list them in `excluded`"
+            )
+        if spec.excluded and (why := gate(s.hitl, "accept_exclusions", ref=ref)):
+            raise StateError(
+                f"{why}. The spec leaves columns out (`excluded`); use ask_human (confirm) "
+                "with the list from verify_run and stop; the host approves."
+            )
         if rep.ref != ref:
             raise StateError(
                 f"the last run was made for {rep.ref or 'an older spec'}, not {ref}; "

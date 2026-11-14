@@ -32,6 +32,7 @@ from excel_etl.nodes.source import (
 )
 from excel_etl.pipeline import PipelineSpec, Source, Step
 from excel_etl.quality import CheckResult, check_schema, run_checks
+from excel_etl.verify import VerifyReport, verify
 from excel_etl.workbook import Workbook, WorkbookError
 
 type FileInput = Workbook | str | os.PathLike[str] | bytes
@@ -140,8 +141,10 @@ class RunReport(_Report):
     seconds: float
     checks: tuple[CheckResult, ...] = ()
     # what the run read: the spec version and file_role -> sha256, so a load can tell that
-    # its parquet file was made from the spec and files of now
     ref: str | None = None
+    files: dict[str, str] = {}
+    # where the sources' numbers went; None for a failed run (nothing was written)
+    verify: VerifyReport | None = None
     files: dict[str, str] = {}
 
     def text(self, full: bool = True) -> str:
@@ -167,6 +170,10 @@ class RunReport(_Report):
         lines += [f"  wrote {o.path}|{o.rows} rows|{o.columns} cols" for o in self.outputs]
         lines += [f"  {i.where}: {i.message}" for i in self.issues]
         lines += [f"  warning: {w}" for w in self.warnings]
+        if self.verify is not None:
+            # the agent sees the whole verify text only when something was lost
+            text = self.verify.text()
+            lines.append(text if full or self.verify.lost else text.split("\n")[0])
         return "\n".join(lines)
 
 
@@ -440,6 +447,7 @@ def run(
     parts: list[tuple[Path, Path]] = []
     outputs: list[OutputStat] = []
     results: list[CheckResult] = []
+    checked: VerifyReport | None = None
     try:
         _load_sources(spec, files, con, st)
         _run_steps(spec, con, st, run_nodes=True)
@@ -463,6 +471,8 @@ def run(
                 except OSError as e:
                     st.issue(f"outputs.{final.stem}", f"cannot write {final.name!r}: {e}")
                     break
+        if not st.issues:
+            checked = verify(spec, con)
     finally:
         con.close()
         for tmp, _ in parts:
@@ -479,6 +489,7 @@ def run(
         seconds=round(time.perf_counter() - t0, 3),
         ref=ref,
         files={role: f.sha256 for role, f in files.items() if isinstance(f, Workbook)},
+        verify=checked,
     )
 
 
