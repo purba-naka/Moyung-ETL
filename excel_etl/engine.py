@@ -20,6 +20,7 @@ import duckdb
 from pydantic import BaseModel, ConfigDict
 
 from excel_etl.hitl import HitlState, gate
+from excel_etl.inspect.regions import TOTAL_LABEL
 from excel_etl.nodes import Column, NodeError, Schema, build, infer, quote, schema_of
 from excel_etl.nodes.base import check_arity, connect, sql_text
 from excel_etl.nodes.source import (
@@ -410,13 +411,47 @@ def _run_checks(
 
 
 def _publish(parts: list[tuple[Path, Path]], st: _State) -> None:
-    """Move each temporary file to its final name; stop at the first one that fails."""
-    for tmp, final in parts:
+    """Move each temporary file to its final name; on a failure, say which files are new."""
+    for n, (tmp, final) in enumerate(parts):
         try:
             os.replace(tmp, final)
         except OSError as e:
-            st.issue(f"outputs.{final.stem}", f"cannot write {final.name!r}: {e}")
+            new = ", ".join(f.name for _, f in parts[:n]) or "none"
+            old = ", ".join(f.name for _, f in parts[n:])
+            st.issue(
+                f"outputs.{final.stem}",
+                f"cannot write {final.name!r}: {e}; already replaced: {new}; "
+                f"still old: {old}; fix the cause and run again",
+            )
             return
+
+
+def _data_warnings(
+    con: duckdb.DuckDBPyConnection, table: str, schema: Schema, where: str
+) -> list[str]:
+    """A total row left in, or NaN in a number column: one query per output."""
+    label = next((c.name for c in schema if c.type == "VARCHAR"), None)
+    floats = [c.name for c in schema if c.type in ("DOUBLE", "FLOAT")]
+    parts = [f"count(*) FILTER (isnan({quote(c)}))" for c in floats]
+    if label:
+        parts.append(f"count(*) FILTER (regexp_matches({quote(label)}, ?))")
+    if not parts:
+        return []
+    row = con.execute(
+        f"SELECT {', '.join(parts)} FROM {quote(table)}", [TOTAL_LABEL] if label else []
+    ).fetchall()[0]
+    out = [
+        f"{where}: column {c!r} has {n} NaN values (text like 'NaN' cast to DOUBLE); "
+        "filter or fix them"
+        for c, n in zip(floats, row, strict=False)
+        if n
+    ]
+    if label and row[-1]:
+        out.append(
+            f"{where}: {row[-1]} row(s) with a total label in {label!r}; add a drop_rows step "
+            "with drop_regex to remove them"
+        )
+    return out
 
 
 def run(
@@ -526,6 +561,8 @@ def _write_outputs(
                 f"{where}: a HUGEINT column is stored as DOUBLE in parquet (precision is lost "
                 "past 2^53); cast it to BIGINT or DECIMAL first"
             )
+        if schema:
+            st.warnings.extend(_data_warnings(con, out.input, schema, where))
         fmt = "PARQUET" if out.format == "parquet" else "CSV, HEADER"
         try:
             parts.append((tmp, final))

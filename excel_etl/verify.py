@@ -26,6 +26,7 @@ from excel_etl.pipeline import PipelineSpec
 
 _SAMPLE = 20
 _SHOW = 30
+_SKIP_SHOW = 5
 
 
 class VerifyReport(BaseModel):
@@ -36,6 +37,7 @@ class VerifyReport(BaseModel):
     lost: tuple[str, ...] = ()
     excluded: tuple[str, ...] = ()
     values: tuple[str, ...] = ()
+    skipped: tuple[str, ...] = ()
 
     def text(self) -> str:
         lines = [f"verify: {self.status}, {self.checked} number columns of the sources checked"]
@@ -45,6 +47,15 @@ class VerifyReport(BaseModel):
                 lines += [f"    {x}" for x in items[:_SHOW]]
                 if len(items) > _SHOW:
                     lines.append(f"    ... {len(items) - _SHOW} more")
+        if self.skipped:
+            shown = ", ".join(self.skipped[:_SKIP_SHOW])
+            more = (
+                f" +{len(self.skipped) - _SKIP_SHOW} more" if len(self.skipped) > _SKIP_SHOW else ""
+            )
+            lines.append(
+                f"  skipped {len(self.skipped)} text columns with numbers: {shown}{more} "
+                "(cast them to DOUBLE to check)"
+            )
         lines += [f"  values: {v}" for v in self.values]
         if self.lost:
             lines.append(
@@ -75,6 +86,24 @@ def _sums(con: duckdb.DuckDBPyConnection, table: str, cols: list[str]) -> dict[s
     return {c: (row[2 * i] or 0.0, row[2 * i + 1]) for i, c in enumerate(cols)}
 
 
+def _skipped(con: duckdb.DuckDBPyConnection, table: str, cols: list[str]) -> list[str]:
+    """Text columns holding some numbers, as `table.col (e.g. 'n/a')`; one query per table."""
+    if not cols:
+        return []
+    parts = ", ".join(
+        f"count(TRY_CAST({quote(c)} AS DOUBLE)), "
+        f"any_value({quote(c)}) FILTER (TRY_CAST({quote(c)} AS DOUBLE) IS NULL "
+        f"OR isnan(TRY_CAST({quote(c)} AS DOUBLE)))"
+        for c in cols
+    )
+    row = con.execute(f"SELECT {parts} FROM {quote(table)}").fetchall()[0]
+    return [
+        f"{table}.{c} (e.g. {row[2 * i + 1]!r})"
+        for i, c in enumerate(cols)
+        if row[2 * i] and row[2 * i + 1] is not None
+    ]
+
+
 def _close(a: float, b: float) -> bool:
     return abs(a - b) <= 1e-6 * max(1.0, abs(a), abs(b))
 
@@ -91,9 +120,11 @@ def verify(spec: PipelineSpec, con: duckdb.DuckDBPyConnection) -> VerifyReport:
     ]
     text_cols = [(t, c) for t, cols in out_cols.items() for c, typ in cols if typ == "VARCHAR"]
 
-    checked, lost, excluded, values = 0, [], [], []
+    checked, lost, excluded, values, skipped = 0, [], [], [], []
     for src in spec.sources:
-        cols = [c for c, typ in _columns(con, src) if _numeric(typ)]
+        src_cols = _columns(con, src)
+        cols = [c for c, typ in src_cols if _numeric(typ)]
+        skipped += _skipped(con, src, [c for c, typ in src_cols if typ == "VARCHAR"])
         reasons = {k.casefold(): v for k, v in spec.excluded.get(src, {}).items()}
         missing: dict[str, int] = {}
         for c, (total, nonzero) in _sums(con, src, cols).items():
@@ -129,6 +160,7 @@ def verify(spec: PipelineSpec, con: duckdb.DuckDBPyConnection) -> VerifyReport:
         lost=tuple(lost),
         excluded=tuple(excluded),
         values=tuple(values),
+        skipped=tuple(skipped),
     )
 
 
