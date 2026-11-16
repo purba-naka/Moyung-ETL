@@ -24,7 +24,7 @@ from excel_etl.nodes.base import Column
 
 type Mode = Literal["replace", "append", "merge"]
 type StepKind = Literal["upload", "create", "copy", "merge", "cleanup"]
-type Typed = tuple[tuple[str, str, str], ...]  # name, duckdb type, platform type
+type Typed = tuple[tuple[str, str, str], ...]
 
 _DECIMAL = re.compile(r"^DECIMAL\((\d+),(\d+)\)$")
 _MAX_SQL = 20_000
@@ -42,9 +42,9 @@ class Profile:
     name: str
     quote_char: str
     max_name: int
-    bad_name: Callable[[str], str | None]  # why a name cannot be used, whatever the quoting
-    fold: Callable[[str], str]  # two names with the same folded text are one column
-    to_type: Callable[[str], str | None]  # duckdb type name -> platform type, None = none fits
+    bad_name: Callable[[str], str | None]
+    fold: Callable[[str], str]
+    to_type: Callable[[str], str | None]
     notes: tuple[str, ...] = ()
 
     def quote(self, name: str) -> str:
@@ -65,8 +65,6 @@ def _decimal(t: str, max_p: int, max_s: int, name: str) -> str | None:
     return f"{name}({m[1]},{m[2]})"
 
 
-# Snowflake: identifiers (double quotes keep case and any character, at most 255 characters),
-# data-types-numeric (NUMBER up to 38 digits, scale up to 37), copy-into-table, merge, put.
 _SNOWFLAKE_TYPES = {
     "TINYINT": "NUMBER(3,0)", "SMALLINT": "NUMBER(5,0)", "INTEGER": "NUMBER(10,0)",
     "BIGINT": "NUMBER(19,0)", "UTINYINT": "NUMBER(3,0)", "USMALLINT": "NUMBER(5,0)",
@@ -81,16 +79,13 @@ SNOWFLAKE = Profile(
     quote_char='"',
     max_name=255,
     bad_name=lambda n: None,
-    fold=lambda n: n,  # a quoted name keeps its case: "Ton" and "TON" are two columns
+    fold=lambda n: n,
     to_type=lambda t: _SNOWFLAKE_TYPES.get(t) or _decimal(t, 38, 37, "NUMBER"),
     notes=(
         "a HUGEINT above 38 digits fails the load; cast it to DECIMAL(38,0) if it may be that big",
     ),
 )
 
-# Databricks: delta-copy-into (the target Delta table must exist; a file already loaded is
-# skipped), delta-merge-into, sql-ref-names (backticks), column-mapping (a space or one of
-# `,;{}()\n\t=` in a column name needs delta.columnMapping.mode), sql-ref-datatypes.
 _DATABRICKS_TYPES = {
     "TINYINT": "TINYINT", "SMALLINT": "SMALLINT", "INTEGER": "INT", "BIGINT": "BIGINT",
     "FLOAT": "FLOAT", "DOUBLE": "DOUBLE", "VARCHAR": "STRING", "BLOB": "BINARY",
@@ -102,18 +97,13 @@ _NEEDS_MAPPING = re.compile(r"[ ,;{}()\n\t=]")
 DATABRICKS = Profile(
     name="databricks",
     quote_char="`",
-    # ponytail: the docs give no length limit for a column name; 255 is a guess at a safe ceiling
     max_name=255,
     bad_name=lambda n: None,
-    fold=str.casefold,  # names are kept as written but resolved without letter case
+    fold=str.casefold,
     to_type=lambda t: _DATABRICKS_TYPES.get(t) or _decimal(t, 38, 38, "DECIMAL"),
     notes=("unsigned integers and HUGEINT have no Databricks type: cast them first",),
 )
 
-# BigQuery: schemas (column names up to 300 characters, no duplicates that differ only in
-# case, reserved prefixes, flexible names allow spaces and `|`), load-statements (LOAD DATA
-# INTO appends, OVERWRITE replaces and leaves the table unchanged if the load fails),
-# data-types (NUMERIC: 38 digits, scale 9; BIGNUMERIC: 76 digits, scale 38).
 _BQ_PREFIXES = (
     "_TABLE_", "_FILE_", "_PARTITION", "_ROW_TIMESTAMP", "__ROOT__", "_COLIDENTIFIER",
     "_CHANGE_SEQUENCE_NUMBER", "_CHANGE_TYPE", "_CHANGE_TIMESTAMP",
@@ -171,9 +161,9 @@ class Where(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    database: str = ""  # Snowflake database, BigQuery project, Databricks catalog
-    schema_name: str = ""  # Snowflake or Databricks schema, BigQuery dataset
-    stage: str = ""  # Snowflake stage (@db.schema.stage/dir), Databricks volume path, gs:// folder
+    database: str = ""
+    schema_name: str = ""
+    stage: str = ""
 
 
 class Step(BaseModel):
@@ -181,9 +171,9 @@ class Step(BaseModel):
 
     n: int
     kind: StepKind
-    sql: str  # empty for an upload: the host sends the file itself
+    sql: str
     why: str
-    file: str = ""  # upload: the local file to send
+    file: str = ""
 
 
 class LoadPlan(BaseModel):
@@ -284,8 +274,6 @@ type Build = Callable[[Profile, Where, str, str, Mode, list[str], Typed, bool], 
 def _upsert(
     p: Profile, fq: str, tmp: str, keys: list[str], cols: Typed, create: str, copy: str
 ) -> list[Step]:
-    # Replace and append differ too much per platform to share; only the
-    # scratch-table merge is the same shape everywhere.
     return [
         _step("create", create, "a scratch table for the new rows"),
         _step("copy", copy, "load the file into the scratch table"),
@@ -538,9 +526,6 @@ def plan_load(
     )
 
 
-# --- the file that is loaded, and the table it meets ---------------------------------------------
-
-
 def file_columns(path: str) -> tuple[tuple[Column, ...], int]:
     """Columns (duckdb type names) and row count of a parquet file, read from its footer.
 
@@ -566,7 +551,6 @@ def _family(t: str) -> str:
     return re.split(r"[(\s<]", t.strip().upper(), maxsplit=1)[0]
 
 
-# Different spellings of one family, as each platform's own DESCRIBE reports them.
 _SAME = {
     "INT": "INT", "INTEGER": "INT", "BIGINT": "INT", "SMALLINT": "INT", "TINYINT": "INT",
     "INT64": "INT", "FLOAT": "FLOAT", "DOUBLE": "FLOAT", "FLOAT64": "FLOAT", "REAL": "FLOAT",

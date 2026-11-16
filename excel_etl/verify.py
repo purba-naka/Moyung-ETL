@@ -25,17 +25,17 @@ from excel_etl.nodes.base import quote
 from excel_etl.pipeline import PipelineSpec
 
 _SAMPLE = 20
-_SHOW = 30  # lost/excluded columns listed in the text; the rest are counted
+_SHOW = 30
 
 
 class VerifyReport(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     status: Literal["ok", "explained", "unexplained"]
-    checked: int  # number columns of the sources that hold non-zero values
-    lost: tuple[str, ...] = ()  # "source.column (N non-zero)"
-    excluded: tuple[str, ...] = ()  # "source.column: reason"
-    values: tuple[str, ...] = ()  # sampled output values not found in the source column
+    checked: int
+    lost: tuple[str, ...] = ()
+    excluded: tuple[str, ...] = ()
+    values: tuple[str, ...] = ()
 
     def text(self) -> str:
         lines = [f"verify: {self.status}, {self.checked} number columns of the sources checked"]
@@ -98,19 +98,18 @@ def verify(spec: PipelineSpec, con: duckdb.DuckDBPyConnection) -> VerifyReport:
         missing: dict[str, int] = {}
         for c, (total, nonzero) in _sums(con, src, cols).items():
             if not nonzero:
-                continue  # an empty column carries no data to lose
+                continue
             checked += 1
             leaf = c.rsplit("|", 1)[-1].strip().casefold()
             if c.casefold() in reasons:
                 excluded.append(f"{src}.{c}: {reasons[c.casefold()]}")
             elif c.casefold() not in names and leaf not in names:
                 if any(_close(total, s) for s in out_sums):
-                    continue  # renamed: the same numbers are there under another name
+                    continue
                 missing[c] = nonzero
             elif c.casefold() in names:
                 values += _sample(con, src, c, out_cols)
         if missing:
-            # after an unpivot the header names are values of a text column
             wanted = {c.casefold(): c for c in missing} | {
                 c.rsplit("|", 1)[-1].strip().casefold(): c for c in missing
             }
@@ -142,7 +141,6 @@ def _sample(
         hit = next((c for c, typ in cols if c.casefold() == col.casefold() and _numeric(typ)), None)
         if hit is None:
             continue
-        # ORDER BY keeps the sample the same from run to run
         miss = con.execute(
             f"SELECT count(*) FROM (SELECT DISTINCT CAST({quote(hit)} AS DOUBLE) v "
             f"FROM {quote(t)} WHERE {quote(hit)} IS NOT NULL ORDER BY v LIMIT {_SAMPLE}) "

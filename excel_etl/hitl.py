@@ -64,7 +64,6 @@ class HitlPolicy(_Model):
             "after_run": "required_if_fail",
             "before_load": "required",
             "on_rebind_drift": "required",
-            # the spec's `excluded` columns: a person agrees that data may be left out
             "accept_exclusions": "required",
         }
     )
@@ -77,7 +76,7 @@ class PendingQuestion(_Model):
     kind: Kind
     question: str
     options: list[str] = []
-    ref: str | None = None  # what it is about: "sources.sales", "steps.clean", ...
+    ref: str | None = None
 
 
 class Approval(_Model):

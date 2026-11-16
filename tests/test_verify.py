@@ -41,7 +41,7 @@ def step(id_, node, inp, **config):
 @pytest.mark.parametrize(
     ("steps", "out"),
     [
-        ((), "s"),  # everything kept
+        ((), "s"),
         ([step("r", "rename", "s", mapping={"Jan": "January", "Feb": "February"})], "r"),
         ([step("u", "unpivot", "s", keep=["Region"], columns=["Jan", "Feb"])], "u"),
         ([step("f", "filter", "s", where="Jan > 0")], "f"),
@@ -49,7 +49,6 @@ def step(id_, node, inp, **config):
 )
 def test_runs_that_keep_every_number_are_ok(tmp_path, steps, out):
     v = go(tmp_path, steps, out=out)
-    # Empty holds only zeros and blanks: nothing there to lose
     assert v.status == "ok" and v.checked == 2 and not v.lost and not v.values
 
 
@@ -64,7 +63,7 @@ def test_a_declared_exclusion_explains_the_loss(tmp_path):
     v = go(
         tmp_path,
         [step("k", "select", "s", columns=["Region", "Jan"])],
-        excluded={"s": {"feb": "a forecast, not actuals"}},  # letter case ignored
+        excluded={"s": {"feb": "a forecast, not actuals"}},
         out="k",
     )
     assert v.status == "explained" and not v.lost
@@ -73,7 +72,7 @@ def test_a_declared_exclusion_explains_the_loss(tmp_path):
 
 def test_changed_values_under_the_same_name_are_reported(tmp_path):
     v = go(tmp_path, [step("x", "derive", "s", name="Jan", expr="Jan * 1000")], out="x")
-    assert v.status == "ok"  # the column is there: a unit change is not a loss
+    assert v.status == "ok"
     assert v.values == (
         "x.Jan: 3 of up to 20 sampled values are not in s.Jan "
         "(fine after a unit conversion, otherwise check the steps)",
@@ -96,7 +95,7 @@ def test_plan_load_refuses_lost_data_until_explained_and_accepted(tmp_path):
     assert t.save_spec(json.dumps(spec))["saved"]
     t.approve("after_propose_datasets", "dina", "v1")
     r = t.run_pipeline()
-    assert r["ok"] and "LOST" in r["text"]  # the run is written; the loss is shown
+    assert r["ok"] and "LOST" in r["text"]
     assert t.verify_run()["ok"] is False
     t.approve("before_load", "dina", "v1")
     assert "lost 1 number column" in t.plan_load("snowflake", "o")["error"]

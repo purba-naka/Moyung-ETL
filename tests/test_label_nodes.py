@@ -17,16 +17,13 @@ def _rel(sql: str):
 def _run(name: str, config: dict, rel):
     n = build(name, config)
     out = n.run([rel])
-    assert infer(n, [schema_of(rel)]) == schema_of(out)  # the contract, on every case
+    assert infer(n, [schema_of(rel)]) == schema_of(out)
     return out
 
 
 def _codes(*codes: str | None):
     rows = ", ".join(f"({i}, {'NULL' if c is None else repr(c)})" for i, c in enumerate(codes))
     return _rel(f"select * from (values {rows}) v(i, code) order by i")
-
-
-# --- parse_hierarchy -------------------------------------------------------------------------
 
 
 def test_hierarchy_levels_and_parents() -> None:
@@ -59,7 +56,7 @@ def test_hierarchy_bad_codes_are_null_not_guessed() -> None:
         "parse_hierarchy", {"column": "code"}, _codes("1..2", "1.2.", ".1", "", "  1.2  ", None)
     )
     got = [(r[2], r[3]) for r in out.fetchall()]
-    assert got == [(None, None)] * 4 + [(2, "1"), (None, None)]  # trimmed code works
+    assert got == [(None, None)] * 4 + [(2, "1"), (None, None)]
 
 
 def test_hierarchy_whole_numbers_work_and_decimals_are_refused() -> None:
@@ -102,9 +99,6 @@ def test_hierarchy_config_errors(config: dict) -> None:
         build("parse_hierarchy", config)
 
 
-# --- split_header_token ----------------------------------------------------------------------
-
-
 def _tokens(*vals: str | None):
     rows = ", ".join(f"({i}, {'NULL' if v is None else repr(v)})" for i, v in enumerate(vals))
     return _rel(f"select * from (values {rows}) v(i, name) order by i")
@@ -120,8 +114,8 @@ def test_split_by_separator() -> None:
     assert [r[2:] for r in out.fetchall()] == [
         ("JAN", "Ton"),
         ("FEB", "Kg"),
-        ("MAR", None),  # fewer parts: the rest is NULL
-        ("APR", None),  # empty part is NULL
+        ("MAR", None),
+        ("APR", None),
         (None, None),
     ]
 
@@ -209,9 +203,6 @@ def test_split_schema_errors() -> None:
         )
     ok = {"column": "name", "into": ["name", "b"], "separator": "|", "drop_source": True}
     assert [c.name for c in infer(build("split_header_token", ok), [schema])] == ["i", "name", "b"]
-
-
-# --- the two together, on a shape that is not any particular workbook -------------------------
 
 
 def test_workbook_unpivot_then_split_header() -> None:

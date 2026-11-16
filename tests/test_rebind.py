@@ -54,8 +54,8 @@ def test_same_file_against_its_own_record_stays_exact() -> None:
 @pytest.mark.parametrize(
     ("rows", "where"),
     [
-        ([[None, None, None], [None, None, None], *_BASE], "A3"),  # moved down
-        ([[None, *r] for r in _BASE], "B1"),  # moved right
+        ([[None, None, None], [None, None, None], *_BASE], "A3"),
+        ([[None, *r] for r in _BASE], "B1"),
         (
             [
                 ["note", None, None, None],
@@ -78,7 +78,7 @@ def test_a_table_that_moved_is_shifted_and_runs_as_is(rows, where) -> None:
 def test_a_renamed_sheet_found_by_name_like_is_shifted() -> None:
     spec = _spec(_src(sheet={"name_like": "Data 2025"}))
     prev = _bind(_BASE, spec, sheet="Data 2025").records()
-    s = _bind(_BASE, spec, prev, sheet="data  2025").sources["s"]  # spacing and case only
+    s = _bind(_BASE, spec, prev, sheet="data  2025").sources["s"]
     assert s.status == "shifted" and s.diff == ("sheet 'Data 2025' -> 'data  2025'",)
     spec2 = _spec(_src(sheet={"name": "Data", "name_like": "Data 2025"}))
     prev2 = _bind(_BASE, spec2, sheet="Data").records()
@@ -113,7 +113,7 @@ def test_columns_added_or_removed_matter_only_when_the_spec_does_not_cover_them(
     prev = _bind(old, spec).records()
     grown = [["Item", "Plant 1", "Plant 2", "Plant 3"], ["a", 1, 2, 3]]
     s = _bind(grown, spec, prev).sources["s"]
-    assert s.status == "shifted" and s.diff == ("columns added: Plant 3",)  # the group covers it
+    assert s.status == "shifted" and s.diff == ("columns added: Plant 3",)
     odd = [["Item", "Plant 1", "Plant 2", "Rework"], ["a", 1, 2, 3]]
     s = _bind(odd, spec, prev).sources["s"]
     assert s.status == "drift" and "no expect_columns entry covers: Rework" in s.diff[0]

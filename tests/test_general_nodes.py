@@ -18,16 +18,13 @@ def _rel(sql: str):
 def _run(name: str, config: dict, rel):
     n = build(name, config)
     out = n.run([rel])
-    assert infer(n, [schema_of(rel)]) == schema_of(out)  # the contract, on every case
+    assert infer(n, [schema_of(rel)]) == schema_of(out)
     return out
 
 
 _T = """select * from (values
     (1, 'a', 2.5, date '2026-01-01'), (2, NULL, NULL, NULL), (3, 'c', 1.0, date '2026-02-01')
 ) v(id, label, "JAN|Ton", day)"""
-
-
-# --- check_type ------------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize(
@@ -70,9 +67,6 @@ def test_check_type_refuses_the_rest(bad) -> None:
         check_type(bad)
 
 
-# --- rename ----------------------------------------------------------------------------------
-
-
 def test_rename_keeps_order_and_other_columns() -> None:
     out = _run("rename", {"mapping": {"JAN|Ton": "ton", "id": "no"}}, _rel(_T))
     assert out.columns == ["no", "label", "ton", "day"]
@@ -103,9 +97,6 @@ def test_rename_config_errors(config: dict) -> None:
         build("rename", config)
 
 
-# --- cast ------------------------------------------------------------------------------------
-
-
 def test_cast_lenient_turns_misfits_into_null() -> None:
     rel = _rel("select * from (values ('1'), ('2'), ('JAN'), (NULL)) v(x)")
     out = _run("cast", {"types": {"x": "integer"}}, rel)
@@ -130,7 +121,6 @@ def test_cast_decimal_comma_reads_indonesian_numbers_in_text_cells() -> None:
     rel = _rel("select * from (values ('1.234,56'), ('2.000'), ('300,5'), ('-'), (' 7 ')) v(x)")
     out = _run("cast", {"types": {"x": "double"}, "decimal": ","}, rel)
     assert out.fetchall() == [(1234.56,), (2000.0,), (300.5,), (None,), (7.0,)]
-    # without it the same text is misread: "2.000" is two, and "1.234,56" is lost
     plain = _run("cast", {"types": {"x": "double"}}, rel).fetchall()
     assert plain[0] == (None,) and plain[1] == (2.0,)
 
@@ -149,14 +139,11 @@ def test_cast_errors() -> None:
             build("cast", bad)
 
 
-# --- filter ----------------------------------------------------------------------------------
-
-
 def test_filter_keeps_true_rows_only() -> None:
     out = _run("filter", {"where": '"JAN|Ton" > 1.5 OR label IS NULL'}, _rel(_T))
     assert [r[0] for r in out.fetchall()] == [1, 2]
     out = _run("filter", {"where": '"JAN|Ton" > 0'}, _rel(_T))
-    assert [r[0] for r in out.fetchall()] == [1, 3]  # the NULL row is dropped, as in SQL
+    assert [r[0] for r in out.fetchall()] == [1, 3]
 
 
 def test_filter_text_and_date_conditions() -> None:
@@ -187,9 +174,6 @@ def test_filter_schema_errors(config: dict, needle: str) -> None:
 def test_filter_refuses_unsafe_expressions_when_built(where: str) -> None:
     with pytest.raises(NodeError):
         build("filter", {"where": where})
-
-
-# --- derive ----------------------------------------------------------------------------------
 
 
 def test_derive_adds_a_column_last() -> None:
@@ -243,9 +227,6 @@ def test_derive_config_errors(config: dict) -> None:
         build("derive", config)
 
 
-# --- fill_missing ----------------------------------------------------------------------------
-
-
 def test_fill_missing_numbers_text_and_bool() -> None:
     out = _run("fill_missing", {"values": {"JAN|Ton": 0, "label": "n/a"}}, _rel(_T))
     assert [(r[1], r[2]) for r in out.fetchall()] == [("a", 2.5), ("n/a", 0.0), ("c", 1.0)]
@@ -273,9 +254,6 @@ def test_fill_missing_value_must_fit_the_column() -> None:
         infer(build("fill_missing", {"values": {"JAN|Ton": float("nan")}}), [schema_of(_rel(_T))])
 
 
-# --- sort ------------------------------------------------------------------------------------
-
-
 def test_sort_directions_and_nulls_last() -> None:
     rel = _rel(_T)
     assert [r[0] for r in _run("sort", {"by": ["JAN|Ton"]}, rel).fetchall()] == [3, 1, 2]
@@ -285,8 +263,8 @@ def test_sort_directions_and_nulls_last() -> None:
 
 def test_sort_column_that_starts_with_a_dash() -> None:
     rel = _rel('select * from (values (2, 1), (1, 2)) v("-x", y)')
-    assert [r[0] for r in _run("sort", {"by": ["-x"]}, rel).fetchall()] == [1, 2]  # real column
-    assert [r[0] for r in _run("sort", {"by": ["-y"]}, rel).fetchall()] == [1, 2]  # y descending
+    assert [r[0] for r in _run("sort", {"by": ["-x"]}, rel).fetchall()] == [1, 2]
+    assert [r[0] for r in _run("sort", {"by": ["-y"]}, rel).fetchall()] == [1, 2]
 
 
 def test_sort_errors() -> None:
@@ -296,15 +274,12 @@ def test_sort_errors() -> None:
         build("sort", {"by": []})
 
 
-# --- dedupe ----------------------------------------------------------------------------------
-
-
 def test_dedupe_all_columns_and_by_keys() -> None:
     rel = _rel("select * from (values (1,'a'),(1,'a'),(1,'b'),(NULL,'z'),(NULL,'z')) v(k, v)")
     assert sorted(_run("dedupe", {}, rel).fetchall(), key=str) == [(1, "a"), (1, "b"), (None, "z")]
     out = _run("dedupe", {"keys": ["k"]}, rel)
     got = out.fetchall()
-    assert len(got) == 2 and {r[0] for r in got} == {1, None}  # NULL counts as one key value
+    assert len(got) == 2 and {r[0] for r in got} == {1, None}
 
 
 def test_dedupe_keeps_the_first_after_sort() -> None:
@@ -321,9 +296,6 @@ def test_dedupe_errors() -> None:
         infer(build("dedupe", {"keys": ["id", "id"]}), [schema_of(_rel(_T))])
     with pytest.raises(NodeError):
         build("dedupe", {"keys": []})
-
-
-# --- together, on a workbook shaped unlike any other test ------------------------------------
 
 
 def test_workbook_clean_up_chain() -> None:
@@ -353,11 +325,9 @@ def test_workbook_clean_up_chain() -> None:
 
 
 def test_dedupe_first_means_first_in_table_order_on_a_large_table() -> None:
-    # on small tables any plan gives the same answer; with 200k rows a parallel scan reaches
-    # keys in another order, and a plain row_number() keeps the wrong row
     rel = _rel("select i % 50 as k, i as seq from range(200000) t(i)")
     out = _run("dedupe", {"keys": ["k"]}, rel).fetchall()
-    assert [r[1] for r in out] == list(range(50))  # row k first appears at seq k, in order
+    assert [r[1] for r in out] == list(range(50))
 
 
 def test_dedupe_without_keys_keeps_the_first_copy_in_table_order() -> None:
@@ -366,7 +336,7 @@ def test_dedupe_without_keys_keeps_the_first_copy_in_table_order() -> None:
     seen: dict[int, None] = {}
     for (k,) in rel.fetchall():
         seen.setdefault(k, None)
-    assert got == list(seen)  # each value once, in order of first appearance
+    assert got == list(seen)
 
 
 def test_sort_puts_nulls_last_in_both_directions() -> None:

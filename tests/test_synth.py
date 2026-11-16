@@ -79,7 +79,7 @@ def test_match_uses_hints_glossary_leaf_and_answers():
     )
     assert mapping == {"quantity": "Amount"} and not questions
     _, _, questions = match_columns(t, ["Amount", "Amt"], ["DOUBLE", "DOUBLE"], {}, Knowledge())
-    assert not questions  # an exact hint is stronger than a fuzzy alternative
+    assert not questions
     mapping, _, _ = match_columns(
         t, ["Plant|Amount"], ["DOUBLE"], {"col:quantity": "Plant|Amount"}, None
     )
@@ -160,7 +160,6 @@ def test_no_match_returns_problems_not_a_fake_spec():
 
 
 def test_grouped_header_with_several_key_columns_and_text_measure():
-    # Two key columns (Region, Code) sit left of the Plant blocks, like a stock sheet.
     wb = book(
         [
             ["Region", "Code", "Plant A", "Plant A", "Plant B", "Plant B"],
@@ -185,8 +184,6 @@ def test_grouped_header_with_several_key_columns_and_text_measure():
 
 
 def test_one_workbook_read_from_many_threads():
-    # The lab runs synth in a thread pool and caches workbooks, so two quick clicks read the
-    # same calamine reader at once. That used to fail with "Already borrowed".
     from concurrent.futures import ThreadPoolExecutor
 
     xl = openpyxl.Workbook()
@@ -204,8 +201,6 @@ def test_one_workbook_read_from_many_threads():
 
 
 def test_repeated_sheets_are_read_together_and_odd_ones_skipped():
-    # Daily sheets share one layout; one day was typed wrong. Synthesis should read all the
-    # good days into one table and leave the broken one out, not fall back to a single sheet.
     xl = openpyxl.Workbook()
     xl.active.title = "Notes"
     xl.active.append(["How to fill this file"])
@@ -260,7 +255,6 @@ def test_optional_column_missing_from_the_sheet_is_left_out_not_fatal():
 
 
 def test_an_explicit_answer_wins_over_a_header_named_like_the_target():
-    # Header "prov" equals the target name (score 1.0) and "Provinsi" is the answer (1.0).
     wb = book([["Provinsi", "Nilai", "prov"], ["a", 1, "x"], ["b", 2, "y"]])
     t = target(
         [
@@ -300,8 +294,6 @@ def test_target_column_called_source_sheet_does_not_clash_with_the_sheet_column(
 
 
 def test_a_dropped_candidate_says_why():
-    # Nothing in the sheet resembles the target, so there is no candidate; the report must
-    # still say which headers it saw instead of a bare "none".
     t = target([TargetColumn(name="zzz", type="text", hints=["zzz"])], ["zzz"])
     report = synthesize(t, _simple_book())
     assert report.status in ("none", "ask")
@@ -343,7 +335,7 @@ def _month_sheets(names: list[str], odd: str | None = None) -> Workbook:
     "names",
     [
         ["Jan", "Feb", "Mar", "Apr"],
-        [f"Hari {d}" for d in range(1, 13)],  # 1 and 2 digits: no single digit pattern
+        [f"Hari {d}" for d in range(1, 13)],
     ],
 )
 def test_sheets_named_without_a_common_pattern_are_still_all_read(names):
@@ -383,7 +375,6 @@ def test_warnings_from_the_run_and_rounding_reach_the_report():
     assert report.status == "ok", report.text()
     assert any("rounded" in r for r in report.best.reasons)
 
-    # rows far below the table are not read; run() warns and synth must pass that on
     gap = [["Item", "Qty"], ["a", 1], ["b", 2], ["c", 3], [None, None], [None, None], ["z", 99]]
     t2 = target(t.columns, ["item"])
     warned = synthesize(t2, book(gap))
@@ -391,8 +382,6 @@ def test_warnings_from_the_run_and_rounding_reach_the_report():
 
 
 def test_an_empty_template_sheet_does_not_stand_for_the_group():
-    # Template sheets share the layout of the real days but hold no numbers; the table to
-    # propose must come from a sheet that has data.
     xl = openpyxl.Workbook()
     xl.remove(xl.active)
     for name, filled in [("Template", False)] + [(f"2026-01-{d:02d}", True) for d in range(1, 13)]:
@@ -534,7 +523,7 @@ def _two_groups() -> Workbook:
         ws = xl.create_sheet(m)
         ws.append(["Barang", "Jumlah"])
         ws.append(["a", 10])
-    ws = xl.create_sheet("2026-04-31")  # same name shape, other layout: left out, but shown
+    ws = xl.create_sheet("2026-04-31")
     ws.append(["Barang", "Jumlah", "Extra"])
     ws.append(["a", 1, 1])
     buf = io.BytesIO()
@@ -571,7 +560,6 @@ def test_several_ticked_groups_are_stacked_into_one_output():
     assert report.status == "ok", report.text()
     assert report.best.region == ",".join(ids)
     assert "union" in report.best.spec
-    # 60 daily sheets x (1 + 2) + 3 months x 10 -- both groups end up in the one output
     assert _sum_run(report, wb, "qty") == (60 * 2 + 3, 60 * 3 + 30)
 
 
@@ -580,10 +568,10 @@ def test_draft_detects_each_sheet_at_most_once(monkeypatch):
     from excel_etl.synth import draft_targets
 
     wb = _two_groups()
-    wb.memo.clear()  # the cache may hold this file from another test
+    wb.memo.clear()
     calls = []
     real = regions._analyze
     monkeypatch.setattr(regions, "_analyze", lambda g, box: calls.append(g) or real(g, box))
     first = draft_targets(wb)
-    assert len({id(g) for g in calls}) <= len(wb.sheets)  # one grid per sheet at most
+    assert len({id(g) for g in calls}) <= len(wb.sheets)
     assert draft_targets(wb) == first

@@ -26,7 +26,7 @@ def _rel(rows: list[tuple], cols: str = _COLS):
 def _run(config: dict, rel):
     n = build("window", config)
     out = n.run([rel])
-    assert infer(n, [schema_of(rel)]) == schema_of(out)  # the contract, on every case
+    assert infer(n, [schema_of(rel)]) == schema_of(out)
     return out
 
 
@@ -40,12 +40,9 @@ def _err(config: dict, rel) -> str:
     return str(e.value)
 
 
-# --- the reference: the slow, obvious way ------------------------------------------------------
-
-
 def _cmp(a, b):
     if a is None or b is None:
-        return (a is None) - (b is None)  # NULL last
+        return (a is None) - (b is None)
     return (a > b) - (a < b)
 
 
@@ -155,12 +152,9 @@ _CONFIGS = [
 def test_matches_the_reference_on_every_data_shape(kind: str, cfg: dict) -> None:
     rows = _data(7, 400, kind)
     got = _run({"name": "w", **cfg}, _rel(rows)).fetchall()
-    assert [r[:5] for r in got] == rows  # every row, the same order, old columns untouched
+    assert [r[:5] for r in got] == rows
     for g, w in zip([r[5] for r in got], _reference(rows, cfg), strict=True):
         assert g == pytest.approx(w) if isinstance(w, float) and g is not None else g == w
-
-
-# --- edges --------------------------------------------------------------------------------------
 
 
 def test_empty_table_keeps_its_columns() -> None:
@@ -218,7 +212,7 @@ def test_awkward_column_names_work_and_a_real_dash_column_beats_the_marker() -> 
         "fn": "sum",
         "column": "JAN|Ton",
         "partition_by": ['my "g"'],
-        "order_by": ["-x"],  # a real column, so ascending: 8 comes before 9
+        "order_by": ["-x"],
     }
     out = _run(cfg, con.sql("SELECT * FROM s"))
     assert out.columns[-1] == "a b"
@@ -244,9 +238,6 @@ def test_output_type(cfg: dict, col_type: str, out_type: str) -> None:
     rel = _rel([], f"v {col_type}")
     out = _run({"name": "w", **cfg}, rel)
     assert str(out.types[-1]) == out_type
-
-
-# --- refusals -----------------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize(
@@ -306,4 +297,4 @@ def test_200k_rows_keep_their_order_and_stay_fast() -> None:
     ):
         out = _run({"name": "w", **cfg}, rel).fetchall()
         assert [r[0] for r in out] == list(range(200000))
-    assert time.perf_counter() - t0 < 30  # only catches a blow-up, not a slow machine
+    assert time.perf_counter() - t0 < 30

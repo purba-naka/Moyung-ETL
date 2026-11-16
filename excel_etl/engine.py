@@ -57,19 +57,18 @@ class _Report(BaseModel):
 
 
 class Issue(_Report):
-    where: str  # "sources.sales", "steps.clean", "outputs.final", "files"
+    where: str
     message: str
 
 
 class NodeStat(_Report):
     id: str
     kind: Literal["source", "step"]
-    node: str  # "read_region" for a source
-    rows_in: int  # rows of all inputs together; 0 for a source
+    node: str
+    rows_in: int
     rows_out: int
     columns: int
     seconds: float
-    # why the row count may differ from the rows read; shown only when it did
     note: str = ""
 
 
@@ -115,8 +114,6 @@ class ValidationReport(_Report):
     ok: bool
     issues: tuple[Issue, ...]
     warnings: tuple[str, ...]
-    # columns each source and step gives, by name; a name is absent when it could not be
-    # worked out (no file given, or an earlier step failed)
     schemas: dict[str, tuple[Column, ...]]
 
     def text(self, only: set[str] | None = None) -> str:
@@ -141,10 +138,8 @@ class RunReport(_Report):
     outputs: tuple[OutputStat, ...]
     seconds: float
     checks: tuple[CheckResult, ...] = ()
-    # what the run read: the spec version and file_role -> sha256, so a load can tell that
     ref: str | None = None
     files: dict[str, str] = {}
-    # where the sources' numbers went; None for a failed run (nothing was written)
     verify: VerifyReport | None = None
     files: dict[str, str] = {}
 
@@ -172,7 +167,6 @@ class RunReport(_Report):
         lines += [f"  {i.where}: {i.message}" for i in self.issues]
         lines += [f"  warning: {w}" for w in self.warnings]
         if self.verify is not None:
-            # the agent sees the whole verify text only when something was lost
             text = self.verify.text()
             lines.append(text if full or self.verify.lost else text.split("\n")[0])
         return "\n".join(lines)
@@ -184,7 +178,7 @@ class _State:
     warnings: list[str] = field(default_factory=list)
     schemas: dict[str, Schema] = field(default_factory=dict)
     stats: list[NodeStat] = field(default_factory=list)
-    cut: int = 0  # issues dropped for lack of room; said once at the end
+    cut: int = 0
 
     def rows(self, name: str) -> int:
         """Rows of a source or step that ran: the one place a count lives is its NodeStat."""
@@ -314,8 +308,6 @@ def _load_sources(
 
 
 def _count(con: duckdb.DuckDBPyConnection, table: str) -> int:
-    # fetchall, not fetchone: duckdb 2.0 keeps the result of fetchone() open on the connection
-    # and the next relation operation on it fails with "unfinished result"
     return con.execute(f"SELECT count(*) FROM {quote(table)}").fetchall()[0][0]
 
 
@@ -332,7 +324,7 @@ def _run_steps(
             continue
         inputs = [st.schemas.get(i) for i in step.inputs]
         if any(s is None for s in inputs):
-            continue  # an input is unknown or failed: that problem is already listed
+            continue
         t0 = time.perf_counter()
         try:
             inferred = infer(n, inputs)  # type: ignore[arg-type]
@@ -495,7 +487,7 @@ def run(
     finally:
         con.close()
         for tmp, _ in parts:
-            if not tmp.is_dir():  # a directory in the way is not ours: leave it
+            if not tmp.is_dir():
                 tmp.unlink(missing_ok=True)
     failed = bool(st.issues)
     return RunReport(
@@ -539,7 +531,7 @@ def _write_outputs(
             parts.append((tmp, final))
             dest = sql_text(tmp.as_posix())
             con.execute(f"COPY (SELECT * FROM {quote(out.input)}) TO {dest} (FORMAT {fmt})")
-        except duckdb.Error as e:
+        except (duckdb.Error, NodeError) as e:
             st.issue(where, f"could not write {final.name}: {str(e).splitlines()[0]}")
             return
         outputs.append(

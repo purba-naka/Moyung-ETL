@@ -20,7 +20,7 @@ def _rel(sql: str, con: duckdb.DuckDBPyConnection | None = None):
 def _run(name: str, config: dict, rel):
     n = build(name, config)
     out = n.run([rel])
-    assert infer(n, [schema_of(rel)]) == schema_of(out)  # the contract, on every case
+    assert infer(n, [schema_of(rel)]) == schema_of(out)
     return out
 
 
@@ -38,13 +38,13 @@ def test_drop_rows_keep_type_removes_subtotal_labels() -> None:
     rel = _rel(_DAYS)
     out = _run("drop_rows", {"column": "TANGGAL", "keep_type": "date"}, rel)
     assert out.fetchall() == [("2026-01-01", 1), ("2026-01-02", 2)]
-    assert [c.type for c in schema_of(out)] == ["VARCHAR", "INTEGER"]  # type left alone
+    assert [c.type for c in schema_of(out)] == ["VARCHAR", "INTEGER"]
 
 
 def test_drop_rows_regex_and_null_cells() -> None:
     rel = _rel("select * from (values ('Total A', 1), ('x', 2), (NULL, 3)) v(label, n)")
     out = _run("drop_rows", {"column": "label", "drop_regex": "^Total", "blank": False}, rel)
-    assert out.fetchall() == [("x", 2), (None, 3)]  # NULL does not match, so it stays
+    assert out.fetchall() == [("x", 2), (None, 3)]
 
 
 def test_drop_rows_odd_column_name_and_quote_in_regex() -> None:
@@ -81,7 +81,7 @@ def test_fill_down_fills_blanks_from_above_and_keeps_order() -> None:
     )
     out = _run("fill_down", {"columns": ["grp"]}, rel)
     assert out.fetchall() == [(1, "A", 1), (2, "A", 2), (3, "A", 3), (4, "B", 4), (5, "B", 5)]
-    assert out.columns == ["i", "grp", "n"]  # same column order
+    assert out.columns == ["i", "grp", "n"]
 
 
 def test_fill_down_leading_nulls_stay_null_and_several_columns() -> None:
@@ -98,7 +98,6 @@ def test_fill_down_config_and_missing_column() -> None:
 
 
 def test_workbook_to_clean_table() -> None:
-    # month labels sit among the dates, the group name is merged down over blank cells
     rows = [
         ["Grup", "TANGGAL", "Ton"],
         ["Urea", date(2026, 1, 1), 5],
@@ -136,10 +135,7 @@ def test_sample_drop_subtotals(sample_path) -> None:
     rel = read_region(wb, src, con, "pkg")
     clean = _run("drop_rows", {"column": "TANGGAL", "keep_type": "date"}, rel)
     n = clean.aggregate("count(*)").limit(1).fetchall()[0][0]
-    assert n == 730  # every real day; the 70 subtotal and blank rows are gone
-
-
-# --- unpivot / unpivot_groups: several unrelated shapes, none tied to one workbook ----------
+    assert n == 730
 
 
 def test_unpivot_listed_columns_and_all_numbers_become_double() -> None:
@@ -221,7 +217,7 @@ def test_unpivot_groups_blocks_to_rows() -> None:
     assert sorted(out.fetchall()) == [
         ("r1", "A", 1, 10.0),
         ("r1", "B", 2, 20.0),
-        ("r2", "B", 4, 40.0),  # r2 has nothing in block A, r3 nothing anywhere
+        ("r2", "B", 4, 40.0),
     ]
 
 
@@ -234,7 +230,6 @@ def test_unpivot_groups_keep_empty_blocks_and_rename_group() -> None:
 
 
 def test_unpivot_groups_other_separator_and_different_measure_sets() -> None:
-    # blocks need not hold the same measures; one separator is as good as another
     cols = '"id", "north_units", "north_note", "south_units"'
     rel = _rel(f"select * from (values (1, 5, 'x', 7)) v({cols})")
     out = _run(
@@ -263,7 +258,7 @@ def test_unpivot_groups_measure_types_are_unified() -> None:
     "config",
     [
         {"pattern": "(["},
-        {"pattern": "^(.+)[|](.+)$"},  # no named groups
+        {"pattern": "^(.+)[|](.+)$"},
         {"pattern": "(?P<group>.)(?P<measure>.)", "group_column": "id", "keep": ["id"]},
         {},
     ],
@@ -288,7 +283,6 @@ def test_unpivot_groups_schema_errors() -> None:
 
 
 def test_workbook_with_a_different_shape_end_to_end() -> None:
-    # two header rows, a different layout: regions as rows, quarters x (sales, cost) as blocks
     rows = [
         ["Region", "Q1", None, "Q2", None, "Q3", None],
         [None, "Sales", "Cost", "Sales", "Cost", "Sales", "Cost"],
@@ -320,8 +314,6 @@ def test_workbook_with_a_different_shape_end_to_end() -> None:
 
 @pytest.mark.sample
 def test_sample_unpivot_groups_sanity(sample_path) -> None:
-    # sanity only: a header read from a real file feeds unpivot_groups without a crash and
-    # keeps every filled cell. The rule itself is tested on the synthetic shapes above.
     wb = Workbook.open(sample_path)
     src = Source.model_validate(
         {
@@ -341,8 +333,6 @@ def test_sample_unpivot_groups_sanity(sample_path) -> None:
 
 
 def test_unpivot_groups_pattern_also_matches_columns_you_did_not_mean() -> None:
-    # a total block with the same `x|y` naming is a block like any other: narrow the pattern
-    # (or select first) to leave it out
     rel = _rel('select * from (values (1, 2, 3)) v("A|n", "B|n", "Total|n")')
     cfg = {"pattern": "^(?P<group>.+)[|](?P<measure>.+)$"}
     assert sorted(_run("unpivot_groups", cfg, rel).fetchall()) == [("A", 1), ("B", 2), ("Total", 3)]
@@ -351,7 +341,6 @@ def test_unpivot_groups_pattern_also_matches_columns_you_did_not_mean() -> None:
 
 
 def test_unpivot_groups_missing_measure_is_typed_null() -> None:
-    # B has no `note`; its NULL must take note's type so the blocks can be stacked
     rel = _rel('select * from (values (1, 2, \'x\')) v("A|n", "B|n", "A|note")')
     out = _run("unpivot_groups", {"pattern": "^(?P<group>.)[|](?P<measure>.+)$"}, rel)
     assert [c.type for c in schema_of(out)] == ["VARCHAR", "INTEGER", "VARCHAR"]
@@ -370,7 +359,7 @@ def test_drop_regex_and_keep_type_keep_a_row_whose_column_is_empty():
     out = build("drop_rows", {"blank": False, "column": "Item", "drop_regex": "^Total$"}).run(
         [con.table("t")]
     )
-    assert sorted(r[0] or "" for r in out.fetchall()) == ["", "ink", "pen"]  # the NULL stays
+    assert sorted(r[0] or "" for r in out.fetchall()) == ["", "ink", "pen"]
     ci = build("drop_rows", {"blank": False, "column": "Item", "drop_regex": "(?i)^total$"})
     con.execute("CREATE TABLE u AS SELECT * FROM (VALUES ('TOTAL'),('pen')) v(\"Item\")")
     assert [r[0] for r in ci.run([con.table("u")]).fetchall()] == ["pen"]

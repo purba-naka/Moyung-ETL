@@ -43,13 +43,13 @@ def _edges(wb: Workbook) -> dict[tuple[str, str], int]:
         ("='Data 2026'!B2+1", {"Data 2026"}),
         ("='It''s'!B2", {"It's"}),
         ("=SUM(Input!B2:B9)+Input!C1", {"Input"}),
-        ("=SUM(Input:Third!A1)", {"Input", "Data 2026", "Third"}),  # 3D: every sheet in between
-        ('=IF(A1="Input!A1",1,0)', set()),  # a string that only looks like a reference
+        ("=SUM(Input:Third!A1)", {"Input", "Data 2026", "Third"}),
+        ('=IF(A1="Input!A1",1,0)', set()),
         ("=#REF!+1", set()),
-        ("=SUM(B1:B3)", set()),  # same sheet
-        ("=[1]Ext!A1+1", {"[file]"}),  # another workbook
+        ("=SUM(B1:B3)", set()),
+        ("=[1]Ext!A1+1", {"[file]"}),
         ("='[1]Ext sheet'!A1", {"[file]"}),
-        ("=Missing!A1", {"[file]"}),  # not a sheet of this file, so it can only be a link
+        ("=Missing!A1", {"[file]"}),
     ],
 )
 def test_formula_reads(formula: str, reads: set[str]) -> None:
@@ -72,21 +72,19 @@ def test_defined_name_reaches_its_sheet() -> None:
 
 def test_local_name_beats_global_name() -> None:
     sheets = {"A": [[1]], "B": [[1]], "Calc": [["=Rate"]], "Calc2": [["=Rate"]]}
-    # Calc is the third sheet (id 2): its own `Rate` points at B, the workbook-wide one at A
     wb = _wb(sheets, [("Rate", "A!$A$1", None), ("Rate", "B!$A$1", 2)])
     assert _edges(wb) == {("Calc", "B"): 1, ("Calc2", "A"): 1}
 
 
 def test_name_local_to_another_sheet_is_not_visible() -> None:
     sheets = {"A": [[1]], "B": [["=Rate"]], "C": [["=Rate"]]}
-    wb = _wb(sheets, [("Rate", "A!$A$1", 2)])  # local to C only
+    wb = _wb(sheets, [("Rate", "A!$A$1", 2)])
     assert _edges(wb) == {("C", "A"): 1}
 
 
 def test_shared_formula_children_count() -> None:
     sheets = {"Input": [[1], [2], [3]], "Calc": [["=Input!A1"], ["=Input!A2"], ["=Input!A3"]]}
     data = make_xlsx(sheets)
-    # turn the 3 formulas into one shared group, the way Excel writes them
     out = io.BytesIO()
     with zipfile.ZipFile(io.BytesIO(data)) as src, zipfile.ZipFile(out, "w") as dst:
         for item in src.infolist():
@@ -113,8 +111,8 @@ def test_formula_text_is_unescaped() -> None:
     [
         (0, 0, 0, "empty"),
         (50, 0, 0, "source"),
-        (50, 40, 0, "source"),  # typed data with totals is still where data comes from
-        (0, 50, 0, "derived"),  # only adds itself up
+        (50, 40, 0, "source"),
+        (0, 50, 0, "derived"),
         (0, 0, 50, "derived"),
         (5, 0, 95, "derived"),
         (30, 10, 60, "mixed"),
@@ -139,7 +137,7 @@ def test_roles_per_sheet_and_region() -> None:
     assert sheet_role(wb, "Copy") == "derived"
     assert sheet_role(wb, "Totals") == "source"
     assert region_role(wb, "Copy", (0, 0, 3, 1)) == "derived"
-    assert region_role(wb, "Input", (0, 0, 0, 0)) == "empty"  # a window with only a label
+    assert region_role(wb, "Input", (0, 0, 0, 0)) == "empty"
 
 
 def test_lineage_is_cached_and_xls_free() -> None:
@@ -150,7 +148,6 @@ def test_lineage_is_cached_and_xls_free() -> None:
 
 @pytest.mark.parametrize("local", ["abc", "1.5", "-1", "99"])
 def test_bad_localsheetid_is_workbook_error(local) -> None:
-    # a damaged scope id must not crash with a ValueError or bind to the wrong sheet
     wb = _wb({"Data": [[1]]}, names=[("N", "Data!$A$1", local)])
     with pytest.raises(WorkbookError):
         lineage(wb)
@@ -161,10 +158,10 @@ def test_sample_lineage(sample_path) -> None:
     wb = Workbook.open(sample_path)
     edges = lineage(wb).edges
     reads_bb = sum(n for (_, d), n in edges.items() if d == "(BB) CR")
-    assert reads_bb > 10_000  # the raw-material sheet feeds many others
+    assert reads_bb > 10_000
     assert sheet_role(wb, "REKAP BALANS") == "derived"
     assert sheet_role(wb, "Daftar Kapal") == "source"
-    assert region_role(wb, "(N) PKG", (3, 0, 237, 28)) == "source"  # R1: typed daily tons
+    assert region_role(wb, "(N) PKG", (3, 0, 237, 28)) == "source"
     assert region_role(wb, "Per Bulan", (3, 77, 55, 164)) == "derived"
 
 
@@ -175,11 +172,11 @@ def test_a_block_of_texts_is_a_source_but_one_label_or_one_row_is_not():
     book = Workbook.open(
         make_xlsx({"S": [["Kode", "Nama"], ["a", "x"], ["b", "y"], [None, None], ["solo", None]]})
     )
-    assert region_role(book, "S", (0, 0, 2, 1)) == "source"  # 2 columns, 3 rows of text
-    assert region_role(book, "S", (0, 0, 0, 1)) == "empty"  # one row
-    assert region_role(book, "S", (0, 0, 2, 0)) == "empty"  # one column
-    assert region_role(book, "S", (4, 0, 4, 0)) == "empty"  # one label
-    assert region_role(book, "S", (0, 0, 1, 1)) == "source"  # 4 texts is the least
+    assert region_role(book, "S", (0, 0, 2, 1)) == "source"
+    assert region_role(book, "S", (0, 0, 0, 1)) == "empty"
+    assert region_role(book, "S", (0, 0, 2, 0)) == "empty"
+    assert region_role(book, "S", (4, 0, 4, 0)) == "empty"
+    assert region_role(book, "S", (0, 0, 1, 1)) == "source"
     assert region_role(book, "S", (1, 0, 1, 1)) == "empty"
 
 
@@ -200,10 +197,10 @@ def test_the_text_table_guard_needs_two_rows_two_columns_and_four_texts():
             }
         )
     )
-    assert region_role(book, "S", (0, 0, 0, 4)) == "empty"  # 5 texts in one row: no
-    assert region_role(book, "S", (0, 0, 4, 0)) == "empty"  # 5 texts in one column: no
-    assert region_role(book, "S", (0, 0, 1, 1)) == "empty"  # a 2x2 box holding 3 texts: no
-    assert region_role(book, "S", (0, 0, 1, 2)) == "source"  # 2x3 holding 4 texts: yes
+    assert region_role(book, "S", (0, 0, 0, 4)) == "empty"
+    assert region_role(book, "S", (0, 0, 4, 0)) == "empty"
+    assert region_role(book, "S", (0, 0, 1, 1)) == "empty"
+    assert region_role(book, "S", (0, 0, 1, 2)) == "source"
 
 
 def test_a_sheet_of_texts_only_is_a_source_in_the_map_like_its_region():
@@ -222,7 +219,7 @@ def test_a_sheet_of_texts_only_is_a_source_in_the_map_like_its_region():
         )
     )
     assert sheet_role(book, "Master") == region_role(book, "Master", (0, 0, 5, 1)) == "source"
-    assert sheet_role(book, "Note") == "empty"  # one column of text is a list, not a table
+    assert sheet_role(book, "Note") == "empty"
     assert sheet_role(book, "Blank") == "empty"
     assert sheet_role(book, "Numbers") == "source"
     assert "Master|A1:B6|12|1|0|source" in workbook_map(book, "F1")["text"]

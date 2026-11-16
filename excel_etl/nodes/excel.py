@@ -81,7 +81,6 @@ class DropRows(Node):
             keep.append(f"try_cast({quote(cfg.column)} AS {cfg.keep_type.upper()}) IS NOT NULL")
         if cfg.column and cfg.drop_regex is not None:
             col = quote(cfg.column)
-            # a NULL cell does not match, so it is kept (keep_type is the rule that drops it)
             hit = f"regexp_matches(CAST({col} AS VARCHAR), {sql_text(cfg.drop_regex)})"
             keep.append(f"NOT coalesce({hit}, false)")
         return rel.filter(" AND ".join(keep)) if keep else rel
@@ -171,7 +170,7 @@ class Unpivot(Node):
     class Config(NodeConfig):
         keep: list[str] = []
         columns: list[str] | None = Field(default=None, min_length=1)
-        pattern: str | None = None  # regex searched in the column name
+        pattern: str | None = None
         name_column: str = Field(default="variable", min_length=1)
         value_column: str = Field(default="value", min_length=1)
         value_type: ValueType | None = None
@@ -242,7 +241,7 @@ class UnpivotGroups(Node):
         pattern: str
         keep: list[str] = []
         group_column: str = Field(default="group", min_length=1)
-        drop_empty: bool = True  # skip a block that has no value at all in a row
+        drop_empty: bool = True
 
         @model_validator(mode="after")
         def _rules(self) -> UnpivotGroups.Config:
@@ -255,7 +254,7 @@ class UnpivotGroups(Node):
         cfg, rx = self.config, re.compile(self.config.pattern)
         for c in cfg.keep:
             check_column(schema, c, self.name)
-        found: dict[str, dict[str, str]] = {}  # group -> measure -> column
+        found: dict[str, dict[str, str]] = {}
         types: dict[str, list[str]] = {}
         by_name = {c.name: c.type for c in schema}
         for col in schema:
@@ -310,8 +309,6 @@ class UnpivotGroups(Node):
                 where = " WHERE " + " OR ".join(f"{c} IS NOT NULL" for c in have)
             text = sql_text(g)
             head = ", ".join([*keep, f"{text} AS {quote(cfg.group_column)}", *vals])
-            # each input row comes out as its blocks in column order: UNION ALL alone gives
-            # whatever order the plan finds, so the row and block numbers are kept to sort on
             selects.append(f"SELECT {head}, __row, {n} AS __blk FROM __numbered{where}")
         out = ", ".join([*keep, quote(cfg.group_column), *(quote(m) for m in measures)])
         sql = (

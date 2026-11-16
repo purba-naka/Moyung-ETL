@@ -46,16 +46,14 @@ def test_reads_header_joined_and_typed() -> None:
     assert rel.columns == ["TANGGAL", "JANUARI|PKG", "JANUARI|PKC", "FEBRUARI|PKG", "FEBRUARI|PKC"]
     assert [str(t) for t in rel.types] == ["DATE", "BIGINT", "DOUBLE", "VARCHAR", "VARCHAR"]
     assert rel.fetchall()[0] == (date(2026, 1, 1), 0, 0.0, None, "x")
-    assert len(rel.fetchall()) == 4  # stops at the blank rows, not at the note below
+    assert len(rel.fetchall()) == 4
 
 
 def test_gap_setting_decides_where_the_table_ends() -> None:
     wide = _src(
         region={"header_anchor": ["TANGGAL"], "header_rows": 2, "end": "until_blank_rows(9)"}
     )
-    assert (
-        len(read_region(_wb(), wide, connect(), "d").fetchall()) == 8
-    )  # 4 rows, 3 blank, the note
+    assert len(read_region(_wb(), wide, connect(), "d").fetchall()) == 8
 
 
 def test_finds_the_sheet_by_name_like_and_fallback() -> None:
@@ -133,7 +131,6 @@ def test_rereading_replaces_the_table_and_con_cannot_read_files(tmp_path) -> Non
 
 
 def test_anchors_must_sit_together_in_one_table() -> None:
-    # `TANGGAL` is in the left table and `Ton` only in the one on the right: no table has both
     rows = [
         ["TANGGAL", "Phonska 1", "Total", None, "Phonska 1", "Ton"],
         *[[date(2026, 1, d), d, d, None, d, d] for d in range(1, 5)],
@@ -143,7 +140,7 @@ def test_anchors_must_sit_together_in_one_table() -> None:
     with pytest.raises(NodeError, match="but not inside a table"):
         read_region(wb, both, connect(), "d")
     rel = read_region(wb, _src(region={"header_anchor": ["Phonska 1", "Ton"]}), connect(), "d")
-    assert rel.columns == ["Phonska 1", "Ton"]  # the right-hand table, not the left one
+    assert rel.columns == ["Phonska 1", "Ton"]
 
 
 @pytest.mark.sample
@@ -186,7 +183,7 @@ def test_a_grand_total_below_a_gap_is_warned_about_not_silently_dropped():
     assert short.ok and any("1 more filled row(s) lie below the table" in w for w in short.warnings)
     assert any("until_blank_rows(N)" in w for w in short.warnings)
     wide = validate(spec("until_blank_rows(5)"), {"f": book})
-    assert wide.ok and not wide.warnings  # nothing left below: no noise
+    assert wide.ok and not wide.warnings
     clean = validate(spec("until_blank_rows(2)"), {"f": make_xlsx({"S": rows[:3]})})
     assert not clean.warnings
 
@@ -268,7 +265,7 @@ def test_a_clean_table_and_errors_outside_the_table_give_no_warning():
     clean = _book_with_errors({}, [["Item", "Qty"], ["a", 1], ["b", 2]])
     assert validate(_spec_for(), {"f": clean}).warnings == ()
     rows = [["Item", "Qty"], ["a", 1], ["b", 2], [None, None], [None, None], ["x", None]]
-    outside = _book_with_errors({"B6": "#REF!"}, rows)  # below the table: the `below` warning
+    outside = _book_with_errors({"B6": "#REF!"}, rows)
     warns = validate(_spec_for(), {"f": outside}).warnings
     assert not any("Excel error" in w for w in warns)
     above = _book_with_errors({"A1": "#NAME?"}, [["Item", "Qty"], ["a", 1], ["b", 2]])
@@ -282,7 +279,6 @@ def test_error_cells_are_listed_by_the_workbook_and_formula_errors_are_not_confu
     wb = Workbook.open(book)
     assert wb.error_cells("S") == frozenset({(1, 1)})
     with_formula = _book_with_errors({}, [["a", "b"], [1, "=1/0"], [2, 0]])
-    # a formula without a cached value is tracked as a formula, not as an error cell
     assert Workbook.open(with_formula).error_cells("S") == frozenset()
 
 
@@ -290,10 +286,8 @@ def test_an_error_cell_beside_the_table_is_not_counted():
     from excel_etl.engine import validate
 
     rows = [["Note", "Item", "Qty"], ["x", "a", 1], ["y", "b", 2]]
-    book = _book_with_errors({"A2": "#N/A"}, rows)  # column A is outside the table (Item, Qty)
+    book = _book_with_errors({"A2": "#N/A"}, rows)
     spec = _spec_for(anchor="Qty")
-    # anchor Qty alone selects the table that holds Qty; Note is a neighbour column or part of it,
-    # so make the neighbour unambiguous with a gap column
     rows = [["Note", None, "Item", "Qty"], ["x", None, "a", 1], ["y", None, "b", 2]]
     book = _book_with_errors({"A2": "#N/A"}, rows)
     rep = validate(spec, {"f": book})

@@ -11,7 +11,6 @@ from excel_etl.workbook import Workbook, WorkbookError
 
 
 def _cached(data: bytes) -> bytes:
-    # openpyxl writes formulas with an empty cached value; Excel saves one
     return data.replace(b"<f>B2+C2</f><v />", b"<f>B2+C2</f><v>30</v>").replace(
         b"<f>B2*2</f><v />", b"<f>B2*2</f><v>20</v>"
     )
@@ -83,8 +82,6 @@ def test_compare_bool_is_not_one() -> None:
 
 
 def test_compare_float_diff_shows_full_precision() -> None:
-    # 0.3 and 0.30000000000000004 must not render as the same number on both sides;
-    # openpyxl rounds the float away when saving, so it is patched back into the XML
     data = make_xlsx({"A": [["X"], [0.3]], "B": [["X"], [0.3]]})
     data = _zip_replace(
         data, "sheet2.xml", lambda b: b.replace(b"<v>0.3</v>", b"<v>0.30000000000000004</v>")

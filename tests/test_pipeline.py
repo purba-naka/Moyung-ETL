@@ -89,7 +89,7 @@ def test_error_says_where() -> None:
 
 def test_steps_must_read_earlier_names() -> None:
     bad = copy.deepcopy(_SPEC)
-    bad["steps"].reverse()  # `flat` is now read before it is defined
+    bad["steps"].reverse()
     assert "reads 'flat'" in _error(json.dumps(bad))
 
 
@@ -231,9 +231,6 @@ def test_list_where_one_name_belongs_and_the_reverse_say_what_to_write():
 def test_misspelled_key_says_it_is_not_a_setting():
     msg = _spec_error(sources={"s": _SRC}, output={})
     assert msg.startswith("output: is not a setting here") and "node_catalog" in msg
-
-
-# --- output.load: where a file goes in a database --------------------------------------------
 
 
 def _with_load(load, fmt="parquet", second=None):

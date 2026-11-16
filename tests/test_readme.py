@@ -17,7 +17,6 @@ def _blocks() -> list[str]:
 
 
 def _fix(code: str, tmp: Path) -> str:
-    # forward slashes: a Windows path with backslashes would be read as escapes in the snippet
     return (
         code.replace("C:/uploads", tmp.as_posix())
         .replace("C:/state", (tmp / "state").as_posix())
@@ -26,7 +25,7 @@ def _fix(code: str, tmp: Path) -> str:
 
 
 def _run(code: str, name: str, ns: dict) -> dict:
-    exec(compile(code, name, "exec"), ns)  # noqa: S102 - our own README
+    exec(compile(code, name, "exec"), ns)  # noqa: S102
     return ns
 
 
@@ -70,7 +69,7 @@ def test_the_complete_spec_in_the_readme_parses_and_runs(tmp_path):
     from excel_etl.pipeline import parse_spec
 
     blocks = re.findall(r"```json\n(.*?)```", README, re.S)
-    block = next(b for b in blocks if '"sources"' in b)  # the complete spec, not a fragment
+    block = next(b for b in blocks if '"sources"' in b)
     spec = parse_spec(block)
     book = make_xlsx(
         {
@@ -89,8 +88,7 @@ def test_steps_table_in_the_readme_lists_every_registered_node():
 
     table = README.split("| Group | Steps |")[1].split("`filter` and `derive`")[0]
     named = set(re.findall(r"`([a-z_]+)`", table))
-    named.discard("read_region")  # the source reader, not a step
-    # a test elsewhere registers a throw-away node; only the nodes that ship count here
+    named.discard("read_region")
     shipped = {n for n in names() if not n.startswith("test_")}
     assert named == shipped
 
@@ -126,4 +124,4 @@ def test_the_load_example_in_the_readme_is_a_valid_output():
     out = json.loads(block)["outputs"]["clean"]
     assert Output.model_validate(out).load.mode == "merge"
     for platform in ("snowflake", "databricks", "bigquery"):
-        assert f"| `{platform}` |" in README  # each platform the library plans for is described
+        assert f"| `{platform}` |" in README

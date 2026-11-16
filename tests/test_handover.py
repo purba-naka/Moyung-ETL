@@ -69,7 +69,7 @@ def test_required_propose_datasets_blocks_the_run_until_approved(tmp_path):
 
 
 def test_after_spec_blocks_only_when_the_host_sets_it_to_required(tmp_path):
-    t = job_with(tmp_path)  # default: optional
+    t = job_with(tmp_path)
     t.approve("after_propose_datasets", "dina", "v1")
     assert t.run_pipeline()["ok"]
     strict = job_with(
@@ -109,7 +109,7 @@ def test_the_snippet_that_sets_knowledge_and_policy_runs(tmp_path):
     block = [b for b in re.findall(r"```python\n(.*?)```", TEXT, re.S) if "HitlPolicy" in b][0]
     t = job_with(tmp_path)
     ns = {"tools": t}
-    exec(compile(block, "HANDOVER snippet", "exec"), ns)  # noqa: S102 - our own document
+    exec(compile(block, "HANDOVER snippet", "exec"), ns)  # noqa: S102
     state = t.job.state
     assert "Grafik" in t.lookup_knowledge("grafik")["text"]
     assert state.hitl.policy.checkpoints["after_spec"] == "required"

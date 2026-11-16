@@ -22,12 +22,12 @@ from excel_etl.workbook import Workbook
 
 
 class AutoReport(BaseModel):
-    status: str  # "ok" | "failed" (spec fit, run failed) | "no_spec" (nothing fit)
-    spec: str = ""  # the spec that was run, or the closest one when nothing fit
+    status: str
+    spec: str = ""
     out_dir: str = ""
     bind: str = ""
     run: RunReport | None = None
-    tried: dict[str, str] = {}  # spec name -> why it was skipped
+    tried: dict[str, str] = {}
 
     def text(self) -> str:
         lines = [f"auto: {self.status}" + (f" with spec {self.spec!r}" if self.spec else "")]
@@ -48,8 +48,6 @@ def auto(file: str | Path, specs_dir: str | Path, out_dir: str | Path) -> AutoRe
     `out_dir/<spec>/<file stem>/`. Every source of a spec reads this one file, whatever its
     file_role.
     """
-    # ponytail: one file per run, all roles map to it; upgrade: a match rule per spec for
-    # pipelines that join several workbooks.
     wb = Workbook.open(str(file))
     tried: dict[str, str] = {}
     best: tuple[float, str, BindReport] | None = None
@@ -57,11 +55,7 @@ def auto(file: str | Path, specs_dir: str | Path, out_dir: str | Path) -> AutoRe
         name = path.stem
         try:
             spec = parse_spec(path.read_text(encoding="utf-8"))
-        except (
-            SpecError,
-            OSError,
-            UnicodeDecodeError,
-        ) as e:  # a broken file must not stop the others
+        except (SpecError, OSError, UnicodeDecodeError) as e:
             tried[name] = f"bad spec: {e}"
             continue
         files = {s.file_role: wb for s in spec.sources.values()}

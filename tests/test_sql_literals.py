@@ -2,12 +2,12 @@ import math
 
 import pytest
 
-from excel_etl.nodes.base import NodeError, check_fits, sql_text, sql_value
+from excel_etl.nodes.base import NodeError, check_fits, sql_value
 
 
 @pytest.mark.parametrize(
     ("value", "lit"),
-    [(True, "TRUE"), (3, "3"), (1.5, "1.5"), ("it's", "'it''s'"), ("a\b", "'a\b'")],
+    [(True, "TRUE"), (3, "3"), (1.5, "1.5"), ("it's", "'it''s'"), (r"a\b", r"'a\b'")],
 )
 def test_sql_value(value, lit):
     assert sql_value(value) == lit
@@ -19,7 +19,15 @@ def test_sql_value_rejects(bad):
         sql_value(bad)
 
 
-def test_check_fits():
-    check_fits("'5'", "INTEGER", "x")
+@pytest.mark.parametrize(("value", "kind"), [(5, "INTEGER"), ("5", "INTEGER"), (1.5, "DOUBLE")])
+def test_check_fits_keeps_value(value, kind):
+    assert check_fits(value, kind, "x")
+
+
+@pytest.mark.parametrize(
+    ("value", "kind"),
+    [("abc", "INTEGER"), (1.7, "INTEGER"), (10**400, "BIGINT"), (math.nan, "DOUBLE")],
+)
+def test_check_fits_rejects_changed_value(value, kind):
     with pytest.raises(NodeError, match="nope"):
-        check_fits(sql_text("abc"), "INTEGER", "nope")
+        check_fits(value, kind, "nope")

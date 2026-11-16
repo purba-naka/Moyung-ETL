@@ -22,7 +22,7 @@ from excel_etl.nodes import Column
 
 try:
     import sqlglot as _sqlglot
-except ImportError:  # the optional check is skipped, the rest runs
+except ImportError:
     _sqlglot = None
 
 PLATFORMS = ["snowflake", "databricks", "bigquery"]
@@ -42,16 +42,13 @@ COLS = (
 def _plan(platform: str, mode: str = "replace", keys=(), cols=COLS, table: str = "sales", **kw):
     where = kw.pop("where", WHERE[platform])
     existing = kw.pop("existing", None)
-    assert not kw, kw  # a misspelt option must fail here, not be ignored
+    assert not kw, kw
     file = "C:/run/out.parquet"
     return plan_load(platform, "out", file, table, mode, list(keys), cols, where, existing)
 
 
 def _sql(plan) -> list[str]:
     return [s.sql for s in plan.steps if s.sql]
-
-
-# --- profiles and type maps --------------------------------------------
 
 
 def test_profile_lookup_ignores_letter_case_and_names_the_choices() -> None:
@@ -93,7 +90,7 @@ def test_type_maps(duck: str, snowflake, databricks, bigquery) -> None:
 
 
 def test_a_decimal_beyond_a_platform_is_refused_not_cut() -> None:
-    assert PROFILES["snowflake"].to_type("DECIMAL(38,38)") is None  # scale max 37
+    assert PROFILES["snowflake"].to_type("DECIMAL(38,38)") is None
     assert PROFILES["bigquery"].to_type("DECIMAL(38,38)") == "BIGNUMERIC(38,38)"
 
 
@@ -101,9 +98,6 @@ def test_a_type_nobody_mapped_is_refused_not_guessed() -> None:
     for p in PROFILES.values():
         assert p.to_type("SOME_FUTURE_TYPE") is None
         assert p.to_type("") is None
-
-
-# --- names --------------------------------------------
 
 
 def test_every_problem_is_listed_at_once_and_capped() -> None:
@@ -149,10 +143,7 @@ def test_excel_style_names_are_fine_where_the_platform_allows_them() -> None:
     for p in ("snowflake", "databricks"):
         assert len(check_columns(PROFILES[p], odd)) == 3
     with pytest.raises(LoadError, match="does not allow"):
-        check_columns(PROFILES["bigquery"], odd)  # ( ) are not allowed even in flexible names
-
-
-# --- the shape of each plan --------------------------------------------
+        check_columns(PROFILES["bigquery"], odd)
 
 
 @pytest.mark.parametrize("platform", PLATFORMS)
@@ -178,7 +169,7 @@ def test_snowflake_replace_is_one_transaction_and_names_the_stage_file() -> None
     assert sql.index("BEGIN") < next(i for i, s in enumerate(sql) if s.startswith("TRUNCATE"))
     assert sql.index("COMMIT") > next(i for i, s in enumerate(sql) if s.startswith("COPY INTO"))
     assert 'COPY INTO "DB"."SC"."sales" FROM @DB.SC.STG/in/out.parquet' in joined
-    assert "MATCH_BY_COLUMN_NAME = CASE_SENSITIVE" in joined  # columns by name, case as written
+    assert "MATCH_BY_COLUMN_NAME = CASE_SENSITIVE" in joined
 
 
 def test_databricks_replace_makes_an_empty_table_of_this_shape_then_copies() -> None:
@@ -207,7 +198,7 @@ def test_merge_uses_a_scratch_table_matches_on_the_keys_and_cleans_up(platform: 
     merge = next(s.sql for s in plan.steps if s.kind == "merge")
     q = PROFILES[platform].quote
     assert f"t.{q('Plant')} = s.{q('Plant')} AND t.{q('day')} = s.{q('day')}" in merge
-    assert f"t.{q('Plant')} = s.{q('Plant')}," not in merge  # a key is never updated
+    assert f"t.{q('Plant')} = s.{q('Plant')}," not in merge
     assert "WHEN MATCHED THEN UPDATE SET" in merge and "WHEN NOT MATCHED THEN INSERT" in merge
     assert "__load" in plan.steps[-1].sql and plan.steps[-1].sql.startswith("DROP TABLE IF EXISTS")
 
@@ -226,7 +217,7 @@ def test_databricks_adds_column_mapping_only_when_a_name_needs_it() -> None:
     spaced = _plan("databricks", cols=(Column("Net Weight", "DOUBLE"),))
     assert "TBLPROPERTIES ('delta.columnMapping.mode' = 'name')" in "\n".join(_sql(spaced))
     assert any("column mapping" in w for w in spaced.warnings)
-    pipe = "\n".join(_sql(_plan("databricks")))  # `JAN|Ton` has no space or ,;{}()=
+    pipe = "\n".join(_sql(_plan("databricks")))
     assert "columnMapping" not in pipe
 
 
@@ -234,9 +225,6 @@ def test_a_missing_where_still_gives_a_plan_with_unqualified_names() -> None:
     plan = _plan("bigquery", where=Where())
     assert "LOAD DATA OVERWRITE `sales`" in plan.steps[1].sql
     assert "uris = ['out.parquet']" in plan.steps[1].sql
-
-
-# --- refusals --------------------------------------------
 
 
 @pytest.mark.parametrize("platform", PLATFORMS)
@@ -265,8 +253,6 @@ def test_a_bad_stage_path_is_refused_not_pasted() -> None:
         _plan("snowflake", where=Where(stage="@s; DROP TABLE x"))
 
 
-# --- nothing a name or path holds can end the statement ------------------------------------------
-
 EVIL = ['x"; DROP TABLE t; --', "x`; DROP TABLE t; --", "x' OR '1'='1", "a\nb", "x\\"]
 
 
@@ -277,7 +263,7 @@ def test_a_hostile_column_name_stays_inside_its_quotes(platform: str, evil: str)
     cols = (Column(evil, "VARCHAR"), Column("k", "BIGINT"))
     try:
         plan = _plan(platform, "merge", ["k"], cols=cols)
-    except LoadError as e:  # BigQuery refuses these names outright, which is also safe
+    except LoadError as e:
         assert platform == "bigquery" and "does not allow" in str(e)
         return
     quoted = p.quote(evil)
@@ -301,7 +287,7 @@ def test_a_quote_in_a_path_cannot_close_the_string_literal(platform: str) -> Non
     where = Where(database="d", schema_name="s", stage="gs://b/x' ); DROP TABLE t; --")
     plan = _plan(platform, where=where)
     copy = next(s.sql for s in plan.steps if s.kind == "copy")
-    assert "x'' ); DROP TABLE t; --" in copy  # the quote is doubled, so it stays text
+    assert "x'' ); DROP TABLE t; --" in copy
 
 
 def test_a_nul_byte_is_refused_everywhere() -> None:
@@ -311,9 +297,6 @@ def test_a_nul_byte_is_refused_everywhere() -> None:
         _plan("databricks", where=Where(stage="a\x00b"))
 
 
-# --- a second opinion on the syntax --------------------------------------------
-
-
 @pytest.mark.skipif(_sqlglot is None, reason="sqlglot is not installed (optional, test-only)")
 @pytest.mark.parametrize("platform", PLATFORMS)
 @pytest.mark.parametrize("mode", ["replace", "append", "merge"])
@@ -321,13 +304,10 @@ def test_every_statement_parses_in_the_platforms_own_dialect(platform: str, mode
     plan = _plan(platform, mode, ["Plant"] if mode == "merge" else [])
     for s in plan.steps:
         if not s.sql or s.kind == "upload":
-            continue  # PUT is a client command, not SQL a parser knows
+            continue
         tree = _sqlglot.parse_one(s.sql, dialect=platform)
         assert tree is not None, s.sql
     assert re.search(r"\w", plan.text())
-
-
-# --- the table that is already there --------------------------------------------
 
 
 def _existing(*pairs: tuple[str, str]):
@@ -364,9 +344,9 @@ def test_drift_lists_new_changed_and_extra_columns() -> None:
 
 def test_names_are_compared_the_way_the_platform_compares_them() -> None:
     table = _existing(("PLANT", "STRING"), ("jan|ton", "NUMERIC"), ("N", "INT64"), ("DAY", "DATE"))
-    assert _plan("bigquery", "append", existing=table).mode == "append"  # no case on BigQuery
+    assert _plan("bigquery", "append", existing=table).mode == "append"
     with pytest.raises(LoadError, match="new column 'Plant'"):
-        _plan("snowflake", "append", existing=_existing(("PLANT", "VARCHAR")))  # case kept
+        _plan("snowflake", "append", existing=_existing(("PLANT", "VARCHAR")))
 
 
 def test_replace_over_a_table_of_another_shape_is_allowed_and_said() -> None:

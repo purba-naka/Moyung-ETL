@@ -61,7 +61,7 @@ def test_steps_are_matched_by_id_not_position() -> None:
     steps = _spec().model_dump(mode="json")["steps"]
     extra = {"id": "c", "node": "dedupe", "inputs": ["a"], "config": {}}
     new = _spec(steps=[steps[0], extra, steps[1]])
-    assert _where(_spec(), new) == [("steps.c", "added")]  # b did not change, only moved down
+    assert _where(_spec(), new) == [("steps.c", "added")]
 
 
 def test_reordering_the_same_steps_is_one_change() -> None:
@@ -90,7 +90,7 @@ def test_history_adds_versions_and_keeps_every_old_one() -> None:
     v2 = _spec(sources={"s": src})
     h = SpecHistory.start(v1)
     h2 = h.add(v2, "header renamed Item -> Produk in the March file")
-    assert len(h.versions) == 1 and len(h2.versions) == 2  # add does not change h
+    assert len(h.versions) == 1 and len(h2.versions) == 2
     assert h2.current.number == 2 and h2.get(1).spec == v1 and h2.current.spec == v2
     assert h2.get(1).diff == () and len(h2.current.diff) == 1
     assert "v2: header renamed" in h2.text()

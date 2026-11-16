@@ -105,10 +105,10 @@ def diff_specs(old: PipelineSpec, new: PipelineSpec) -> tuple[Change, ...]:
 
 
 class SpecVersion(_Model):
-    number: int  # 1, 2, 3 ...
+    number: int
     spec: PipelineSpec
-    note: str = Field(max_length=MAX_NOTE)  # why this version exists (what was repaired)
-    diff: tuple[Change, ...]  # against the previous version; empty for version 1
+    note: str = Field(max_length=MAX_NOTE)
+    diff: tuple[Change, ...]
 
 
 class SpecHistory(_Model):
@@ -143,9 +143,7 @@ class SpecHistory(_Model):
             raise ValueError("the new spec is the same as the current version; nothing to add")
         if not note.strip():
             raise ValueError("give a note: what was repaired and why")
-        spec = spec.model_copy(
-            deep=True
-        )  # the history must not change when the caller edits `spec`
+        spec = spec.model_copy(deep=True)
         nxt = SpecVersion(number=self.current.number + 1, spec=spec, note=note, diff=diff)
         return SpecHistory(versions=(*self.versions, nxt))
 

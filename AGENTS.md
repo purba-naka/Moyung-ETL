@@ -77,8 +77,13 @@ Menambah dependency = riset dulu (alasan, ukuran, alternatif stdlib), catat di
 - Python 3.12, type hints penuh, `from __future__ import annotations`.
 - Fewest files. Tanpa abstraksi untuk satu implementasi, tanpa factory, tanpa
   config untuk nilai yang tidak berubah. Registry node = dict + decorator `@node`.
-- Penyederhanaan sengaja ditandai `# ponytail: <batas>; upgrade: <jalan>`.
-- Komentar hanya untuk "kenapa", bukan "apa" (detail gaya: §8 P4).
+- **Tanpa komentar `#` di kode.** Alasan: komentar memenuhi context agent dan bisa
+  basi lalu menyesatkan. Nama fungsi/variabel, docstring, test, dan
+  `IMPLEMENTATION.md` §Keputusan/§Temuan yang membawa "kenapa". Pengecualian hanya
+  pragma alat: `# noqa: X`, `# type: ignore[x]`, `# fmt: skip` (tanpa teks tambahan).
+- Penyederhanaan sengaja dicatat di `IMPLEMENTATION.md` §Keputusan (batas + jalan upgrade),
+  bukan komentar `# ponytail:`.
+- Docstring tetap: docstring tool = deskripsi untuk LLM (§4). Ringkas, Inggris.
 - Nama publik stabil; perubahan nama tool = catat di IMPLEMENTATION §Log.
 
 ## 6. Test & verifikasi
@@ -151,12 +156,9 @@ bukan detail internal, supaya refactor tidak memecahkannya. Dilarang `sleep`
 dan asumsi timing; pakai input deterministik. Steelman tiap penghapusan.
 
 **P4 — Komentar**
-Hapus komentar trivial (yang mengulang kode). Komentar yang tersisa menjelaskan
-**kenapa** untuk hal yang tidak jelas: perilaku aneh library, keputusan desain,
-jebakan. Tiap paragraf komentar harus punya alasan ada. Gaya: membumi, hangat,
-ringkas, kalimat sederhana yang mudah dibaca non-native English, boleh bercerita
-singkat ("calamine returns ints as floats, so ..."). Tanpa em-dash (—), tanpa
-gaya khas tulisan AI. Bahasa komentar & docstring kode: Inggris.
+Hapus semua komentar `#` kecuali pragma alat (§5). Bila "kenapa" penting, pindahkan
+ke nama yang lebih jelas, test, atau `IMPLEMENTATION.md`. Docstring: ringkas, Inggris,
+tanpa em-dash (—), tanpa gaya khas tulisan AI.
 
 **P5 — Review robustness**
 Review perubahan terakhir dengan kriteria P1 (scalable, rigid, mudah dirawat,

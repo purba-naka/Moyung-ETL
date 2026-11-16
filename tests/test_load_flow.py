@@ -62,9 +62,6 @@ def _tools(tmp_path: Path, load: dict | None, rows=ROWS, anchor=("Plant", "Ton")
     return t
 
 
-# --- the agent's view ------------------------------------------------------
-
-
 def test_plan_load_needs_a_run_a_load_target_and_the_before_load_approval(tmp_path) -> None:
     t = JobTools(Job(new_state("j")), Provider(make_xlsx({"Data": ROWS})), tmp_path / "out")
     t.add_file("a", "jan.xlsx", "f")
@@ -86,7 +83,7 @@ def test_plan_load_needs_a_run_a_load_target_and_the_before_load_approval(tmp_pa
 def test_an_approval_for_an_older_spec_version_does_not_cover_a_new_one(tmp_path) -> None:
     t = _tools(tmp_path, {"table": "sales"})
     t.approve("before_load", "dina")
-    assert "COPY INTO" in t.plan_load("snowflake", "clean")["text"]  # v1 approved, v1 planned
+    assert "COPY INTO" in t.plan_load("snowflake", "clean")["text"]
     t.save_spec(_spec({"table": "sales", "mode": "append"}), "append now")
     t.run_pipeline()
     assert "approved for 'v1', but this is 'v2'" in t.plan_load("snowflake", "clean")["error"]
@@ -127,7 +124,7 @@ def test_a_hostile_stage_or_name_from_the_agent_is_an_error_not_sql(tmp_path) ->
     t.approve("before_load", "dina")
     assert "stage path" in t.plan_load("snowflake", "clean", stage="@s; DROP TABLE x")["error"]
     q = t.plan_load("databricks", "clean", "cat`; DROP TABLE x; --", "sc", "/Volumes/v")["text"]
-    assert "`cat``; DROP TABLE x; --`" in q  # the backtick is doubled, so it stays one name
+    assert "`cat``; DROP TABLE x; --`" in q
 
 
 def test_a_wide_column_name_survives_and_bigquery_says_why_it_cannot(tmp_path) -> None:
@@ -138,9 +135,6 @@ def test_a_wide_column_name_survives_and_bigquery_says_why_it_cannot(tmp_path) -
         text = t.plan_load(platform, "clean", "d", "s", stage)["text"]
         assert "JAN|Ton" in text and "Net Weight (kg)" in text
     assert "does not allow" in t.plan_load("bigquery", "clean", "p", "d", "gs://b")["error"]
-
-
-# --- the file is the truth ------------------------------------------------------
 
 
 def test_columns_and_rows_come_from_the_file(tmp_path) -> None:
@@ -159,9 +153,6 @@ def test_an_unreadable_file_is_a_load_error(tmp_path) -> None:
         file_columns(str(tmp_path / "missing.parquet"))
 
 
-# --- run the plan on a local duckdb ------------------------------------------------------
-
-
 class LocalWarehouse:
     """Runs a Snowflake-shaped plan on duckdb, one statement at a time."""
 
@@ -178,7 +169,7 @@ class LocalWarehouse:
                 self.con.execute(self._local(s.sql))
 
     def _local(self, sql: str) -> str:
-        sql = re.sub(r'"[^"]*"\."[^"]*"\.', "", sql)  # database.schema. -> nothing
+        sql = re.sub(r'"[^"]*"\."[^"]*"\.', "", sql)
         sql = re.sub(r"\bNUMBER\((\d+),(\d+)\)", r"DECIMAL(\1,\2)", sql)
         sql = re.sub(
             r"COPY INTO (\S+) FROM @\S*?/(\S+\.parquet) .*",
@@ -231,7 +222,7 @@ def test_merge_updates_matching_keys_adds_new_ones_and_leaves_no_scratch_table(t
     first = _plan(_tools(tmp_path, KEYS), "merge", KEYS["keys"])
     w = LocalWarehouse(tmp_path / "stage")
     w.run(first)
-    assert len(w.rows()) == 3  # the table was empty: every row is new
+    assert len(w.rows()) == 3
     later = [["Plant", "Product", "Ton"], ["A", "urea", 99], ["C", "npk", 1]]
     second = _plan(_tools(tmp_path / "later", KEYS, later), "merge", KEYS["keys"])
     w.run(second)
@@ -259,7 +250,7 @@ def test_a_run_that_failed_cannot_be_planned_for_loading(tmp_path) -> None:
         "never": {"kind": "range", "table": "t", "column": "Ton", "min": 1000, "severity": "error"}
     }
     t.save_spec(json.dumps(bad), "a check that cannot pass")
-    t.approve("after_propose_datasets", "dina")  # an approval is for one version: v2 now
+    t.approve("after_propose_datasets", "dina")
     assert t.run_pipeline()["ok"] is False
     assert "run the pipeline successfully first" in t.plan_load("snowflake", "clean")["error"]
 
@@ -267,13 +258,13 @@ def test_a_run_that_failed_cannot_be_planned_for_loading(tmp_path) -> None:
 def test_plan_load_refuses_a_run_made_for_another_spec_version_or_file(tmp_path) -> None:
     t = _tools(tmp_path, {"table": "sales"})
     t.save_spec(_spec({"table": "sales", "mode": "append"}), "append now")
-    t.approve("before_load", "dina")  # v2 approved, but the parquet on disk is from v1
+    t.approve("before_load", "dina")
     assert "made for v1" in t.plan_load("snowflake", "clean")["error"]
 
     t.approve("after_propose_datasets", "dina")
     t.run_pipeline()
     assert "COPY INTO" in t.plan_load("snowflake", "clean")["text"]
-    t.provider.blob = make_xlsx({"Data": [*ROWS, ["C", "urea", 1]]})  # next month's upload
+    t.provider.blob = make_xlsx({"Data": [*ROWS, ["C", "urea", 1]]})
     t.add_file("a", "feb.xlsx", "f")
     assert "file 'f' changed" in t.plan_load("snowflake", "clean")["error"]
 
@@ -282,7 +273,7 @@ def test_record_load_works_from_a_new_tools_object_and_keeps_the_plan_ref(tmp_pa
     t = _tools(tmp_path, {"table": "sales"})
     t.approve("before_load", "dina")
     t.plan_load("bigquery", "clean", "p", "d", "gs://b")
-    t.save_spec(_spec({"table": "sales", "mode": "append"}), "append now")  # moves on to v2
+    t.save_spec(_spec({"table": "sales", "mode": "append"}), "append now")
     later = JobTools(Job.from_state(t.job.state_json()), t.provider, tmp_path / "out")
     assert later.record_load("clean", "ok", 3)["text"].endswith("ok, 3 rows")
     rec = later.job.state.loads[-1]

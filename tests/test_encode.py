@@ -19,8 +19,6 @@ def test_col_letters(c: int, s: str) -> None:
 
 
 def test_workbook_map_roles_and_formula_without_cache() -> None:
-    # openpyxl writes formulas with no cached value, so calamine sees those cells as empty.
-    # The map must still count them, or a calculated sheet looks blank.
     data = make_xlsx(
         {
             "Input": [["Tanggal", "Ton"], ["2026-01-01", 5], ["2026-01-02", 7]],
@@ -62,7 +60,6 @@ def test_workbook_map_paginates() -> None:
     ],
 )
 def test_paged_tools_reject_a_null_limit(call) -> None:
-    # a host that sends explicit null for an omitted arg gets one clear error, not a TypeError
     from datetime import date
 
     wb = Workbook.open(make_xlsx({"S": [["TANGGAL", "PKG"], [date(2026, 1, 5), 10]]}))
@@ -112,12 +109,12 @@ def test_workbook_map_groups_same_shape_without_changing_sheet_ids() -> None:
 def test_shape_group_with_different_name_patterns_lists_the_names() -> None:
     text = workbook_map(_same_table_sheets(["alpha", "beta", "gamma"]), "F1")["text"]
     assert "+2 same shape" in text
-    assert "name_regex (?:alpha/beta/gamma)" in text  # `|` is shown as `/` in the map
+    assert "name_regex (?:alpha/beta/gamma)" in text
     assert "names differ" not in text
 
 
 def test_shape_group_with_too_many_odd_names_says_names_differ() -> None:
-    names = [f"sheet_{chr(97 + i % 26)}{i}_" + "x" * 16 for i in range(30)]  # max 31 chars
+    names = [f"sheet_{chr(97 + i % 26)}{i}_" + "x" * 16 for i in range(30)]
     text = workbook_map(_same_table_sheets(names), "F1")["text"]
     assert "same shape" in text and "names differ" in text
 
@@ -144,7 +141,7 @@ def test_workbook_map_grouping_preserves_original_sheet_paging() -> None:
     wb = _same_table_sheets([f"m{i:02}" for i in range(5)])
     out = workbook_map(wb, "F1", offset=4, limit=2)
     assert out["text"].startswith("F1 5 sheets") and not out["truncated"]
-    assert out["text"].count("\n") == 0  # m05 is represented by the group on the first page
+    assert out["text"].count("\n") == 0
     assert "F1.S1..F1.S5" in workbook_map(wb, "F1")["text"]
 
 

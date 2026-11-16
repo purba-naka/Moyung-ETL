@@ -32,9 +32,6 @@ def one(checks, con, schemas):
     return results, broken
 
 
-# --- not_null / unique -----------------------------------------------------------------------
-
-
 def test_not_null_counts_rows_and_names_columns():
     con, sc = world(
         t="CREATE TABLE t AS SELECT * FROM (VALUES (1,'a'),(NULL,'b'),(3,NULL),(NULL,NULL)) v(id,\"Nama Produk\")"
@@ -42,7 +39,7 @@ def test_not_null_counts_rows_and_names_columns():
     (r,), broken = one(
         {"c": chk(kind="not_null", table="t", columns=["ID", "nama produk"])}, con, sc
     )
-    assert not broken and not r.passed and r.bad_rows == 3  # rows with any NULL, not NULL cells
+    assert not broken and not r.passed and r.bad_rows == 3
     assert "id: 2" in r.message and "Nama Produk: 2" in r.message
 
 
@@ -64,9 +61,9 @@ def test_unique_single_and_composite_keys_with_null():
         t="CREATE TABLE t AS SELECT * FROM (VALUES ('a',1),('a',1),('a',2),('b',1),(NULL,1),(NULL,1)) v(k,n)"
     )
     (r1,), _ = one({"c": chk(kind="unique", table="t", columns=["k"])}, con, sc)
-    assert r1.bad_rows == 2 and "'a'" in r1.message and "x3" in r1.message  # 'a' x3 and NULL x2
+    assert r1.bad_rows == 2 and "'a'" in r1.message and "x3" in r1.message
     (r2,), _ = one({"c": chk(kind="unique", table="t", columns=["k", "n"])}, con, sc)
-    assert r2.bad_rows == 2  # ('a',1) x2 and (NULL,1) x2
+    assert r2.bad_rows == 2
     (r3,), _ = one({"c": chk(kind="unique", table="t", columns=["n", "k"])}, con, sc)
     assert r3.bad_rows == 2
 
@@ -75,9 +72,6 @@ def test_unique_passes_when_distinct():
     con, sc = world(t="CREATE TABLE t AS SELECT range AS i FROM range(5)")
     (r,), _ = one({"c": chk(kind="unique", table="t", columns=["i"])}, con, sc)
     assert r.passed and r.bad_rows == 0
-
-
-# --- range -----------------------------------------------------------------------------------
 
 
 def test_range_int_bounds_inclusive_and_nulls_skipped():
@@ -119,9 +113,6 @@ def test_range_rejects_text_column_and_missing_bound():
         chk(kind="range", table="t", column="s")
 
 
-# --- accepted_values -------------------------------------------------------------------------
-
-
 def test_accepted_values_text_number_and_null():
     con, sc = world(
         t="CREATE TABLE t AS SELECT * FROM (VALUES ('KG'),('TON'),('kg'),(NULL),('LB')) v(unit)",
@@ -140,8 +131,6 @@ def test_accepted_values_quotes_in_values_are_data_not_sql():
     (r,), _ = one({"c": chk(kind="accepted_values", table="t", column="s", values=["b"])}, con, sc)
     assert r.bad_rows == 1
 
-
-# --- reconcile -------------------------------------------------------------------------------
 
 DAILY = """CREATE TABLE daily AS SELECT * FROM (VALUES
   ('jan', 10.0), ('jan', 20.0), ('feb', 5.0), ('feb', 5.5)) v(month, ton)"""
@@ -162,7 +151,7 @@ def test_reconcile_totals_equal_and_off():
     assert not r.passed and "= 40.5" in r.message and "= 40.0" in r.message
     ok.abs_tol = 0.5
     assert one({"c": ok}, con, sc)[0][0].passed
-    ok.abs_tol, ok.rel_tol = 0.4, 0.0125  # 0.5 off a 40.5 total is 1.23%
+    ok.abs_tol, ok.rel_tol = 0.4, 0.0125
     assert one({"c": ok}, con, sc)[0][0].passed
     ok.rel_tol = 0.012
     assert not one({"c": ok}, con, sc)[0][0].passed
@@ -175,7 +164,6 @@ def test_reconcile_by_group_with_different_column_names():
         right={"table": "monthly", "column": "total"},
         by=["month"],
     )
-    # by must exist on both sides under the same name: bulan != month
     _, broken = run_checks({"c": c}, con, sc)
     assert "no column 'month'" in broken["c"]
     con.execute("CREATE TABLE m2 AS SELECT bulan AS month, total FROM monthly")
@@ -195,7 +183,6 @@ def test_reconcile_group_missing_on_one_side_counts_as_zero_for_sum():
     assert r.bad_rows == 1 and "'y'" in r.message
     c.right.table = "a"
     assert one({"c": c}, con, sc)[0][0].passed
-    # and in the other direction (group only on the right)
     c2 = rec(left={"table": "b", "column": "v"}, right={"table": "a", "column": "v"}, by=["k"])
     assert one({"c": c2}, con, sc)[0][0].bad_rows == 1
 
@@ -222,7 +209,7 @@ def test_reconcile_sum_of_empty_table_is_zero_and_avg_of_empty_differs():
     con, sc = world(e="CREATE TABLE e(v DOUBLE)")
     assert one({"c": rec(left={"table": "e", "column": "v"}, value=0)}, con, sc)[0][0].passed
     r = one({"c": rec(left={"table": "e", "agg": "avg", "column": "v"}, value=0)}, con, sc)[0][0]
-    assert not r.passed  # no average exists; it is not silently 0
+    assert not r.passed
 
 
 def test_reconcile_integer_sum_beyond_double_does_not_crash():
@@ -259,9 +246,6 @@ def test_reconcile_text_column_sum_is_reported_not_crash():
     assert "needs a number column" in broken["c"]
 
 
-# --- planning errors -------------------------------------------------------------------------
-
-
 def test_unknown_column_and_table_are_reported_with_alternatives():
     con, sc = world(t="CREATE TABLE t AS SELECT 1 AS a, 2 AS b")
     probs = check_schema(
@@ -271,9 +255,9 @@ def test_unknown_column_and_table_are_reported_with_alternatives():
         },
         sc,
     )
-    assert "columns: a, b" in probs["c1"] and "c2" not in probs  # missing table: skipped here
+    assert "columns: a, b" in probs["c1"] and "c2" not in probs
     _, broken = run_checks({"c2": chk(kind="unique", table="gone", columns=["a"])}, con, sc)
-    assert broken == {}  # skipped, an earlier step failed
+    assert broken == {}
 
 
 def test_extra_keys_and_unknown_kind_rejected():
@@ -292,9 +276,6 @@ def test_check_results_order_follows_checks():
     names = ["z", "a", "m"]
     res, _ = one({n: chk(kind="not_null", table="t", columns=["a"]) for n in names}, con, sc)
     assert [r.name for r in res] == names
-
-
-# --- through the engine ----------------------------------------------------------------------
 
 
 def _book():
@@ -373,7 +354,7 @@ def test_engine_validate_catches_bad_check_without_running(tmp_path):
         0
     ].message
     assert run(spec, {"f": _book()}, tmp_path).status == "failed"
-    assert validate(spec).ok  # no files: nothing to check against
+    assert validate(spec).ok
 
 
 def test_spec_rejects_check_on_unknown_table():
@@ -436,7 +417,7 @@ def test_range_bound_below_one_unit_is_exact_on_integers():
 def test_reconcile_relative_tolerance_uses_the_larger_side():
     con, sc = world(a="CREATE TABLE a AS SELECT 100.0 AS v", b="CREATE TABLE b AS SELECT 90.0 AS v")
     c = rec(left={"table": "a", "column": "v"}, right={"table": "b", "column": "v"}, rel_tol=0.1)
-    assert one({"c": c}, con, sc)[0][0].passed  # 10 off, 10% of the larger (100)
+    assert one({"c": c}, con, sc)[0][0].passed
     c.rel_tol = 0.099
     assert not one({"c": c}, con, sc)[0][0].passed
 
@@ -450,7 +431,6 @@ def test_reconcile_missing_group_equals_a_zero_group_for_sum_and_count_only():
         lt, rt = ("a", "b") if side == "left" else ("b", "a")
         c = rec(left={"table": lt, "column": "v"}, right={"table": rt, "column": "v"}, by=["k"])
         assert one({"c": c}, con, sc)[0][0].passed
-    # for max a missing group is a difference, not 0
     c = rec(
         left={"table": "a", "agg": "max", "column": "v"},
         right={"table": "b", "agg": "max", "column": "v"},
@@ -500,7 +480,6 @@ def test_accepted_values_on_numbers_compares_numbers_not_text():
         f="CREATE TABLE f AS SELECT * FROM (VALUES (1.0),(2.5),(3.0)) v(x)",
         d="CREATE TABLE d AS SELECT * FROM (VALUES (1.50::DECIMAL(5,2)),(2.00::DECIMAL(5,2))) v(x)",
     )
-    # 1.0 in the file, 1 in the spec (and the reverse): the same number
     (r,), _ = one(
         {"c": chk(kind="accepted_values", table="f", column="x", values=[1, 2.5, 3])}, con, sc
     )
@@ -516,7 +495,7 @@ def test_accepted_values_on_numbers_compares_numbers_not_text():
     )
     assert r.passed, r.message
     (r,), _ = one({"c": chk(kind="accepted_values", table="f", column="x", values=[1, 3])}, con, sc)
-    assert r.bad_rows == 1  # 2.5
+    assert r.bad_rows == 1
 
 
 def test_accepted_values_text_in_the_spec_for_a_number_column_is_a_spec_mistake():
@@ -526,7 +505,6 @@ def test_accepted_values_text_in_the_spec_for_a_number_column_is_a_spec_mistake(
             {"c": chk(kind="accepted_values", table="t", column="x", values=bad)}, con, sc
         )
         assert "must be numbers" in broken["c"], bad
-    # a numeric string is fine: "1" is a number written as text
     (r,), _ = one(
         {"c": chk(kind="accepted_values", table="t", column="x", values=["1", "2"])}, con, sc
     )
@@ -538,11 +516,11 @@ def test_accepted_values_on_text_still_compares_text_so_zero_padded_codes_stay_d
     (r,), _ = one(
         {"c": chk(kind="accepted_values", table="t", column="code", values=["01", "A"])}, con, sc
     )
-    assert r.bad_rows == 1 and "seen: 1" in r.message  # only the unpadded 1 is outside
+    assert r.bad_rows == 1 and "seen: 1" in r.message
     (r,), _ = one(
         {"c": chk(kind="accepted_values", table="t", column="code", values=[1, "01", "A"])}, con, sc
     )
-    assert r.passed  # the number 1 listed for a text column is the text '1'
+    assert r.passed
 
 
 def test_accepted_values_number_written_two_ways_is_one_number():
@@ -550,7 +528,7 @@ def test_accepted_values_number_written_two_ways_is_one_number():
     (r,), _ = one(
         {"c": chk(kind="accepted_values", table="t", column="x", values=[2.5, 1e1])}, con, sc
     )
-    assert r.passed, r.message  # as text this is '2.50' vs '2.5' and '10' vs '10.0'
+    assert r.passed, r.message
 
 
 def test_reconcile_the_total_row_of_a_sheet_against_the_rows_above_it():
@@ -566,7 +544,7 @@ def test_reconcile_the_total_row_of_a_sheet_against_the_rows_above_it():
     con.execute("UPDATE t SET Qty = 7 WHERE Item = 'Total'")
     (r,), _ = one({"c": c}, con, sc)
     assert not r.passed and "= 6.0 but" in r.message and "= 7.0" in r.message
-    assert "where \"Item\" <> 'Total'" in r.message  # the message says which rows were summed
+    assert "where \"Item\" <> 'Total'" in r.message
 
 
 def test_reconcile_where_per_group_with_a_different_total_marker_per_table():
@@ -594,8 +572,8 @@ def test_reconcile_where_that_matches_no_row_sums_to_zero_and_count_is_zero():
 @pytest.mark.parametrize(
     "where,msg",
     [
-        ("nope = 1", "where of 't'"),  # unknown column
-        ("v + 1", "not true/false"),  # not a boolean
+        ("nope = 1", "where of 't'"),
+        ("v + 1", "not true/false"),
     ],
 )
 def test_reconcile_where_mistakes_are_planning_errors(where, msg):
@@ -628,7 +606,7 @@ def test_reconcile_where_unsafe_expressions_are_refused_when_the_spec_is_read(wh
             },
         }
     )
-    with pytest.raises(SpecError):  # parse_spec turns it into its own error type
+    with pytest.raises(SpecError):
         parse_spec(spec)
 
 

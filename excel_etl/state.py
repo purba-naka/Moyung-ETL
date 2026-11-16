@@ -37,12 +37,11 @@ from excel_etl.rebind import BindRecord
 from excel_etl.versions import SpecHistory
 from excel_etl.workbook import Workbook
 
-# lower case only: on Windows `Job1` and `job1` would be the same file
 _JOB_ID = re.compile(r"[a-z0-9](?:[a-z0-9_.-]{0,98}[a-z0-9_-])?")
 _SHA = re.compile(r"[0-9a-f]{64}")
 _MAX_FILES = 50
-_LOCK_WAIT = 5.0  # seconds a save waits for another writer before giving up
-_STALE = 30.0  # seconds after which a lock file is taken to be left by a dead process
+_LOCK_WAIT = 5.0
+_STALE = 30.0
 
 
 class StateError(ValueError):
@@ -58,9 +57,9 @@ class _Model(BaseModel):
 
 
 class FileRef(_Model):
-    id: str = Field(min_length=1, max_length=200)  # the host's handle for the file
+    id: str = Field(min_length=1, max_length=200)
     filename: str = Field(min_length=1, max_length=300)
-    sha256: str  # of the bytes; a different hash means a different file
+    sha256: str
 
     @model_validator(mode="after")
     def _hash(self) -> FileRef:
@@ -77,7 +76,7 @@ class LoadRecord(_Model):
     table: str
     status: Literal["ok", "failed"]
     rows: int = Field(ge=0)
-    ref: str  # the spec version and run the plan was made for
+    ref: str
     note: str = Field(default="", max_length=500)
     at: str
 
@@ -88,20 +87,20 @@ class PlannedLoad(_Model):
     output: str
     platform: str
     table: str
-    ref: str  # the spec version the plan was made for
+    ref: str
 
 
 class JobState(_Model):
     job_id: str
-    version: int = Field(default=0, ge=0)  # how many times it was saved; the optimistic lock
+    version: int = Field(default=0, ge=0)
     files: list[FileRef] = Field(default=[], max_length=_MAX_FILES)
-    roles: dict[str, str] = {}  # file_role used in the spec -> FileRef.id
+    roles: dict[str, str] = {}
     knowledge: Knowledge = Field(default_factory=Knowledge)
     hitl: HitlState = Field(default_factory=HitlState)
     history: SpecHistory | None = None
-    binds: dict[str, BindRecord] = {}  # source name -> where it was found last time
+    binds: dict[str, BindRecord] = {}
     last_run: RunReport | None = None
-    loads: list[LoadRecord] = Field(default=[], max_length=200)  # newest last
+    loads: list[LoadRecord] = Field(default=[], max_length=200)
     planned: PlannedLoad | None = None
 
     @model_validator(mode="after")
@@ -146,9 +145,6 @@ def add_file(
     return state.model_copy(update={"files": files, "roles": roles})
 
 
-# --- stores ----------------------------------------------------------------------------------
-
-
 class StateStore(Protocol):
     def load(self, job_id: str) -> str | None:
         """The stored JSON, or None when the job was never saved."""
@@ -180,25 +176,22 @@ class FileStore:
     def _path(self, job_id: str) -> Path:
         if not isinstance(job_id, str) or not _JOB_ID.fullmatch(job_id):
             raise StateError(f"bad job_id {job_id!r}")
-        return self.dir / f"job-{job_id}.json"  # the prefix keeps `con` and friends legal
+        return self.dir / f"job-{job_id}.json"
 
     def load(self, job_id: str) -> str | None:
         path = self._path(job_id)
         for attempt in range(50):
             try:
-                return path.read_text(encoding="utf-8-sig")  # a BOM from an editor is harmless
+                return path.read_text(encoding="utf-8-sig")
             except (FileNotFoundError, NotADirectoryError):
-                # Linux says NotADirectoryError where Windows says FileNotFoundError when a
-                # parent is a file; either way nothing was saved under this id
                 return None
             except PermissionError as e:
-                # Windows refuses a read for a few milliseconds while a save swaps the file
                 if attempt == 49:
                     raise StateError(f"cannot read {path.name}: {e}") from None
                 time.sleep(0.01)
             except OSError as e:
                 raise StateError(f"cannot read {path.name}: {e}") from None
-        return None  # unreachable: the loop returns or raises
+        return None
 
     def save(self, job_id: str, state_json: str, expected_version: int) -> None:
         path = self._path(job_id)
@@ -206,7 +199,7 @@ class FileStore:
             self.dir.mkdir(parents=True, exist_ok=True)
         except OSError as e:
             raise StateError(f"cannot write {path.name}: {e}") from None
-        with self._locked(path):  # check and replace happen under one lock, across processes
+        with self._locked(path):
             stored = self.load(job_id)
             have = 0 if stored is None else _version_of(stored, path.name)
             if have != expected_version:
@@ -225,11 +218,7 @@ class FileStore:
     @contextlib.contextmanager
     def _locked(self, path: Path) -> Iterator[None]:
         """A lock file made with O_EXCL (atomic on every OS). A lock older than `_STALE`
-        seconds belongs to a process that died and is taken over.
-
-        ponytail: takeover is best-effort. Two writers can both see the same stale lock, and
-        the slower `unlink` may remove the fresh lock of the faster one. Fine for dev/test;
-        upgrade: a host StateStore with real locking for many processes."""
+        seconds belongs to a process that died and is taken over."""
         lock = path.with_name(path.name + ".lock")
         deadline = time.monotonic() + _LOCK_WAIT
         while True:
@@ -243,14 +232,13 @@ class FileStore:
                         lock.unlink(missing_ok=True)
                         continue
                 except OSError:
-                    continue  # it vanished between the two calls: try again
+                    continue
                 if time.monotonic() > deadline:
                     raise StateError(
                         f"{path.name} is locked by another writer; try again in a moment"
                     ) from None
                 time.sleep(0.01)
             except PermissionError:
-                # Windows: the holder is deleting the lock file right now; try again
                 if time.monotonic() > deadline:
                     raise StateError(f"{path.name} is locked by another writer") from None
                 time.sleep(0.01)
@@ -267,9 +255,6 @@ def _version_of(text: str, where: str) -> int:
         return JobState.model_validate_json(text).version
     except ValidationError as e:
         raise StateError(f"stored state {where} is not valid: {describe(e, 'state')}") from None
-
-
-# --- the job ---------------------------------------------------------------------------------
 
 
 class Job:
@@ -326,23 +311,20 @@ class Job:
         keeps its old state. After a `StateConflict` reload with `Job.open` and try again.
         """
         old = self._state
-        new = fn(old.model_copy(deep=True))  # `fn` may edit its argument in place
+        new = fn(old.model_copy(deep=True))
         if not isinstance(new, JobState):
             raise StateError(f"the update must return a JobState, got {type(new).__name__}")
         if new.job_id != old.job_id:
             raise StateError("an update cannot change job_id")
         text = new.model_copy(update={"version": old.version + 1}).model_dump_json()
         try:
-            checked = JobState.model_validate_json(text)  # what we store must load again
+            checked = JobState.model_validate_json(text)
         except ValidationError as e:
             raise StateError(describe(e, "state")) from None
         if self._store is not None:
             self._store.save(old.job_id, text, expected_version=old.version)
         self._state = checked
-        return checked.model_copy(deep=True)  # the caller's copy must not reach into the job
-
-
-# --- files -----------------------------------------------------------------------------------
+        return checked.model_copy(deep=True)
 
 
 class FileProvider(Protocol):
@@ -355,7 +337,7 @@ def read_file(file_id: str, provider: FileProvider, label: str = "") -> Workbook
     error, a missing id) is the host's problem and comes back as a StateError, not a bug."""
     try:
         return Workbook.open(provider.open(file_id))
-    except Exception as e:  # the provider is host code: any exception is a host fault
+    except Exception as e:
         raise StateError(f"{label or repr(file_id)} cannot be opened: {e}") from None
 
 

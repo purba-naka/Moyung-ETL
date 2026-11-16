@@ -28,19 +28,19 @@ class _Model(BaseModel):
 class QA(_Model):
     question: str
     answer: str
-    ref: str | None = None  # what the question was about: "sources.sales", "steps.clean", ...
+    ref: str | None = None
 
 
 class Example(_Model):
     title: str
-    spec: str  # a PipelineSpec as JSON text
+    spec: str
 
 
 class Knowledge(_Model):
     brief: str = ""
     glossary: dict[str, str] = {}
     rules: list[str] = []
-    target_schema: dict[str, str] | None = None  # column name -> duckdb type, when the host has one
+    target_schema: dict[str, str] | None = None
     examples: list[Example] = []
     qa_log: list[QA] = Field(default_factory=list)
 

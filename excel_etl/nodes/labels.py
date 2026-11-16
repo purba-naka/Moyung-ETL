@@ -147,11 +147,10 @@ class SplitHeaderToken(Node):
                 parts = f"string_split({text}, {sep})"
                 if i < n - 1:
                     raw = f"{parts}[{i + 1}]"
-                else:  # the last column takes everything that is left
+                else:
                     raw = f"array_to_string(list_slice({parts}, {n}, len({parts})), {sep})"
             else:
                 pat = sql_text(cfg.pattern or "")
-                # no match gives '' from regexp_extract, which nullif below turns into NULL
                 raw = f"regexp_extract({text}, {pat}, {i + 1})"
             exprs.append(f"nullif(trim({raw}), '') AS {quote(name)}")
         star = f"* EXCLUDE ({quote(cfg.column)})" if cfg.drop_source else "*"

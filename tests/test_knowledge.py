@@ -30,7 +30,7 @@ def test_glossary_rules_qa_matched_by_word_case_blind():
     assert "Abaikan sheet Grafik" in lookup_knowledge(k, "sheet grafik")
     assert "ribu rupiah" in lookup_knowledge(k, "satuan amt")
     assert "Angka dalam ton" in lookup_knowledge(k, "ton")
-    assert "Produksi bulanan" not in lookup_knowledge(k, "ton")  # only the matching sentence
+    assert "Produksi bulanan" not in lookup_knowledge(k, "ton")
 
 
 def QA_(q, a):
@@ -42,8 +42,8 @@ def test_best_match_first_and_capped():
         rules=[f"rule about stock {i}" + (" and ton" if i == 7 else "") for i in range(12)]
     )
     out = lookup_knowledge(k, "stock ton")
-    assert out.splitlines()[1].endswith("7 and ton")  # two shared words beat one
-    assert out.count("\n  - ") == 5  # capped per section
+    assert out.splitlines()[1].endswith("7 and ton")
+    assert out.count("\n  - ") == 5
 
 
 def test_target_schema_and_examples():

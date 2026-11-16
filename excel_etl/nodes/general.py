@@ -19,7 +19,6 @@ from excel_etl.nodes.base import (
     node,
     quote,
     schema_of,
-    sql_value,
 )
 from excel_etl.nodes.relops import apply, check_reserved, shape
 from excel_etl.nodes.sqlexpr import bind, check_expression, check_type
@@ -51,7 +50,7 @@ class Select(Node):
 
 
 def _unique(names: list[str], what: str, who: str) -> None:
-    keys = [n.casefold() for n in names]  # duckdb names ignore letter case
+    keys = [n.casefold() for n in names]
     if dup := next((n for n, k in zip(names, keys, strict=True) if keys.count(k) > 1), None):
         raise NodeError(f"{who}: {what} {dup!r} is listed twice (letter case is ignored)")
 
@@ -273,9 +272,9 @@ class FillMissing(Node):
         by_name = {c.name: c.type for c in schema}
         plan = []
         for col, value in self.config.values.items():
-            lit = sql_value(value)
             kind = by_name[col]
-            check_fits(lit, kind, f"{self.name}: {value!r} does not fit column {col!r} ({kind})")
+            fail = f"{self.name}: {value!r} does not fit column {col!r} ({kind})"
+            lit = check_fits(value, kind, fail)
             plan.append(f"coalesce({quote(col)}, CAST({lit} AS {kind})) AS {quote(col)}")
         return plan
 
@@ -295,7 +294,6 @@ def _order_keys(by: list[str], schema: Schema, who: str) -> list[str]:
     have = {c.name for c in schema}
     keys = []
     for item in by:
-        # a column that really starts with `-` wins over the descending marker
         desc = item.startswith("-") and item not in have
         col = item[1:] if desc else item
         _missing([col], schema, who)
@@ -351,10 +349,7 @@ class Dedupe(Node):
         schema = schema_of(rel)
         self.infer_schema([schema])
         cols = ", ".join(quote(c.name) for c in schema)
-        # no keys = the whole row is the key; rel.distinct() would return survivors in hash order
         part = ", ".join(quote(k) for k in self.config.keys) if self.config.keys else cols
-        # row_number() over () numbers rows in table order. Without it the "first" row of a key
-        # is whichever a parallel scan reaches first (measured on 200k rows: not the first).
         return rel.query(
             "__in",
             f"SELECT {cols} FROM (SELECT *, row_number() OVER (PARTITION BY {part} "
@@ -466,7 +461,6 @@ class Window(Node):
                 f"{self.name}: {fn} of {cfg.name!r} needs a number column, but "
                 f"{cfg.column!r} is {kind}; cast it first"
             )
-        # ROWS, not the default RANGE: the same result here (__pos breaks every tie)
         running = "ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW"
         whole = "ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING"
         if fn == "row_number":
@@ -482,7 +476,7 @@ class Window(Node):
         over = self._over(schema, bool(cfg.order_by), running if cfg.order_by else "")
         value = f"{fn}({col}) {over}"
         if fn == "sum" and INTEGER_TYPE.match(kind):
-            return f"CAST({value} AS BIGINT)"  # a sum of whole numbers would be HUGEINT
+            return f"CAST({value} AS BIGINT)"
         return value
 
     def _sql(self, view: str, schema: Schema) -> str:
@@ -501,7 +495,7 @@ class Window(Node):
         if other := next(
             (c.name for c in schema if c.name != name and c.name.casefold() == name.casefold()),
             None,
-        ):  # duckdb would rename the new column to `QTY_1` without a word
+        ):
             raise NodeError(
                 f"{self.name}: columns {other!r} and {name!r} differ only in letter case, "
                 "which duckdb treats as one name; use the same spelling or another name"

@@ -63,7 +63,7 @@ class Target(_Model):
     grain: list[str] = Field(min_length=1)
     total_regex: str = TOTAL_LABEL
     filters: list[str] = []
-    decimal: Literal[".", ","] = "."  # how numbers typed as text read: 1,234.56 or 1.234,56
+    decimal: Literal[".", ","] = "."
 
     @model_validator(mode="after")
     def _shape(self) -> Target:
@@ -115,7 +115,7 @@ class SynthReport(_Model):
     best: Candidate | None = None
     others: list[Candidate] = []
     questions: list[Question] = []
-    notes: list[str] = []  # why tables were passed over; a bare "none" helps nobody
+    notes: list[str] = []
 
     def text(self) -> str:
         lines = [f"synth: {self.status}"]
@@ -137,7 +137,7 @@ class Proposal(_Model):
     grid: object
     role: str
     name_regex: str | None = None
-    sheets: list[str] = []  # every sheet the region stands for (one name when not grouped)
+    sheets: list[str] = []
 
 
 def _representative(indexes: list[int], wb: Workbook) -> int:
@@ -209,7 +209,6 @@ def source_from_region(wb: Workbook, file_id: str, region_id: str, role: str) ->
         raise WorkbookError(f"{label} has no header row (a note or KPI block): it is not a table")
     groups = {i: (idx, pat) for idx, pat in _shape_groups(wb) for i in idx}
     index = next(i for i, s in enumerate(wb.sheets) if s.name == sheet)
-    # only the first table of a sheet is what the group was measured on
     first = next((r for r in detect_regions(wb, sheet, g) if r.header_rows), None)
     grouped = groups.get(index) if first is not None and first.box == region.box else None
     anchors = list(
@@ -247,8 +246,6 @@ def _score_column(col: TargetColumn, header: str, answers: dict[str, str]) -> fl
         return 0.95
     if leaf == name:
         return 0.9
-    # "STOK FISIK" should still find "STOK FISIK (ON HAND)": a hint or name that starts the
-    # header is a strong sign, just weaker than an exact hit.
     if any(x and leaf.startswith(x) for x in (*hints, name)):
         return 0.85
     ratio = max(
@@ -264,8 +261,6 @@ def _ask(col: TargetColumn, what: str, options: list[str]) -> Question:
 
 
 def _is_grouped(target: Target, names: list[str]) -> bool:
-    # Key columns (province, regency, code...) sit left of the repeated "group|measure" blocks.
-    # Once the first "group|measure" header appears, every header after it must be one too.
     first_group = next((i for i, n in enumerate(names) if "|" in n), len(names))
     return (
         any(c.from_header for c in target.columns)
@@ -297,7 +292,7 @@ def _header_ranking(
         if score and not type_fits(col.type, kind) and col.type != "float":
             score *= 0.5
         if answers.get(f"col:{col.name}") == name:
-            score = 2.0  # the user chose this header: nothing else may outrank it
+            score = 2.0
         if score:
             candidates.append((score, -i, name))
     return sorted(candidates, reverse=True)
@@ -339,8 +334,6 @@ def match_columns(
             if ranked:
                 mapping[col.name], scores[col.name] = ranked[0][2], ranked[0][0]
             else:
-                # Ask even for optional columns: an unmapped value column breaks the cast
-                # step, so the region would vanish without telling the user why.
                 questions.append(_ask(col, "repeated measure", leaf_names))
             continue
         candidates = _header_ranking(col, enriched, names, types, used, answers)
@@ -402,8 +395,6 @@ def draft_targets(wb: Workbook, file_id: str = "F1") -> list[dict]:
     """One editable Target guess per table, so a person crosses out columns instead of typing
     them. Text columns become the grain; "group|measure" headers become one from_header
     column plus one column per measure."""
-    # ponytail: wide month headers (Jan, Feb) are not detected as from_header; the user ticks
-    # it. Upgrade: reuse the unpivot detection in _build.
     out = []
     for p in proposal_regions(wb, file_id)[:40]:
         names, types, rows = _proposal_info(p)
@@ -415,8 +406,6 @@ def draft_targets(wb: Workbook, file_id: str = "F1") -> list[dict]:
         for n, t in zip(names[:first] if grouped else names, types, strict=False):
             c = TargetColumn(name=_slug(n, taken), type=_FROM_DUCK.get(t, "text"), hints=[n])
             cols.append(c)
-            # Left of repeated blocks every column is a key (a numeric code too): a non-grain
-            # column there would be looked for among the block measures and never found.
             if grouped or c.type == "text":
                 grain.append(c.name)
         if grouped:
@@ -463,7 +452,6 @@ def _header_anchors(p: Proposal) -> list[str]:
 def _rounding_reasons(
     target: Target, mapping: dict[str, str], names: list[str], rows: list[list[object]]
 ) -> list[str]:
-    # A whole-number target would round 1.5 to 2 without a word; say so.
     out = []
     for c in target.columns:
         if c.type == "int" and mapping.get(c.name) in names:
@@ -478,8 +466,6 @@ def _fill_columns(
 ) -> list[str]:
     fill = []
     for c in target.columns:
-        # Measure columns map to a leaf like "SAFETY STOCK" that is not a real header
-        # ("UREA|SAFETY STOCK"), so there is no single column to fill down.
         if c.name not in mapping or c.type != "text" or mapping[c.name] not in names:
             continue
         idx = names.index(mapping[c.name])
@@ -490,8 +476,6 @@ def _fill_columns(
 
 
 def _clashing_unused(target: Target, mapping: dict[str, str], names: list[str]) -> list[str]:
-    # A source header nobody asked for may share a name with a target column (header "prov"
-    # while "Provinsi" is renamed to prov). Rename would refuse the clash, so drop it first.
     target_keys = {c.name.casefold() for c in target.columns}
     mapped = set(mapping.values())
     return [n for n in names if n not in mapped and n.casefold() in target_keys and "|" not in n]
@@ -585,8 +569,6 @@ def _build(
     prefix: str = "",
 ) -> tuple[PipelineSpec | None, list[str], list[str]]:
     header_target = next((c for c in target.columns if c.from_header), None)
-    # The sheet name column must not clash with any source header or target column, in any
-    # letter case (the loader compares case-insensitively).
     taken = {n.casefold() for n in names} | {c.name.casefold() for c in target.columns}
     sheet_col = _free_name("source_sheet", taken)
     source_sheet = (
@@ -594,8 +576,6 @@ def _build(
         if p.name_regex
         else {"name": p.sheet}
     )
-    # An optional column the sheet does not have is left out; keeping it would break the
-    # cast and select steps and the whole table would vanish.
     output_columns = [
         c
         for c in target.columns
@@ -652,7 +632,6 @@ def _build(
         current = _step(steps, prefix + "unused", "select", current, {"columns": kept})
         reasons.append(f"Dropped unused source columns that share a target name: {unused}.")
     if header_target:
-        # The sheet name column of a multi-sheet read is a key too, so unpivot must carry it.
         sheet_key = [sheet_col] if p.name_regex else []
         unpivoted = _unpivot_steps(
             steps,
@@ -741,8 +720,6 @@ def _evaluate(
 ) -> tuple[Candidate | None, str]:
     """The scored candidate, or None and the reason it was dropped."""
     problems = []
-    # Score on the sample sheet only. A file with 150 daily sheets would otherwise be read in
-    # full for every candidate; the returned spec still reads them all.
     probe = spec.model_copy(deep=True)
     for r, src in zip(regions, probe.sources.values(), strict=True):
         if r.name_regex:
@@ -787,8 +764,6 @@ def _evaluate(
         problems.append("Grain has duplicate rows.")
     if fill < 1:
         problems.append("Some output values are empty or could not be cast.")
-    # What run() warned about (rows left below the table, Excel error cells) is just as true
-    # of the real result, and the person reading `status == ok` would never see it otherwise.
     problems.extend(result.warnings)
     left_out = [c.name for c in target.columns if c.name not in columns]
     if left_out:
@@ -827,8 +802,6 @@ def synthesize(
     for p in proposals[:40]:
         names, types, rows = _proposal_info(p)
         mapping, scores, qs = match_columns(target, names, types, answers, knowledge)
-        # Regions that match no target header at all (notes sheets) stay silent. The rest ask
-        # in order of how many headers they matched, so the closest table is asked first.
         if scores:
             asked.append((-len(scores), qs))
         required = [c for c in target.columns if c.required and not c.from_header]
@@ -859,8 +832,6 @@ def synthesize(
     if len(proposals) > 40:
         notes.append(f"Only the first 40 of {len(proposals)} tables were tried.")
     if not candidates and not notes:
-        # No table resembled the target at all: show what the first ones do contain, so the
-        # user can fix the names or hints.
         for p, names in unmatched[:3]:
             shown = ", ".join(repr(n.replace("|", " / ")) for n in names[:8])
             notes.append(f"{p.id} ({p.sheet!r}) has the headers {shown}; none matched the target.")

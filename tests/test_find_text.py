@@ -32,7 +32,6 @@ def test_find_reports_positions() -> None:
 
 
 def test_find_ignores_case_spaces_and_unicode_lookalikes() -> None:
-    # double space in the cell, non-breaking space, ligature ff
     out = find_text(_wb(), "F1", "januari  produksi")["text"]
     assert "B1=JANUARI PRODUKSI" in out
     assert "B1=JANUARI PRODUKSI" in find_text(_wb(), "F1", "JANUARI\u00a0PRODUKSI")["text"]
@@ -41,7 +40,7 @@ def test_find_ignores_case_spaces_and_unicode_lookalikes() -> None:
 
 def test_find_matches_text_cells_only() -> None:
     out = find_text(_wb(), "F1", "2026")["text"]
-    assert "A3=2026" in out  # the text cell, not the date 2026-01-05
+    assert "A3=2026" in out
     assert not find_text(_wb(), "F1", "10")["text"].splitlines()[1:]
 
 
@@ -74,7 +73,6 @@ def test_find_clips_many_hits_per_sheet() -> None:
 
 
 def test_find_clips_a_huge_query_in_the_head() -> None:
-    # the matches count must survive a query so long it would eat the whole head line
     out = find_text(_wb(), "F1", "tanggal " + "x" * 5000)["text"]
     head = out.splitlines()[0]
     assert "matches 0 cells in 0 of 2 sheets" in head
