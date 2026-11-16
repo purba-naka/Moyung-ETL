@@ -10,6 +10,9 @@ an error says what to change. Arguments are plain strings, numbers, booleans, en
 of strings, so a provider's tool schema never needs `anyOf` or `$ref`. A
 spec travels as a JSON string. Files are named `F1`, `F2`, ... in the order of `state.files`.
 
+`provider` is any object with `open(file_id) -> path | bytes` (`state.FileProvider`); `store` is
+a host `StateStore`, or `state.FileStore(dir)` for dev and tests.
+
 Tools that change the job (`save_spec`, `rebind`, `run_pipeline`, `ask_human`, `plan_load`)
 go through `Job.update`, so with a store they are saved at once and a second writer gets a
 conflict error.

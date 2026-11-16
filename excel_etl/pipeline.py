@@ -339,5 +339,6 @@ def _order_steps(steps: list[dict]) -> list[dict]:
 
 
 def dump_spec(spec: PipelineSpec) -> str:
-    """PipelineSpec -> JSON text that parse_spec reads back to an equal spec."""
-    return spec.model_dump_json(indent=2)
+    """PipelineSpec -> JSON text that parse_spec reads back to an equal spec. Unset (null)
+    fields are left out so the agent reads only what the spec says."""
+    return spec.model_dump_json(indent=2, exclude_none=True)
