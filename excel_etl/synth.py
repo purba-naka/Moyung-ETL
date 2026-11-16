@@ -22,7 +22,7 @@ from excel_etl.inspect.encode import column_names
 from excel_etl.inspect.lineage import region_role
 from excel_etl.inspect.regions import TOTAL_LABEL, Region, SheetGrid, detect_regions
 from excel_etl.knowledge import Knowledge
-from excel_etl.nodes.base import _NAME_PATTERN, NodeError
+from excel_etl.nodes.base import _NAME_PATTERN, NodeError, quote
 from excel_etl.nodes.source import _type, type_fits
 from excel_etl.nodes.sqlexpr import check_expression
 from excel_etl.pipeline import Output, PipelineSpec, Step, dump_spec
@@ -258,6 +258,61 @@ def _score_column(col: TargetColumn, header: str, answers: dict[str, str]) -> fl
     return ratio * 0.8 if ratio >= 0.75 else 0.0
 
 
+def _ask(col: TargetColumn, what: str, options: list[str]) -> Question:
+    text = f"Which {what} supplies {col.name}?"
+    return Question(id=f"col:{col.name}", text=text, options=options)
+
+
+def _is_grouped(target: Target, names: list[str]) -> bool:
+    # Key columns (province, regency, code...) sit left of the repeated "group|measure" blocks.
+    # Once the first "group|measure" header appears, every header after it must be one too.
+    first_group = next((i for i, n in enumerate(names) if "|" in n), len(names))
+    return (
+        any(c.from_header for c in target.columns)
+        and first_group < len(names)
+        and all("|" in n for n in names[first_group:])
+    )
+
+
+def _leaf_ranking(
+    col: TargetColumn, leaf_names: list[str], answers: dict[str, str]
+) -> list[tuple[float, int, str]]:
+    ranked = [(_score_column(col, n, answers), -i, n) for i, n in enumerate(leaf_names)]
+    return sorted((x for x in ranked if x[0]), reverse=True)
+
+
+def _header_ranking(
+    col: TargetColumn,
+    enriched: TargetColumn,
+    names: list[str],
+    types: list[str],
+    used: set[str],
+    answers: dict[str, str],
+) -> list[tuple[float, int, str]]:
+    candidates = []
+    for i, (name, kind) in enumerate(zip(names, types, strict=True)):
+        if name in used:
+            continue
+        score = _score_column(enriched, name, answers)
+        if score and not type_fits(col.type, kind) and col.type != "float":
+            score *= 0.5
+        if answers.get(f"col:{col.name}") == name:
+            score = 2.0  # the user chose this header: nothing else may outrank it
+        if score:
+            candidates.append((score, -i, name))
+    return sorted(candidates, reverse=True)
+
+
+def _too_close(candidates: list[tuple[float, int, str]]) -> bool:
+    best = candidates[0][0]
+    return (
+        best < 2.0
+        and len(candidates) > 1
+        and best - candidates[1][0] < 0.1
+        and candidates[1][0] >= 0.6
+    )
+
+
 def match_columns(
     target: Target,
     names: list[str],
@@ -272,88 +327,33 @@ def match_columns(
     mapping: dict[str, str] = {}
     scores: dict[str, float] = {}
     questions: list[Question] = []
-    # Key columns (province, regency, code...) sit left of the repeated "group|measure" blocks.
-    # Once the first "group|measure" header appears, every header after it must be one too.
-    first_group = next((i for i, n in enumerate(names) if "|" in n), len(names))
-    grouped = (
-        any(c.from_header for c in target.columns)
-        and first_group < len(names)
-        and all("|" in n for n in names[first_group:])
-    )
+    grouped = _is_grouped(target, names)
     value_targets = [c for c in target.columns if not c.from_header and c.name not in target.grain]
+    leaf_names = list(dict.fromkeys(n.rsplit("|", 1)[-1] for n in names if "|" in n))
     for col in target.columns:
         if col.from_header:
             continue
         enriched = col.model_copy(update={"hints": [*col.hints, glossary.get(col.name, "")]})
         if grouped and col in value_targets:
-            leaf_names = list(dict.fromkeys(n.rsplit("|", 1)[-1] for n in names if "|" in n))
-            leaf_types = []
-            for leaf in leaf_names:
-                kinds = [
-                    t for n, t in zip(names, types, strict=True) if n.rsplit("|", 1)[-1] == leaf
-                ]
-                leaf_types.append(
-                    "DOUBLE" if all(t in ("BIGINT", "DOUBLE") for t in kinds) else kinds[0]
-                )
-            scores_for_col = [
-                (_score_column(enriched, n, answers), -i, n) for i, n in enumerate(leaf_names)
-            ]
-            scores_for_col = [x for x in scores_for_col if x[0]]
-            scores_for_col.sort(reverse=True)
-            if scores_for_col:
-                mapping[col.name] = scores_for_col[0][2]
-                scores[col.name] = scores_for_col[0][0]
+            ranked = _leaf_ranking(enriched, leaf_names, answers)
+            if ranked:
+                mapping[col.name], scores[col.name] = ranked[0][2], ranked[0][0]
             else:
                 # Ask even for optional columns: an unmapped value column breaks the cast
                 # step, so the region would vanish without telling the user why.
-                questions.append(
-                    Question(
-                        id=f"col:{col.name}",
-                        text=f"Which repeated measure supplies {col.name}?",
-                        options=leaf_names,
-                    )
-                )
+                questions.append(_ask(col, "repeated measure", leaf_names))
             continue
-        candidates = []
-        for i, (name, kind) in enumerate(zip(names, types, strict=True)):
-            if name in used:
-                continue
-            score = _score_column(enriched, name, answers)
-            if score and not type_fits(col.type, kind) and col.type != "float":
-                score *= 0.5
-            if answers.get(f"col:{col.name}") == name:
-                score = 2.0  # the user chose this header: nothing else may outrank it
-            if score:
-                candidates.append((score, -i, name))
-        candidates.sort(reverse=True)
+        candidates = _header_ranking(col, enriched, names, types, used, answers)
         if not candidates:
             if col in value_targets and col.required:
                 scores[col.name] = 1.0
-                continue
-            if col.required:
-                questions.append(
-                    Question(
-                        id=f"col:{col.name}",
-                        text=f"Which header supplies {col.name}?",
-                        options=names,
-                    )
-                )
+            elif col.required:
+                questions.append(_ask(col, "header", names))
+            continue
+        if _too_close(candidates):
+            questions.append(_ask(col, "header", [c[2] for c in candidates[:5]]))
             continue
         best = candidates[0]
-        if (
-            best[0] < 2.0
-            and len(candidates) > 1
-            and best[0] - candidates[1][0] < 0.1
-            and candidates[1][0] >= 0.6
-        ):
-            questions.append(
-                Question(
-                    id=f"col:{col.name}",
-                    text=f"Which header supplies {col.name}?",
-                    options=[c[2] for c in candidates[:5]],
-                )
-            )
-            continue
         mapping[col.name], scores[col.name] = best[2], min(best[0], 1.0)
         used.add(best[2])
     return mapping, scores, questions
@@ -451,6 +451,130 @@ def _step(steps: list[Step], ident: str, node: str, current: str, config: dict) 
     return ident
 
 
+def _header_anchors(p: Proposal) -> list[str]:
+    labels = (
+        p.grid.label(r, c)
+        for r in p.region.header_rows
+        for c in range(p.region.box[1], p.region.box[3] + 1)
+    )
+    return list(dict.fromkeys(str(x) for x in labels if x is not None))[:3]
+
+
+def _rounding_reasons(
+    target: Target, mapping: dict[str, str], names: list[str], rows: list[list[object]]
+) -> list[str]:
+    # A whole-number target would round 1.5 to 2 without a word; say so.
+    out = []
+    for c in target.columns:
+        if c.type == "int" and mapping.get(c.name) in names:
+            col = names.index(mapping[c.name])
+            if any(isinstance(r[col], float) and not r[col].is_integer() for r in rows):
+                out.append(f"{c.name} is a whole number but the sheet has decimals: rounded.")
+    return out
+
+
+def _fill_columns(
+    target: Target, mapping: dict[str, str], names: list[str], rows: list[list[object]]
+) -> list[str]:
+    fill = []
+    for c in target.columns:
+        # Measure columns map to a leaf like "SAFETY STOCK" that is not a real header
+        # ("UREA|SAFETY STOCK"), so there is no single column to fill down.
+        if c.name not in mapping or c.type != "text" or mapping[c.name] not in names:
+            continue
+        idx = names.index(mapping[c.name])
+        vals = [row[idx] for row in rows]
+        if any(v is None for v in vals) and any(v is not None for v in vals):
+            fill.append(mapping[c.name])
+    return fill
+
+
+def _clashing_unused(target: Target, mapping: dict[str, str], names: list[str]) -> list[str]:
+    # A source header nobody asked for may share a name with a target column (header "prov"
+    # while "Provinsi" is renamed to prov). Rename would refuse the clash, so drop it first.
+    target_keys = {c.name.casefold() for c in target.columns}
+    mapped = set(mapping.values())
+    return [n for n in names if n not in mapped and n.casefold() in target_keys and "|" not in n]
+
+
+def _unpivot_steps(
+    steps: list[Step],
+    current: str,
+    target: Target,
+    p: Proposal,
+    header_target: TargetColumn,
+    mapping: dict[str, str],
+    names: list[str],
+    types: list[str],
+    sheet_key: list[str],
+    prefix: str,
+    reasons: list[str],
+) -> tuple[str, dict[str, str]] | None:
+    """Add the unpivot steps and return the new current step and rename map, or None when
+    there is nothing numeric to unpivot."""
+    rename = {old: new for new, old in mapping.items()}
+    candidates = [
+        n
+        for n, t in zip(names, types, strict=True)
+        if n not in set(mapping.values())
+        and t in ("BIGINT", "DOUBLE")
+        and not re.match(target.total_regex, n)
+    ]
+    if p.region.groups and all("|" in n for n in candidates):
+        total_columns = [n for n in names if re.match(target.total_regex, n)]
+        if total_columns:
+            current = _step(
+                steps,
+                prefix + "totals",
+                "select",
+                current,
+                {"columns": [n for n in names if n not in total_columns]},
+            )
+            reasons.append("Excluded total columns before unpivoting repeated blocks.")
+        group_keep = [
+            mapping[c.name] for c in target.columns if c.name in target.grain and c.name in mapping
+        ] + sheet_key
+        current = _step(
+            steps,
+            prefix + "long",
+            "unpivot_groups",
+            current,
+            {
+                "pattern": r"^(?P<group>.+)[|](?P<measure>[^|]+)$",
+                "keep": group_keep,
+                "group_column": header_target.name,
+            },
+        )
+        rename = {old: new for new, old in mapping.items() if "|" not in old}
+        rename.update(
+            {old: new for new, old in mapping.items() if any(n.endswith("|" + old) for n in names)}
+        )
+        reasons.append("Unpivoted repeated column blocks into group rows.")
+        return current, rename
+    if not candidates:
+        return None
+    keep = list(
+        dict.fromkeys([mapping[c.name] for c in target.columns if c.name in mapping] + sheet_key)
+    )
+    current = _step(
+        steps,
+        prefix + "long",
+        "unpivot",
+        current,
+        {
+            "keep": keep,
+            "columns": candidates,
+            "name_column": header_target.name,
+            "value_column": "__value",
+        },
+    )
+    value_targets = [c for c in target.columns if not c.from_header and c.name not in target.grain]
+    if value_targets:
+        rename["__value"] = value_targets[0].name
+    reasons.append("Unpivoted repeated numeric columns into header/value rows.")
+    return current, rename
+
+
 def _build(
     target: Target,
     p: Proposal,
@@ -481,21 +605,13 @@ def _build(
     if p.name_regex:
         output_columns.append(TargetColumn(name=sheet_col, type="text"))
         grain.append(sheet_col)
-    anchors = list(
-        dict.fromkeys(
-            str(p.grid.label(r, c))
-            for r in p.region.header_rows
-            for c in range(p.region.box[1], p.region.box[3] + 1)
-            if p.grid.label(r, c) is not None
-        )
-    )[:3]
     spec = PipelineSpec(
         sources={
             f"{prefix}input": {
                 "file_role": "main",
                 "sheet": source_sheet,
                 "region": {
-                    "header_anchor": anchors,
+                    "header_anchor": _header_anchors(p),
                     "header_rows": len(p.region.header_rows),
                 },
             }
@@ -503,28 +619,14 @@ def _build(
     )
     steps: list[Step] = []
     reasons = [f"Selected {p.id} ({p.role}) on sheet {p.sheet!r}."]
-    for c in target.columns:
-        # A whole-number target would round 1.5 to 2 without a word; say so.
-        if c.type == "int" and mapping.get(c.name) in names:
-            col = names.index(mapping[c.name])
-            if any(isinstance(r[col], float) and not r[col].is_integer() for r in rows):
-                reasons.append(f"{c.name} is a whole number but the sheet has decimals: rounded.")
+    reasons += _rounding_reasons(target, mapping, names, rows)
     if p.name_regex:
         reasons.append(
             f"Reads every sheet with this layout, named like /{p.name_regex}/, "
             "and keeps the sheet name in source_sheet."
         )
     current = f"{prefix}input"
-    fill = []
-    for c in target.columns:
-        # Measure columns map to a leaf like "SAFETY STOCK" that is not a real header
-        # ("UREA|SAFETY STOCK"), so there is no single column to fill down.
-        if c.name not in mapping or c.type != "text" or mapping[c.name] not in names:
-            continue
-        idx = names.index(mapping[c.name])
-        vals = [row[idx] for row in rows]
-        if any(v is None for v in vals) and any(v is not None for v in vals):
-            fill.append(mapping[c.name])
+    fill = _fill_columns(target, mapping, names, rows)
     if fill:
         current = _step(steps, prefix + "filled", "fill_down", current, {"columns": fill})
         reasons.append("Filled down blank repeated labels.")
@@ -544,95 +646,33 @@ def _build(
     if grain_text:
         reasons.append("Dropped total/subtotal rows from every text key column.")
     rename = {old: new for new, old in mapping.items()}
-    # A source header nobody asked for may share a name with a target column (header "prov"
-    # while "Provinsi" is renamed to prov). Rename would refuse the clash, so drop it first.
-    target_keys = {c.name.casefold() for c in target.columns}
-    unused = [
-        n
-        for n in names
-        if n not in set(mapping.values()) and n.casefold() in target_keys and "|" not in n
-    ]
+    unused = _clashing_unused(target, mapping, names)
     if unused and not header_target:
         kept = [n for n in names if n not in unused]
         current = _step(steps, prefix + "unused", "select", current, {"columns": kept})
         reasons.append(f"Dropped unused source columns that share a target name: {unused}.")
-    # The sheet name column of a multi-sheet read is a key too, so unpivot must carry it.
-    sheet_key = [sheet_col] if p.name_regex else []
     if header_target:
-        candidates = [
-            n
-            for n, t in zip(names, types, strict=True)
-            if n not in set(mapping.values())
-            and t in ("BIGINT", "DOUBLE")
-            and not re.match(target.total_regex, n)
-        ]
-        grouped = p.region.groups and all("|" in n for n in candidates)
-        if grouped:
-            total_columns = [n for n in names if re.match(target.total_regex, n)]
-            if total_columns:
-                current = _step(
-                    steps,
-                    prefix + "totals",
-                    "select",
-                    current,
-                    {"columns": [n for n in names if n not in total_columns]},
-                )
-                reasons.append("Excluded total columns before unpivoting repeated blocks.")
-            group_keep = [
-                mapping[c.name]
-                for c in target.columns
-                if c.name in target.grain and c.name in mapping
-            ] + sheet_key
-            current = _step(
-                steps,
-                prefix + "long",
-                "unpivot_groups",
-                current,
-                {
-                    "pattern": r"^(?P<group>.+)[|](?P<measure>[^|]+)$",
-                    "keep": group_keep,
-                    "group_column": header_target.name,
-                },
-            )
-            rename = {old: new for new, old in mapping.items() if "|" not in old}
-            rename.update(
-                {
-                    old: new
-                    for new, old in mapping.items()
-                    if any(n.endswith("|" + old) for n in names)
-                }
-            )
-            reasons.append("Unpivoted repeated column blocks into group rows.")
-        else:
-            if not candidates:
-                return None, ["No numeric repeated columns for from_header."], grain
-            keep = list(
-                dict.fromkeys(
-                    [mapping[c.name] for c in target.columns if c.name in mapping] + sheet_key
-                )
-            )
-            current = _step(
-                steps,
-                prefix + "long",
-                "unpivot",
-                current,
-                {
-                    "keep": keep,
-                    "columns": candidates,
-                    "name_column": header_target.name,
-                    "value_column": "__value",
-                },
-            )
-            value_targets = [
-                c for c in target.columns if not c.from_header and c.name not in target.grain
-            ]
-            if value_targets:
-                rename["__value"] = value_targets[0].name
-            reasons.append("Unpivoted repeated numeric columns into header/value rows.")
+        # The sheet name column of a multi-sheet read is a key too, so unpivot must carry it.
+        sheet_key = [sheet_col] if p.name_regex else []
+        unpivoted = _unpivot_steps(
+            steps,
+            current,
+            target,
+            p,
+            header_target,
+            mapping,
+            names,
+            types,
+            sheet_key,
+            prefix,
+            reasons,
+        )
+        if unpivoted is None:
+            return None, ["No numeric repeated columns for from_header."], grain
+        current, rename = unpivoted
     if rename:
         current = _step(steps, prefix + "renamed", "rename", current, {"mapping": rename})
-    casts = {c.name: _TARGET_TYPES[c.type] for c in output_columns}
-    cast_config: dict = {"types": casts}
+    cast_config: dict = {"types": {c.name: _TARGET_TYPES[c.type] for c in output_columns}}
     if target.decimal != ".":
         cast_config["decimal"] = target.decimal
     current = _step(steps, prefix + "typed", "cast", current, cast_config)
@@ -724,11 +764,11 @@ def _evaluate(
             count = con.execute("SELECT count(*) FROM result").fetchall()[0][0]
             if not count:
                 return None, "the table has no data rows after the steps (filters too strict?)"
-            quoted = [f'"{c}"' for c in columns]
+            quoted = [quote(c) for c in columns]
             nulls_total = con.execute(
                 "SELECT " + " + ".join(f"count(*) - count({c})" for c in quoted) + " FROM result"
             ).fetchall()[0][0]
-            grain_cols = [f'"{c}"' for c in grain if c in columns]
+            grain_cols = [quote(c) for c in grain if c in columns]
             distinct = (
                 con.execute(
                     f"SELECT count(*) FROM (SELECT DISTINCT {', '.join(grain_cols)} FROM result)"

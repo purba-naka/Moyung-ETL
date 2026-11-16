@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from typing import Literal
 
-import duckdb
 from pydantic import Field, model_validator
 
 from excel_etl.nodes.base import (
@@ -16,10 +15,11 @@ from excel_etl.nodes.base import (
     NodeError,
     Relation,
     Schema,
-    connect,
+    check_fits,
     node,
     quote,
     schema_of,
+    sql_value,
 )
 from excel_etl.nodes.relops import apply, check_reserved, shape
 from excel_etl.nodes.sqlexpr import bind, check_expression, check_type
@@ -273,15 +273,9 @@ class FillMissing(Node):
         by_name = {c.name: c.type for c in schema}
         plan = []
         for col, value in self.config.values.items():
-            lit = _sql_value(value)
+            lit = sql_value(value)
             kind = by_name[col]
-            try:
-                # a constant is only evaluated here, not when binding an empty table
-                connect().execute(f"SELECT CAST({lit} AS {kind})")
-            except duckdb.Error:
-                raise NodeError(
-                    f"{self.name}: {value!r} does not fit column {col!r} ({kind})"
-                ) from None
+            check_fits(lit, kind, f"{self.name}: {value!r} does not fit column {col!r} ({kind})")
             plan.append(f"coalesce({quote(col)}, CAST({lit} AS {kind})) AS {quote(col)}")
         return plan
 
@@ -294,16 +288,6 @@ class FillMissing(Node):
         (rel,) = inputs
         plan = self._plan(schema_of(rel))
         return rel.project(f"* REPLACE ({', '.join(plan)})")
-
-
-def _sql_value(v: int | float | str | bool) -> str:
-    if isinstance(v, bool):
-        return "TRUE" if v else "FALSE"
-    if isinstance(v, str):
-        return "'" + v.replace("'", "''") + "'"
-    if isinstance(v, float) and v != v or v in (float("inf"), float("-inf")):
-        raise NodeError("fill_missing: nan and infinity are not valid values")
-    return repr(v)
 
 
 def _order_keys(by: list[str], schema: Schema, who: str) -> list[str]:

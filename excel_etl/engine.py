@@ -21,8 +21,9 @@ from pydantic import BaseModel, ConfigDict
 
 from excel_etl.hitl import HitlState, gate
 from excel_etl.nodes import Column, NodeError, Schema, build, infer, quote, schema_of
-from excel_etl.nodes.base import check_arity, connect
+from excel_etl.nodes.base import check_arity, connect, sql_text
 from excel_etl.nodes.source import (
+    Location,
     expect_hits,
     expect_label,
     locate_all,
@@ -228,29 +229,58 @@ def _check_columns(source: Source, schema: Schema, st: _State, where: str) -> No
                 )
 
 
+def _open_role(role: str, files: dict[str, FileInput], st: _State, where: str) -> Workbook | None:
+    """Open the file for a file_role; a missing or unreadable one is an issue, not an exception."""
+    if role not in files:
+        known = ", ".join(sorted(files)) or "none"
+        st.issue(where, f"no file for file_role {role!r}; files given: {known}")
+        return None
+    try:
+        return open_file(files[role])
+    except WorkbookError as e:
+        st.issue(where, f"file {role!r}: {e}")
+        return None
+
+
+def _read_warnings(source: Source, locs: list[Location], where: str) -> list[str]:
+    """Things a read got through but the author should know about."""
+    found: list[str] = []
+    if errors := sum(loc.errors for loc in locs):
+        found.append(
+            f"{where}: {errors} cell(s) hold an Excel error (#DIV/0!, #N/A ...) and are "
+            f"read as empty; fix them in the workbook, or use fill_missing after the read"
+        )
+    for loc in locs:
+        if loc.data_in_header is not None:
+            found.append(
+                f"{where}: header_rows {source.region.header_rows} reaches row "
+                f"{loc.data_in_header + 1} of sheet {loc.sheet!r}, which sheet_regions sees "
+                "as data, so data values became column names; check header_rows"
+            )
+            break
+    if (below := sum(loc.below for loc in locs)) > 0:
+        found.append(
+            f"{where}: {below} more filled row(s) lie below the table after "
+            f"{source.region.blank_gap} empty row(s), such as a grand total; "
+            f"they are not read. A larger end (until_blank_rows(N)) reads them."
+        )
+    return found
+
+
 def _load_sources(
     spec: PipelineSpec,
     files: dict[str, FileInput] | None,
     con: duckdb.DuckDBPyConnection,
     st: _State,
 ) -> None:
+    if files is None:
+        return
     books: dict[str, Workbook | None] = {}
     for name, source in spec.sources.items():
         where = f"sources.{name}"
-        if files is None:
-            continue
         role = source.file_role
         if role not in books:
-            if role not in files:
-                known = ", ".join(sorted(files)) or "none"
-                st.issue(where, f"no file for file_role {role!r}; files given: {known}")
-                books[role] = None
-            else:
-                try:
-                    books[role] = open_file(files[role])
-                except WorkbookError as e:
-                    st.issue(where, f"file {role!r}: {e}")
-                    books[role] = None
+            books[role] = _open_role(role, files, st, where)
         wb = books[role]
         if wb is None:
             continue
@@ -264,34 +294,14 @@ def _load_sources(
         schema = schema_of(rel)
         st.schemas[name] = schema
         _check_columns(source, schema, st, where)
-        errors = sum(loc.errors for loc in locs)
-        if errors:
-            st.warnings.append(
-                f"{where}: {errors} cell(s) hold an Excel error (#DIV/0!, #N/A ...) and are "
-                f"read as empty; fix them in the workbook, or use fill_missing after the read"
-            )
-        for loc in locs:
-            if loc.data_in_header is not None:
-                st.warnings.append(
-                    f"{where}: header_rows {source.region.header_rows} reaches row "
-                    f"{loc.data_in_header + 1} of sheet {loc.sheet!r}, which sheet_regions sees "
-                    "as data, so data values became column names; check header_rows"
-                )
-                break
-        if (below := sum(loc.below for loc in locs)) > 0:
-            st.warnings.append(
-                f"{where}: {below} more filled row(s) lie below the table after "
-                f"{source.region.blank_gap} empty row(s), such as a grand total; "
-                f"they are not read. A larger end (until_blank_rows(N)) reads them."
-            )
-        n_rows = _count(con, name)
+        st.warnings.extend(_read_warnings(source, locs, where))
         st.stats.append(
             NodeStat(
                 id=name,
                 kind="source",
                 node="read_region",
                 rows_in=0,
-                rows_out=n_rows,
+                rows_out=_count(con, name),
                 columns=len(schema),
                 seconds=round(time.perf_counter() - t0, 4),
                 note=(
@@ -390,8 +400,31 @@ def validate(spec: PipelineSpec, files: dict[str, FileInput] | None = None) -> V
     )
 
 
-def _literal(path: Path) -> str:
-    return "'" + path.as_posix().replace("'", "''") + "'"
+def _run_checks(
+    spec: PipelineSpec, con: duckdb.DuckDBPyConnection, st: _State
+) -> list[CheckResult]:
+    """Run the data checks: broken ones and failed `error` ones are issues, the rest warnings."""
+    results, broken = run_checks(spec.checks, con, st.schemas)
+    for name, why in broken.items():
+        st.issue(f"checks.{name}", why)
+    for r in results:
+        if r.passed:
+            continue
+        if r.severity == "error":
+            st.issue(f"checks.{r.name}", r.message)
+        else:
+            st.warnings.append(f"checks.{r.name}: {r.message}")
+    return results
+
+
+def _publish(parts: list[tuple[Path, Path]], st: _State) -> None:
+    """Move each temporary file to its final name; stop at the first one that fails."""
+    for tmp, final in parts:
+        try:
+            os.replace(tmp, final)
+        except OSError as e:
+            st.issue(f"outputs.{final.stem}", f"cannot write {final.name!r}: {e}")
+            return
 
 
 def run(
@@ -434,16 +467,16 @@ def run(
                 )
             ]
         )
-    target = Path(out_dir)
+    out_path = Path(out_dir)
     try:
-        target.mkdir(parents=True, exist_ok=True)
+        out_path.mkdir(parents=True, exist_ok=True)
     except OSError as e:
         raise PipelineError(
             [Issue(where="out_dir", message=f"cannot use {str(out_dir)!r}: {e}")]
         ) from None
     t0 = time.perf_counter()
     st = _State()
-    con = connect(target)
+    con = connect(out_path)
     parts: list[tuple[Path, Path]] = []
     outputs: list[OutputStat] = []
     results: list[CheckResult] = []
@@ -452,25 +485,11 @@ def run(
         _load_sources(spec, files, con, st)
         _run_steps(spec, con, st, run_nodes=True)
         if not st.issues:
-            results, broken = run_checks(spec.checks, con, st.schemas)
-            for name, why in broken.items():
-                st.issue(f"checks.{name}", why)
-            for r in results:
-                if r.passed:
-                    continue
-                if r.severity == "error":
-                    st.issue(f"checks.{r.name}", r.message)
-                else:
-                    st.warnings.append(f"checks.{r.name}: {r.message}")
+            results = _run_checks(spec, con, st)
         if not st.issues:
-            _write_outputs(spec, con, target, st, parts, outputs)
+            _write_outputs(spec, con, out_path, st, parts, outputs)
         if not st.issues:
-            for tmp, final in parts:
-                try:
-                    os.replace(tmp, final)
-                except OSError as e:
-                    st.issue(f"outputs.{final.stem}", f"cannot write {final.name!r}: {e}")
-                    break
+            _publish(parts, st)
         if not st.issues:
             checked = verify(spec, con)
     finally:
@@ -496,7 +515,7 @@ def run(
 def _write_outputs(
     spec: PipelineSpec,
     con: duckdb.DuckDBPyConnection,
-    target: Path,
+    out_path: Path,
     st: _State,
     parts: list[tuple[Path, Path]],
     outputs: list[OutputStat],
@@ -504,8 +523,8 @@ def _write_outputs(
     for name, out in spec.outputs.items():
         where = f"outputs.{name}"
         schema = st.schemas.get(out.input)
-        final = target / f"{name}.{out.format}"
-        tmp = target / f"{name}.{out.format}.part"
+        final = out_path / f"{name}.{out.format}"
+        tmp = out_path / f"{name}.{out.format}.part"
         if (
             out.format == "parquet"
             and schema
@@ -518,9 +537,8 @@ def _write_outputs(
         fmt = "PARQUET" if out.format == "parquet" else "CSV, HEADER"
         try:
             parts.append((tmp, final))
-            con.execute(
-                f"COPY (SELECT * FROM {quote(out.input)}) TO {_literal(tmp)} (FORMAT {fmt})"
-            )
+            dest = sql_text(tmp.as_posix())
+            con.execute(f"COPY (SELECT * FROM {quote(out.input)}) TO {dest} (FORMAT {fmt})")
         except duckdb.Error as e:
             st.issue(where, f"could not write {final.name}: {str(e).splitlines()[0]}")
             return

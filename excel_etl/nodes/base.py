@@ -8,6 +8,7 @@ checked before any file is opened, so it must agree with what `run` produces.
 from __future__ import annotations
 
 import json
+import math
 import re
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -46,6 +47,36 @@ def schema_of(rel: Relation) -> Schema:
 def quote(name: str) -> str:
     """A column or relation name as a SQL identifier. Excel headers hold `|`, spaces, quotes."""
     return '"' + name.replace('"', '""') + '"'
+
+
+def sql_text(s: str) -> str:
+    """A duckdb string literal. duckdb keeps backslashes as they are, so only `'` needs care."""
+    if "\x00" in s:
+        raise NodeError("a value holds a NUL character")
+    return "'" + s.replace("'", "''") + "'"
+
+
+def sql_value(v: str | int | float | bool) -> str:
+    """A config value as a SQL literal: bools and numbers bare, text quoted."""
+    if isinstance(v, bool):
+        return "TRUE" if v else "FALSE"
+    if isinstance(v, str):
+        return sql_text(v)
+    if isinstance(v, float) and not math.isfinite(v):
+        # repr(nan) is `nan`, which SQL would read as a column name
+        raise NodeError("nan and infinity are not valid values")
+    return repr(v)
+
+
+def check_fits(lit: str, kind: str, message: str) -> None:
+    """Raise NodeError(message) when the literal cannot be cast to `kind`.
+
+    A constant is only evaluated here, not when binding an empty table.
+    """
+    try:
+        connect().execute(f"SELECT CAST({lit} AS {kind})")
+    except duckdb.Error:
+        raise NodeError(message) from None
 
 
 def _say(item: Any) -> str:
