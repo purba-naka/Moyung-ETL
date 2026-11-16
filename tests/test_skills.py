@@ -76,15 +76,14 @@ def _check_words() -> set[str]:
 def _known_words() -> set[str]:
     tools = JobTools(Job(new_state("j")), None, None)
     words = {f.__name__ for f in tools.agent_tools()} | set(names()) | set(CHECKPOINTS)
-    for fn in tools.agent_tools():  # an argument an agent passes, such as `existing_columns`
+    for fn in tools.agent_tools():
         words |= {p for p in inspect.signature(fn).parameters if "_" in p}
     for cls in _REGISTRY.values():
         words |= _fields(cls.Config) | _choices(cls.Config)
     for model in (PipelineSpec, Source, Step, Output, RegionRef):
         words |= _fields(model)
     words |= _check_words()
-    # SQL functions and wording that are not settings of ours
-    host = {"record_load", "add_file", "approve", "answer", "reload_job"}  # named, never given
+    host = {"record_load", "add_file", "approve", "answer", "reload_job"}
     return words | host | {"try_strptime", "until_blank_rows", "file_id", "next_offset"}
 
 
@@ -96,13 +95,12 @@ def _agent_tools() -> list[str]:
 def test_frontmatter_follows_the_agent_skills_format(skill: Path) -> None:
     meta, body = _frontmatter(skill / "SKILL.md")
     name, desc = meta["name"], meta["description"]
-    assert name == skill.name  # the spec: the name is the folder name
-    assert len(name) <= 64 and _NAME.match(name)  # no leading, trailing or double hyphen
+    assert name == skill.name
+    assert len(name) <= 64 and _NAME.match(name)
     assert 40 <= len(desc) <= 1024
-    # a plain YAML value breaks at ": " and " #", so a loader would not read it as one string
     assert ": " not in desc and " #" not in desc and not desc.startswith(('"', "'", "|", ">"))
     assert re.search(r"\buse\b", desc.lower()) and "not for" in desc.lower()
-    assert len(body.splitlines()) <= 150  # the whole file is loaded into the agent's context
+    assert len(body.splitlines()) <= 150
 
 
 def test_each_skill_sets_a_stop_rule_so_the_agent_asks_instead_of_guessing() -> None:
@@ -114,16 +112,16 @@ def test_each_skill_sets_a_stop_rule_so_the_agent_asks_instead_of_guessing() -> 
 @pytest.mark.parametrize("path", FILES, ids=lambda p: f"{p.parent.name}/{p.name}")
 def test_text_has_no_house_style_slips(path: Path) -> None:
     text = path.read_text(encoding="utf-8")
-    prose = re.sub(r"`[^`\n]*`", "", text)  # a quoted tool output may hold `5->5 rows`
+    prose = re.sub(r"`[^`\n]*`", "", text)
     assert "—" not in text and "->" not in prose and "→" not in text
-    assert "BALANSITAS" not in text.upper()  # internal data stays out of anything we ship
+    assert "BALANSITAS" not in text.upper()
 
 
 def test_every_tool_and_node_a_skill_names_exists() -> None:
     known = _known_words()
     for path in FILES:
         text = path.read_text(encoding="utf-8")
-        text = re.sub(r"```.*?```", "", text, flags=re.S)  # snippets are checked below
+        text = re.sub(r"```.*?```", "", text, flags=re.S)
         for token in set(re.findall(r"`([a-z]+(?:_[a-z]+)+)(?:\(|`)", text)):
             assert token in known, (
                 f"{path.parent.name}/{path.name}: `{token}` is not a tool, node or setting"
@@ -167,13 +165,13 @@ def test_the_patterns_file_has_snippets_of_every_kind() -> None:
 )
 def test_every_json_snippet_is_a_valid_step_check_source_or_output(snippet: dict) -> None:
     if "node" in snippet:
-        Step.model_validate(snippet)  # ids, inputs list
-        build(snippet["node"], snippet["config"])  # the node's own rules
+        Step.model_validate(snippet)
+        build(snippet["node"], snippet["config"])
     elif "file_role" in snippet:
         Source.model_validate(snippet)
     elif "input" in snippet:
         Output.model_validate(snippet)
-        assert snippet["load"]["table"]  # the point of an output snippet
+        assert snippet["load"]["table"]
     else:
         TypeAdapter(Check).validate_python(snippet)
 

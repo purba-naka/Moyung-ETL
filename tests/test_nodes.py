@@ -48,7 +48,7 @@ def test_config_errors_say_where() -> None:
         build("select", {"columns": [], "colums": ["a"]})
     msg = str(e.value)
     assert "node 'select' config:" in msg
-    assert "columns:" in msg and "colums:" in msg  # empty list and the misspelled key
+    assert "columns:" in msg and "colums:" in msg
 
 
 def test_missing_config_is_an_error() -> None:
@@ -100,15 +100,12 @@ def test_a_new_node_registers_and_runs() -> None:
     assert n.run([duckdb.connect().sql("select 2 as a")]).fetchall() == [(6,)]
 
 
-# --- catalog: what an agent reads to write a step ---------------------------------------------
-
-
 def test_catalog_lists_every_node_with_a_description():
     from excel_etl.nodes import catalog, names
 
     lines = catalog().splitlines()
     assert [ln.split(":", 1)[0] for ln in lines] == names()
-    assert all(ln.split(":", 1)[1].strip() for ln in lines)  # none is blank
+    assert all(ln.split(":", 1)[1].strip() for ln in lines)
 
 
 def test_catalog_each_node_has_fields_and_required_marks():

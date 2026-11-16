@@ -9,7 +9,6 @@ import pytest
 from excel_etl.nodes import build, catalog, infer, names, quote, schema_of
 from excel_etl.nodes.base import _REGISTRY, connect
 
-# One table that has every column name the examples use, with NULLs and awkward text.
 _TABLE = """select * from (values
     (1, 'A-12', 'PT Maju', 120.0, 2.5, date '2026-01-15', '15/01/2026', 'pen', 'north', 'inv 42'),
     (2, 'B-7',  'CV Jaya', 0.0,   NULL, date '2026-02-10', '10/02/2026', 'pen', 'north', 'none'),
@@ -33,10 +32,10 @@ def test_every_example_builds_runs_and_matches_its_schema(name: str, i: int) -> 
     rel = connect().sql(_TABLE)
     n = build(name, config)
     out = n.run([rel])
-    rows = out.fetchall()  # runs for real, not only binds
+    rows = out.fetchall()
     assert infer(n, [schema_of(rel)]) == schema_of(out)
     if name == "window":
-        assert len(rows) == 4  # a window step never drops or adds a row
+        assert len(rows) == 4
 
 
 def test_the_catalog_prints_each_example_as_json_with_its_note() -> None:

@@ -28,9 +28,6 @@ def _zip_replace(data: bytes, name_part: str, fn) -> bytes:
     return out.getvalue()
 
 
-# --- input that must end as WorkbookError, never another exception -------------------------
-
-
 @pytest.mark.parametrize(
     "rng",
     ["", "A0", "A1:A0", "B4:", "ZZZZ1", "A1048577", "A" + "9" * 5000, "ﬀ1", "A1:B2\nX", "1:2"],
@@ -86,9 +83,6 @@ def test_sheet_named_like_an_id_does_not_shadow_the_id() -> None:
     assert render_range(wb, "F1", "F1.S1", mode="raw")["text"].splitlines()[1] == "1|1|2"
 
 
-# --- damaged or hostile files ---------------------------------------------------------------
-
-
 def test_far_away_cell_is_refused_before_calamine_can_abort() -> None:
     wb = Workbook.open(make_xlsx({"S": [[1], [2]], "Far": [[1]]}))
     far = _zip_replace(
@@ -96,7 +90,7 @@ def test_far_away_cell_is_refused_before_calamine_can_abort() -> None:
         "sheet1.xml",
         lambda b: b.replace(b'<c r="A1"', b'<c r="XFD1048576"', 1),
     )
-    assert wb.values("S")  # the normal file is fine
+    assert wb.values("S")
     with pytest.raises(WorkbookError, match="far from the data"):
         Workbook.open(far).values("S")
 
@@ -116,11 +110,7 @@ def test_non_xlsx_zip_has_no_formula_scan() -> None:
         Workbook.open(buf.getvalue())
 
 
-# --- big or odd shapes stay cheap -----------------------------------------------------------
-
-
 def test_huge_range_and_huge_merge_cost_nothing() -> None:
-    # openpyxl would build a million cells for this merge, so write the XML tag ourselves
     data = _zip_replace(
         make_xlsx({"S": _table()}),
         "sheet1.xml",
@@ -152,9 +142,6 @@ def test_many_stacked_tables_do_not_recurse() -> None:
     wb = Workbook.open(make_xlsx({"S": rows}))
     regions = [r for r in detect_regions(wb, "S") if r.header_rows]
     assert len(regions) == 1200
-
-
-# --- pagination walks -----------------------------------------------------------------------
 
 
 def _walk(call) -> list[str]:
@@ -191,7 +178,6 @@ def test_sheet_regions_pagination_and_stable_ids() -> None:
 
 
 def test_region_id_means_the_same_in_both_tools() -> None:
-    # a headerless block comes first, so R numbers must count it in both views
     rows = [["note", "x"], ["note", "y"], [None] * 5, *[[None] * 5 for _ in range(2)]]
     rows += [[None, None, None, "a", "b"], [None, None, None, 1, 2], [None, None, None, 3, 4]]
     rows += [[None] * 5, *_table(3)]
@@ -208,9 +194,6 @@ def test_labels_cannot_break_line_format() -> None:
     text = workbook_map(wb, "F1")["text"].splitlines()
     assert len(text) == 2 and text[1].split("|")[1] == "x/y z"
     assert len(render_range(wb, "F1", "x|y\nz")["text"].splitlines()[0].split("|")) == 1
-
-
-# --- budget: the synthetic version of the BALANSITAS check ----------------------------------
 
 
 def test_compressed_800x160_sheet_stays_under_1000_tokens() -> None:

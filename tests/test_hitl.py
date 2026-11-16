@@ -77,7 +77,7 @@ def test_answer_moves_to_qa_log_with_ref():
         "ribu rupiah",
         "sources.sales",
     )
-    assert s.pending and not k0.qa_log  # inputs untouched
+    assert s.pending and not k0.qa_log
 
 
 def test_answer_keeps_other_questions_and_old_log():
@@ -137,8 +137,8 @@ def test_default_policy_matches_design():
 
 def test_gate_modes():
     s = HitlState()
-    assert gate(s, "after_workbook_map") is None  # off
-    assert gate(s, "after_spec") is None  # optional
+    assert gate(s, "after_workbook_map") is None
+    assert gate(s, "after_spec") is None
     assert "needs a person's approval" in gate(s, "after_propose_datasets")
     assert gate(s, "after_run", failed=False) is None
     assert gate(s, "after_run", failed=True)
@@ -149,11 +149,11 @@ def test_gate_modes():
 def test_gate_stale_ref_and_pending():
     s = approve(HitlState(), "on_rebind_drift", "dina", ref="v3")
     assert gate(s, "on_rebind_drift", ref="v3") is None
-    assert gate(s, "on_rebind_drift") is None  # caller gave no ref: nothing to compare
+    assert gate(s, "on_rebind_drift") is None
     assert "approved for 'v3', but this is 'v4'" in gate(s, "on_rebind_drift", ref="v4")
     _, s = ask(s)
     assert "1 question(s) still waiting" in gate(s, "on_rebind_drift", ref="v3")
-    assert gate(s, "after_spec") is None  # optional never blocks
+    assert gate(s, "after_spec") is None
 
 
 def test_pending_does_not_block_without_required():
@@ -178,7 +178,7 @@ def test_custom_policy_changes_gate():
     pol = HitlPolicy(checkpoints={"after_spec": "required", "after_run": "off"})
     s = HitlState(policy=pol)
     assert gate(s, "after_spec") and gate(s, "after_run", failed=True) is None
-    assert gate(s, "on_rebind_drift") is None  # absent from the policy means off
+    assert gate(s, "on_rebind_drift") is None
 
 
 def test_policy_rejects_bad_values():

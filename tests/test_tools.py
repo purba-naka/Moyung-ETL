@@ -62,14 +62,11 @@ def spec_json(**over):
     return json.dumps({**SPEC, **over})
 
 
-# --- every tool returns a dict and never raises ---------------------------------------------
-
-
 def test_agent_tools_are_the_documented_fixed_list(tools):
     names = [f.__name__ for f in tools.agent_tools()]
     assert names[:3] == ["job_summary", "list_files", "workbook_map"]
     assert len(names) == len(set(names)) == 25
-    for banned in ("add_file", "answer", "approve", "reload_job", "record_load"):  # host only
+    for banned in ("add_file", "answer", "approve", "reload_job", "record_load"):
         assert banned not in names
 
 
@@ -110,9 +107,6 @@ def test_every_tool_survives_hostile_arguments(tools):
                 json.dumps(result)
 
 
-# --- the agent's path through a job ---------------------------------------------------------
-
-
 def test_full_path_inspect_save_ask_approve_run(tools, tmp_path):
     assert "files: F1 jan.xlsx" in tools.job_summary()["text"]
     assert tools.list_files()["text"] == "F1|jan.xlsx|role f"
@@ -130,7 +124,7 @@ def test_full_path_inspect_save_ask_approve_run(tools, tmp_path):
         "totals": {"input": "by_item", "format": "parquet"}
     }
 
-    refused = tools.run_pipeline()  # after_propose_datasets is required
+    refused = tools.run_pipeline()
     assert "needs a person's approval" in refused["error"]
 
     assert tools.approve("after_propose_datasets", "dina", "v1")["text"].startswith("after_propose")
@@ -158,7 +152,7 @@ def test_save_spec_refuses_a_spec_that_does_not_validate(tools):
     r = tools.save_spec(json.dumps(bad))
     assert r["saved"] is False and "Itm" in r["text"]
     assert "no spec saved yet" in tools.get_spec()["error"]
-    assert tools.job.state.version == 1  # only add_file was saved
+    assert tools.job.state.version == 1
 
 
 def test_save_spec_errors_are_dicts_with_a_reason(tools):
@@ -213,7 +207,6 @@ def test_rebind_remembers_places_and_flags_drift(tools, blobs):
     tools.save_spec(spec_json())
     r = tools.rebind_sources()
     assert r["ok"] and "sales|exact" in r["text"] and "sales" in tools.job.state.binds
-    # a new upload with a moved table: same id, new bytes
     blobs["a"] = make_xlsx({"Sales": [[None, None]] + [[None, None]] + SALES})
     tools.add_file("a", "feb.xlsx", "f")
     r = tools.rebind_sources()
@@ -227,7 +220,7 @@ def test_rebind_remembers_places_and_flags_drift(tools, blobs):
 def test_run_failed_reports_and_asks_the_person(tools):
     tools.save_spec(spec_json())
     tools.approve("after_propose_datasets", "dina", "v1")
-    tools.add_file("a", "bad.xlsx", "f")  # same id, same bytes: fine
+    tools.add_file("a", "bad.xlsx", "f")
     tools.provider.blobs["a"] = make_xlsx({"Sales": SALES[:1] + [["pen", None], ["ink", None]]})
     tools.add_file("a", "empty.xlsx", "f")
     r = tools.run_pipeline()
@@ -237,11 +230,11 @@ def test_run_failed_reports_and_asks_the_person(tools):
 
 
 def test_run_needs_out_dir_files_and_a_spec(blobs):
-    t = JobTools(Job(new_state("j")), Provider(blobs))  # no out_dir
+    t = JobTools(Job(new_state("j")), Provider(blobs))
     assert "no spec saved yet" in t.run_pipeline()["error"]
     t.job.update(lambda s: s)
     t2 = JobTools(Job(new_state("j")), Provider(blobs))
-    t2.save_spec(spec_json())  # no files registered: only settings checked
+    t2.save_spec(spec_json())
     t2.approve("after_propose_datasets", "dina", "v1")
     assert "out_dir" in t2.run_pipeline()["error"]
     t2.out_dir = "x"
@@ -258,9 +251,6 @@ def test_file_ids_accept_f_number_name_and_host_id(tools):
 def test_a_file_that_changed_since_registration_is_refused(tools, blobs):
     blobs["a"] = make_xlsx({"Other": [["x"]]})
     assert "not the one registered" in tools.workbook_map("F1")["error"]
-
-
-# --- questions to the person ----------------------------------------------------------------
 
 
 def test_ask_answer_and_pending(tools):
@@ -297,15 +287,12 @@ def test_pending_question_blocks_a_required_checkpoint(tools):
     assert tools.run_pipeline()["ok"]
 
 
-# --- state, store and conflicts -------------------------------------------------------------
-
-
 def test_store_backed_tools_are_saved_each_call_and_conflict_is_an_error(blobs, tmp_path):
     store = FileStore(tmp_path / "store")
     a = JobTools(Job.open("j", store), Provider(blobs), tmp_path / "o")
     b = JobTools(Job.open("j", store), Provider(blobs), tmp_path / "o")
     a.add_file("a", "jan.xlsx", "f")
-    r = b.add_file("a", "jan.xlsx", "f")  # b is behind
+    r = b.add_file("a", "jan.xlsx", "f")
     assert r["conflict"] is True and "Nothing was changed" in r["error"]
     b = JobTools(Job.open("j", store), Provider(blobs), tmp_path / "o")
     assert b.save_spec(spec_json())["saved"]
@@ -398,7 +385,7 @@ def test_a_pydantic_error_is_described_not_dumped(tools, monkeypatch):
         n: int
 
     def refuse(*a, **k):
-        M(n="x")  # raises ValidationError
+        M(n="x")
 
     monkeypatch.setattr(mod, "catalog", refuse)
     err = tools.node_catalog()["error"]
@@ -413,17 +400,17 @@ def test_a_refused_checkpoint_tells_the_agent_what_to_do_instead(tools):
     assert "ok" in tools.run_pipeline()
     other = dict(SPEC, outputs={})
     tools.save_spec(json.dumps(other), "no output")
-    assert "use ask_human" in tools.run_pipeline()["error"]  # stale approval too
+    assert "use ask_human" in tools.run_pipeline()["error"]
 
 
 def test_other_pipeline_errors_get_no_approval_hint(tools):
-    assert "ask_human" not in tools.run_pipeline()["error"]  # no spec yet
+    assert "ask_human" not in tools.run_pipeline()["error"]
 
 
 def test_pipeline_error_not_about_approval_has_no_hint(blobs, tmp_path):
     blocker = tmp_path / "file"
     blocker.write_text("x", encoding="utf-8")
-    t = JobTools(Job(new_state("j")), Provider(blobs), blocker)  # out_dir is a file
+    t = JobTools(Job(new_state("j")), Provider(blobs), blocker)
     t.add_file("a", "jan.xlsx", "f")
     t.save_spec(spec_json())
     t.approve("after_propose_datasets", "dina", "v1")
@@ -445,7 +432,7 @@ def test_a_spec_that_reads_one_role_opens_only_that_file(blobs, tmp_path):
     t.add_file("b", "other.xlsx", "g")
     opened.clear()
     assert t.save_spec(spec_json())["saved"]
-    assert set(opened) == {"a"}  # role g belongs to no source of the spec
+    assert set(opened) == {"a"}
     opened.clear()
     t.validate_spec()
     t.rebind_sources()
@@ -463,7 +450,7 @@ def test_per_version_output_keeps_older_files(blobs, tmp_path):
     t.save_spec(json.dumps(other), "second output")
     t.approve("after_propose_datasets", "dina", "v2")
     assert t.run_pipeline()["ok"]
-    assert (tmp_path / "out" / "v1" / "totals.parquet").exists()  # still there
+    assert (tmp_path / "out" / "v1" / "totals.parquet").exists()
     assert (tmp_path / "out" / "v2" / "t2.parquet").exists()
     flat = JobTools(Job(new_state("k")), Provider(blobs), tmp_path / "flat")
     flat.add_file("a", "jan.xlsx", "f")
@@ -481,7 +468,7 @@ def test_reload_job_after_a_conflict_lets_the_retry_work(blobs, tmp_path):
     assert b.save_spec(spec_json())["conflict"] is True
     assert "reloaded job j at version 1" in b.reload_job()["text"]
     assert b.save_spec(spec_json())["saved"]
-    assert "reload_job" not in [f.__name__ for f in b.agent_tools()]  # host only
+    assert "reload_job" not in [f.__name__ for f in b.agent_tools()]
 
 
 def test_cut_text_says_truncated_and_has_a_next_offset_key(tools, monkeypatch):
@@ -496,7 +483,7 @@ def test_cut_text_says_truncated_and_has_a_next_offset_key(tools, monkeypatch):
 
 def test_approve_without_a_ref_covers_the_saved_spec_version(tools):
     assert tools.save_spec(spec_json())["saved"]
-    r = tools.approve("after_propose_datasets", "dina")  # the host forgot the ref
+    r = tools.approve("after_propose_datasets", "dina")
     assert r["text"] == "after_propose_datasets approved by dina for v1"
     assert tools.run_pipeline()["ok"]
     other = dict(SPEC, outputs={"t2": {"input": "by_item"}})
@@ -510,7 +497,7 @@ def test_approve_with_an_explicit_ref_is_kept_and_without_a_spec_stays_empty(too
     assert "for v7" in tools.approve("after_spec", "dina", "v7")["text"]
     assert tools.job.state.hitl.approvals["after_spec"].ref == "v7"
     assert tools.approve("after_run", "dina")["text"] == "after_run approved by dina"
-    assert tools.job.state.hitl.approvals["after_run"].ref is None  # no spec saved yet
+    assert tools.job.state.hitl.approvals["after_run"].ref is None
 
 
 def test_a_missing_ref_in_an_old_approval_is_named_plainly(tools):
@@ -528,14 +515,11 @@ def test_a_missing_ref_in_an_old_approval_is_named_plainly(tools):
     assert "approved for no version, but this is 'v1'" in err and "None" not in err
 
 
-# --- token savings: short results, small edits --------------------------------------------
-
-
 def test_catalog_lists_config_fields_and_takes_several_names():
     from excel_etl.nodes import catalog
 
     short = catalog()
-    assert "| types*" in short and len(short) // 4 < 1_300  # token budget of the overview
+    assert "| types*" in short and len(short) // 4 < 1_300
     both = catalog("cast, drop_rows")
     assert both.count("(inputs: 1)") == 2
 
@@ -577,7 +561,7 @@ def test_run_pipeline_leaves_out_quiet_steps_but_last_run_keeps_them(tools):
 def test_a_text_cell_in_a_number_column_says_what_to_try():
     import duckdb
 
-    from excel_etl.engine import _explain, run, validate  # noqa: F401  (run path is covered below)
+    from excel_etl.engine import _explain, run, validate  # noqa: F401
     from excel_etl.pipeline import (
         Step,
         parse_spec,  # noqa: F401
@@ -594,17 +578,17 @@ def test_a_text_cell_in_a_number_column_says_what_to_try():
 
 
 def test_edit_spec_replaces_adds_and_removes_steps_in_one_small_call(tools):
-    assert "error" in tools.edit_spec("{}")  # nothing saved yet
+    assert "error" in tools.edit_spec("{}")
     tools.save_spec(spec_json())
     rename = {"steps": [{**json.loads(spec_json())["steps"][0], "id": "by_item"}]}
     rename["steps"][0]["config"]["aggs"][0]["name"] = "Sum"
     out = tools.edit_spec(json.dumps(rename), "rename total")
-    assert out["saved"] is False  # the check still reads Total: a patch is validated like a spec
+    assert out["saved"] is False
     patch = {
         "steps": rename["steps"],
         "checks": {},
     }
-    assert "error" in tools.edit_spec(json.dumps(patch))  # `checks` is not a patch key
+    assert "error" in tools.edit_spec(json.dumps(patch))
     ok = tools.edit_spec(
         json.dumps({"steps": rename["steps"], "outputs": {"totals": {"input": "by_item"}}}),
         "rename total",
@@ -639,9 +623,6 @@ def test_wrongly_typed_arguments_are_plain_errors(tools):
     assert tools.node_catalog(",")["text"] == tools.node_catalog()["text"]
 
 
-# --- source_for_region: the agent never types header texts ----------------------------------
-
-
 def test_source_for_region_gives_a_source_that_save_spec_accepts(tools):
     src = json.loads(tools.source_for_region("F1.S1.R1")["text"])
     assert src["file_role"] == "f" and src["sheet"] == {"name": "Sales"}
@@ -665,6 +646,6 @@ def test_source_for_region_repeated_sheets_get_name_regex(blobs, tmp_path):
 def test_source_for_region_says_what_to_fix(tools):
     assert "not a region id" in tools.source_for_region("nonsense")["error"]
     assert "R1..R1" in tools.source_for_region("F1.S1.R9")["error"]
-    tools.add_file("a", "jan.xlsx", "g")  # the same file under a second role
+    tools.add_file("a", "jan.xlsx", "g")
     assert "which role is F1" in tools.source_for_region("F1.S1.R1")["error"]
     assert json.loads(tools.source_for_region("F1.S1.R1", "g")["text"])["file_role"] == "g"

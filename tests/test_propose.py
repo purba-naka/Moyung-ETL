@@ -13,17 +13,14 @@ def _wb() -> Workbook:
     return Workbook.open(
         make_xlsx(
             {
-                # typed numbers only: a source table
                 "Data": [
                     ["TANGGAL", "PKG", "PKC"],
                     *[[date(2026, 1, d), d, d * 2] for d in range(1, 6)],
                 ],
-                # formulas reading Data: derived
                 "Rekap": [
                     ["BULAN", "TOTAL"],
                     ["JAN", "=Data!B2+Data!C2"],
                 ],
-                # notes next to the table, no header: not a dataset
                 "Side": [["catatan"], ["KPI 1"]],
             }
         )
@@ -50,7 +47,6 @@ def test_propose_mixed_when_typed_and_cross() -> None:
         make_xlsx(
             {
                 "Data": [["TANGGAL", "PKG"], [date(2026, 1, 5), 10]],
-                # typed prognosis next to a cross formula: mixed
                 "Mix": [
                     ["TANGGAL", "RKAP", "ACTUAL"],
                     [date(2026, 1, 5), 7, "=Data!B2"],
@@ -116,7 +112,6 @@ def test_same_header_derived_sheets_are_not_grouped_away() -> None:
 
 
 def test_propose_no_datasets() -> None:
-    # a 2x1 block is under detect_regions' size cut, so a table must be at least 2x2
     wb = Workbook.open(make_xlsx({"Rekap": [["X", "Y"], ["=1+1", "=2+2"]]}))
     out = propose_datasets(wb, "F1")
     lines = out["text"].splitlines()
@@ -124,7 +119,7 @@ def test_propose_no_datasets() -> None:
         "F1: 0 datasets to choose from (0 source, 0 mixed, 1 derived tables left out) "
         "in 1 sheets. id|sheet|range|role|rows|cols|columns"
     )
-    assert len(lines) == 1  # local-only formulas: no sheet to check against
+    assert len(lines) == 1
 
 
 @pytest.mark.parametrize("kw", [{"offset": -1}, {"limit": 0}, {"limit": None}])
@@ -134,7 +129,6 @@ def test_propose_rejects_bad_paging(kw) -> None:
 
 
 def test_propose_leaves_total_rows_out_of_the_count() -> None:
-    # the same data-row count profile_region reports: the total row is not a data row
     wb = Workbook.open(
         make_xlsx(
             {
@@ -150,8 +144,6 @@ def test_propose_leaves_total_rows_out_of_the_count() -> None:
 
 
 def test_propose_stray_kpi_does_not_name_a_check_sheet() -> None:
-    # the derived table only totals its own sheet; the cross cell is a stray KPI outside
-    # every table, so it must not put Rekap on the check-against list
     wb = Workbook.open(
         make_xlsx(
             {

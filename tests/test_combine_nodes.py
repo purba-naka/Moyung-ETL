@@ -13,7 +13,7 @@ from excel_etl.workbook import Workbook
 def _run(name: str, config: dict, *rels):
     n = build(name, config)
     out = n.run(list(rels))
-    assert infer(n, [schema_of(r) for r in rels]) == schema_of(out)  # the contract
+    assert infer(n, [schema_of(r) for r in rels]) == schema_of(out)
     return out
 
 
@@ -35,9 +35,6 @@ def lr(con):
         "select * from (values (1,'p',100),(1,'q',101),(3,'z',300),(NULL,'m',400)) v(id, label, w)"
     )
     return left, right
-
-
-# --- join ------------------------------------------------------------------------------------
 
 
 def test_join_inner_one_key_column(lr) -> None:
@@ -99,7 +96,7 @@ def test_join_schema_errors(con, lr) -> None:
     with_name = con.sql("select 1 as id, 'q' as name, 5 as name_r")
     msg = _schema_error("join", {"on": ["id"], "suffixes": ["", "_r"]}, with_name, other)
     assert "appears twice" in msg or "both tables" in msg
-    assert clash  # the fixture tables above are only there to build the clash case
+    assert clash
     reserved = con.sql("select 1 as id, 2 as __pos")
     assert "reserved" in _schema_error("join", {"on": ["id"]}, reserved, lr[1])
 
@@ -115,9 +112,6 @@ def test_join_arity_and_config_errors(lr) -> None:
     ):
         with pytest.raises(NodeError):
             build("join", bad)
-
-
-# --- union -----------------------------------------------------------------------------------
 
 
 def test_union_by_name_fills_missing_columns_with_null(con) -> None:
@@ -157,8 +151,6 @@ def test_union_errors(con) -> None:
     with pytest.raises(NodeError):
         build("union", {"by": "rows"})
 
-
-# --- group_by --------------------------------------------------------------------------------
 
 _SALES = """select * from (values
     ('b', 'x', 1, 'p'), ('a', 'y', 2, NULL), ('b', 'x', 3, 'q'),
@@ -214,7 +206,7 @@ def test_group_by_order_and_first_hold_on_a_large_table(con) -> None:
         },
         rel,
     ).fetchall()
-    assert [r[0] for r in out] == list(range(50))  # groups in order of first appearance
+    assert [r[0] for r in out] == list(range(50))
     assert all(r[1] == r[0] and r[2] == 199950 + r[0] for r in out)
 
 
@@ -277,8 +269,6 @@ def test_group_by_config_errors(config: dict) -> None:
     with pytest.raises(NodeError):
         build("group_by", config)
 
-
-# --- pivot -----------------------------------------------------------------------------------
 
 _LONG = """select * from (values
     ('a', 'x', 1), ('a', 'y', 2), ('b', 'x', 3), ('a', 'x', 4), ('c', 'w', 9)
@@ -364,9 +354,6 @@ def test_pivot_config_errors(config: dict) -> None:
         build("pivot", config)
 
 
-# --- a chain over two workbooks unlike any other test ---------------------------------------
-
-
 def test_two_sheets_joined_grouped_and_pivoted() -> None:
     orders = [
         ["Order", "Item", "Qty"],
@@ -413,19 +400,15 @@ def test_two_sheets_joined_grouped_and_pivoted() -> None:
     assert wide.fetchall() == [(7, 1, 3)]
 
 
-# --- row order: tables are lists, so the nodes that combine them must not shuffle them -------
-
-
 def test_join_keeps_left_order_then_right_order_on_a_large_many_to_many(con) -> None:
-    # on small tables any plan looks ordered; with 300k rows the plan reorders the output
     left = con.sql("select (i % 1000)::bigint as k, i::bigint as seq from range(300000) t(i)")
     right = con.sql("select (i % 1000)::bigint as k, i::bigint as w from range(3000) t(i)")
     rows = _run("join", {"on": ["k"]}, left, right).fetchall()
     assert len(rows) == 900000
     seqs = [r[1] for r in rows]
-    assert seqs == sorted(seqs)  # left rows in table order
+    assert seqs == sorted(seqs)
     first = [r[2] for r in rows[:3]]
-    assert first == sorted(first)  # a left row's matches in right table order
+    assert first == sorted(first)
 
 
 def test_join_unmatched_right_rows_come_last(con) -> None:

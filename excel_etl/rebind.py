@@ -52,9 +52,9 @@ class BindRecord(_Model):
 
 class SourceBind(_Model):
     status: Status
-    record: BindRecord | None  # None when missing
-    diff: tuple[str, ...]  # what changed against the earlier record, and what broke
-    message: str = ""  # why it is missing
+    record: BindRecord | None
+    diff: tuple[str, ...]
+    message: str = ""
 
 
 class BindReport(_Model):
@@ -159,7 +159,7 @@ def rebind(
     bad_files = None if isinstance(files, dict) else "files must be a dict of file_role -> file"
     if bad_files:
         files = {}
-    books: dict[str, Workbook | str] = {}  # a str is the reason a file cannot be used
+    books: dict[str, Workbook | str] = {}
     out: dict[str, SourceBind] = {}
     for name, source in spec.sources.items():
         role = source.file_role

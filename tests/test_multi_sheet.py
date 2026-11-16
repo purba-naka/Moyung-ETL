@@ -210,8 +210,6 @@ def test_order_is_stable_across_large_sheets(tmp_path, monkeypatch) -> None:
     original = duckdb.DuckDBPyConnection.execute
 
     def execute(con, query, *args, **kwargs):
-        # DuckDB often happens to preserve UNION order. Simulate another legal plan so this
-        # test still catches a missing ORDER BY after a DuckDB upgrade or on another machine.
         if " UNION ALL BY NAME " in query and " ORDER BY __k, __r" not in query:
             assert query.endswith(")")
             query = query[:-1] + " ORDER BY ALL DESC) ORDER BY ALL DESC"

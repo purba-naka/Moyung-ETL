@@ -9,34 +9,21 @@ from typing import Literal
 
 from excel_etl.workbook import Cell, Workbook, WorkbookError
 
-type Box = tuple[int, int, int, int]  # (row0, col0, row1, col1), 0-based, inclusive
+type Box = tuple[int, int, int, int]
 type Orientation = Literal["rows", "columns", "matrix"]
 
-# ponytail: tuned on the BALANSITAS layouts. Headers up to 4 rows, column groups up to 8
-# wide, data starts at the first run of 3 data rows; upgrade: make them arguments if a
-# workbook needs more.
 _MAX_HEADER = 4
 _MAX_PERIOD = 8
 _RUN = 3
-# One rule for "this row is a total", shared with `synth` so a label is never a total in one
-# place and data in another. The two used to differ: this one missed "Rekap" and "Jml.", and
-# synth missed "Grand Total" and "Sub-Total".
-# ponytail: English and Indonesian words only, so "Total Care" also counts as a total;
-# upgrade: check that the row adds up the rows above, or read bold/fill from Workbook.meta.
 TOTAL_LABEL = (
     r"(?i)^\s*(?:(?:grand\s+|sub\s*-?\s*)?(?:total|jumlah|rekap)\b|jml(?:\.|\b))|\btotal\s*$"
 )
 _TOTAL = re.compile(TOTAL_LABEL)
-# A matrix has a period (month or year) across its header: the same measure for each. Most
-# tables with a text first column are plain records, so "text in column A" alone says nothing.
-# ponytail: months and years only; upgrade: a per-workbook word list (plants, regions).
 _PERIOD = re.compile(
     r"^(?:(?:jan|feb|mar|apr|mei|may|jun|jul|agu|aug|sep|okt|oct|nov|des|dec)[a-z]*\.?|(?:19|20)\d{2})$",
     re.IGNORECASE,
 )
 _NUMERIC = (int, float, bool, date, datetime, time, timedelta)
-# A merge bigger than this only marks its top-left cell. Real header merges are a few
-# dozen cells; a file that merges a million cells should not cost a million dict entries.
 _MAX_MERGE_CELLS = 10_000
 
 
@@ -48,19 +35,19 @@ class ColumnGroup:
     period: int
     count: int
     labels: tuple[str, ...]
-    parents: tuple[str | None, ...]  # header row above the leaf, one per block
+    parents: tuple[str | None, ...]
 
 
 @dataclass(frozen=True, slots=True)
 class Region:
     box: Box
     header_rows: tuple[int, ...]
-    data_start: int  # first data row (after the header and any section labels)
+    data_start: int
     merged_header: tuple[Box, ...]
     total_rows: tuple[int, ...]
     orientation: Orientation
     groups: tuple[ColumnGroup, ...]
-    noise: tuple[Box, ...]  # title/dashboard cells above the header
+    noise: tuple[Box, ...]
 
 
 class SheetGrid:
@@ -71,7 +58,6 @@ class SheetGrid:
         self.values = wb.values(sheet)
         self.merged = wb.merged(sheet)
         self.formulas = wb.formula_cells(sheet) or frozenset()
-        # A formula with no cached value reads as empty, so it counts as a cell too.
         self.cells: set[tuple[int, int]] = {
             (r, c) for r, row in enumerate(self.values) for c, v in enumerate(row) if v is not None
         } | self.formulas
@@ -80,7 +66,7 @@ class SheetGrid:
         self.cover: dict[tuple[int, int], Cell] = {}
         for r0, c0, r1, c1 in self.merged:
             if r0 > rows or c0 > cols:
-                continue  # merge sits entirely past the data
+                continue
             r1, c1 = min(r1, rows), min(c1, cols)
             v = self.get(r0, c0)
             if (r1 - r0 + 1) * (c1 - c0 + 1) > _MAX_MERGE_CELLS:
@@ -121,8 +107,6 @@ class SheetGrid:
         try:
             meta = self._wb.meta(self._sheet)
         except WorkbookError:
-            # Bold is only a tie-breaker, and the grid has no place to keep warnings. If the
-            # styles cannot be read, we just say "not bold" and let the other signals decide.
             return False
         cells = [c for c in range(c0, c1 + 1) if (r, c) in self.cells]
         return bool(cells) and all((m := meta.get((r, c))) is not None and m.bold for c in cells)
@@ -143,7 +127,6 @@ class SheetGrid:
             for i, v in enumerate(cells)
         )
         texts = sum(isinstance(v, str) for v in cells)
-        # ponytail: a header row of numeric years reads as data; upgrade: use bold/fill from meta
         return nums >= 1 and nums * 2 >= texts
 
 
@@ -181,7 +164,7 @@ def _merge_overlaps(boxes: list[Box]) -> list[Box]:
             done += [o for o in active if o[2] < b[0]]
             active = [o for o in active if o[2] >= b[0]]
             for i, o in enumerate(active):
-                if b[1] <= o[3] and o[1] <= b[3]:  # rows overlap already, so check columns
+                if b[1] <= o[3] and o[1] <= b[3]:
                     active[i] = (min(b[0], o[0]), min(b[1], o[1]), max(b[2], o[2]), max(b[3], o[3]))
                     merged = True
                     break
@@ -196,7 +179,7 @@ def _groups(g: SheetGrid, leaf: int, left: int, right: int) -> tuple[ColumnGroup
     labels = [g.label(leaf, c) for c in range(left, right + 1)]
     n, out, i = len(labels), [], 0
     while i < n:
-        best = (0, 0)  # (count, period)
+        best = (0, 0)
         for p in range(2, _MAX_PERIOD + 1):
             block = labels[i : i + p]
             if len(block) < p or None in block or len(set(block)) < p:
@@ -230,7 +213,6 @@ def _split_rows(g: SheetGrid, box: Box, first: int, header: tuple[int, ...]) -> 
     splits: list[int] = []
     prev = first
     for s in range(first + 1, bottom + 1):
-        # a table needs its header plus at least one data row, so skip back-to-back copies
         if (
             s - prev > len(header)
             and g.label(s, left + k) == leaf[k]
@@ -241,7 +223,7 @@ def _split_rows(g: SheetGrid, box: Box, first: int, header: tuple[int, ...]) -> 
     return splits
 
 
-_MIN_TEXT_ROWS = 4  # header + 3 records, so two lines of prose are not a table
+_MIN_TEXT_ROWS = 4
 
 
 def _text_header(g: SheetGrid, box: Box) -> bool:
@@ -256,8 +238,6 @@ def _text_header(g: SheetGrid, box: Box) -> bool:
     width = right - left + 1
     if bottom - top + 1 < _MIN_TEXT_ROWS or width < 2:
         return False
-    # a block that holds any number is a slice of a numeric table (shipments, a total), whose
-    # header is somewhere else: not a master table
     if any(
         isinstance(g.get(r, c), _NUMERIC)
         for r in range(top, bottom + 1)
@@ -273,7 +253,7 @@ def _text_header(g: SheetGrid, box: Box) -> bool:
     full = sum(
         sum(g.label(r, c) is not None for c in range(left, right + 1)) * 2 >= width for r in body
     )
-    if full * 4 < len(body) * 3:  # fewer than 3 of 4 body rows are mostly full
+    if full * 4 < len(body) * 3:
         return False
     if g.is_bold(top, left, right):
         return True
@@ -290,14 +270,12 @@ def _header_rows(
         return 2 * sum((r, c) in g.filled for c in data_cols) >= len(data_cols)
 
     r = first - 1
-    while r >= top and not wide(r):  # section labels between header and data
+    while r >= top and not wide(r):
         r -= 1
     end = r
     groups = _groups(g, end, left, right) if end >= top else ()
     starts = {grp.start + j * grp.period for grp in groups for j in range(grp.count)}
     while r >= top and end - r < _MAX_HEADER and not g.is_data(r, box):
-        # a sparse row still counts as a parent header when it labels the starts of the
-        # repeated column groups below (unmerged JANUARI .. FEBRUARI over PKG..TOTAL)
         sparse_parent = sum(g.label(r, c) is not None for c in starts) >= 2
         if not (wide(r) or (r < end and sparse_parent)):
             break
@@ -313,6 +291,38 @@ def _total_rows(g: SheetGrid, data: list[int], left: int, right: int) -> tuple[i
     )
 
 
+def _split_regions(g: SheetGrid, box: Box, cuts: list[int]) -> list[Region]:
+    top, left, bottom, right = box
+    edges = [top, *cuts, bottom + 1]
+    return [
+        reg
+        for a, b in zip(edges, edges[1:], strict=False)
+        for reg in _analyze(g, (a, left, b - 1, right), split=False)
+    ]
+
+
+def _noise(g: SheetGrid, box: Box, start: int) -> list[Box]:
+    """Title and dashboard blocks in the rows above the table start."""
+    top, left, _, right = box
+    above = {(rr, c) for rr in range(top, start) for c in range(left, right + 1)}
+    return _components(above & g.filled)
+
+
+def _orientation(
+    g: SheetGrid, header: tuple[int, ...], data: list[int], lbl_col: int, right: int
+) -> Orientation:
+    if not header:
+        return "columns"
+    has_labels = sum(isinstance(g.get(rr, lbl_col), str) for rr in data) * 2 >= len(data)
+    periods = sum(
+        _PERIOD.match(str(g.label(h, c)).strip()) is not None
+        for h in header
+        for c in range(lbl_col + 1, right + 1)
+        if g.label(h, c) is not None
+    )
+    return "matrix" if has_labels and periods >= 2 else "rows"
+
+
 def _analyze(g: SheetGrid, box: Box, split: bool = True) -> list[Region]:
     top, left, bottom, right = box
     data = [r for r in range(top, bottom + 1) if g.is_data(r, box)]
@@ -320,8 +330,6 @@ def _analyze(g: SheetGrid, box: Box, split: bool = True) -> list[Region]:
         if _text_header(g, box):
             return [Region(box, (top,), top + 1, (), (), "rows", (), ())]
         return [Region(box, (), top, (), (), "columns", (), ())]
-    # a dashboard row of numbers above the header is not where the data starts: take the
-    # first run of _RUN data rows (or the first data row in a tiny table)
     rows = set(data)
     first = next((r for r in data if all(r + i in rows for i in range(_RUN))), data[0])
     data = [r for r in data if r >= first]
@@ -330,31 +338,11 @@ def _analyze(g: SheetGrid, box: Box, split: bool = True) -> list[Region]:
     header, end, groups = _header_rows(g, box, first, data_cols)
     start = header[0] if header else first
 
-    if split and header:
-        cuts = _split_rows(g, box, first, header)
-        if cuts:
-            # the first slice keeps `top`, so the noise above the first table is not lost
-            edges = [top, *cuts, bottom + 1]
-            return [
-                reg
-                for a, b in zip(edges, edges[1:], strict=False)
-                for reg in _analyze(g, (a, left, b - 1, right), split=False)
-            ]
+    if split and header and (cuts := _split_rows(g, box, first, header)):
+        return _split_regions(g, box, cuts)
 
-    above = {(rr, c) for rr in range(top, start) for c in range(left, right + 1)}
-    noise = _components(above & g.filled)
-    lbl_col = min(data_cols)
-    has_labels = sum(isinstance(g.get(rr, lbl_col), str) for rr in data) * 2 >= len(data)
-    periods = sum(
-        _PERIOD.match(str(g.label(h, c)).strip()) is not None
-        for h in header
-        for c in range(lbl_col + 1, right + 1)
-        if g.label(h, c) is not None
-    )
-    # ponytail: "columns" doubles as "no header found"; upgrade: a separate flag if a
-    # headerless table needs to be told apart from a table whose columns are the records.
-    matrix = has_labels and periods >= 2
-    orient: Orientation = ("matrix" if matrix else "rows") if header else "columns"
+    noise = _noise(g, box, start)
+    orient = _orientation(g, header, data, min(data_cols), right)
     totals = _total_rows(g, data, left, right)
     merged_hdr = tuple(
         m
@@ -381,8 +369,6 @@ def detect_regions(wb: Workbook, sheet: str, grid: SheetGrid | None = None) -> l
     The order is what `F1.S12.R{n}` numbers. Blocks smaller than 2x2 are left out as notes.
     Pass `grid` when you already built one for this sheet.
     """
-    # The map, the wizard and the shape groups all read the same sheets. The memo lives as long
-    # as the cached Workbook, and a sheet's grid never changes, so the first answer stays right.
     key = f"regions:{sheet}"
     if (hit := wb.memo.get(key)) is not None:
         return hit

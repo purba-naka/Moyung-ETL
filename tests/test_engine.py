@@ -77,9 +77,6 @@ def _pipeline() -> object:
     )
 
 
-# --- validate --------------------------------------------------------------------------------
-
-
 def test_validate_with_files_gives_every_schema(book) -> None:
     rep = validate(_pipeline(), {"f": book})
     assert rep.ok and not rep.issues
@@ -124,7 +121,7 @@ def test_validate_lists_independent_problems_together(book) -> None:
     rep = validate(spec, {"f": book})
     where = [i.where for i in rep.issues]
     assert "sources.gone" in where and "steps.a" in where and "steps.b" in where
-    assert "steps.c" not in where and "steps.d" not in where  # follow-ups of a listed failure
+    assert "steps.c" not in where and "steps.d" not in where
 
 
 def test_validate_file_problems(book) -> None:
@@ -145,14 +142,14 @@ def test_validate_expect_columns_presence(book) -> None:
     ]
     rep = validate(_spec(sources={"orders": src}), {"f": book})
     assert [i.message[:34] for i in rep.issues] == ["required column 'Weight' not found"]
-    assert not rep.warnings  # `type: float` on a price column holds, nothing to say
+    assert not rep.warnings
 
 
 @pytest.mark.parametrize(
     "value,want,ok",
     [
         (7, "int", True),
-        (7, "float", True),  # whole numbers are numbers either way
+        (7, "float", True),
         (7.5, "float", True),
         (7.5, "int", False),
         ("x", "text", True),
@@ -181,7 +178,7 @@ def test_expect_columns_type_failure_blocks_run_and_applies_to_every_regex_hit(t
     spec = _spec(sources={"t": src}, outputs={"o": {"input": "t"}})
     rep = run(spec, {"f": book}, tmp_path)
     assert rep.status == "failed" and "'P2' is VARCHAR" in rep.issues[0].message
-    assert len(rep.issues) == 1  # P1 is fine
+    assert len(rep.issues) == 1
     assert list(tmp_path.iterdir()) == []
 
 
@@ -205,9 +202,6 @@ def test_validate_catches_sandbox_and_unsafe_config(book) -> None:
     )
     rep = validate(spec, {"f": book})
     assert [i.where for i in rep.issues] == ["steps.a", "steps.b"]
-
-
-# --- run: files written ----------------------------------------------------------------------
 
 
 def test_run_writes_parquet_and_csv_and_reports(book, tmp_path) -> None:
@@ -286,9 +280,6 @@ def test_run_text_values_and_odd_names_survive_the_round_trip(tmp_path) -> None:
         assert list(csv.reader(f))[1] == ['é中, "x"\nline', "", "1.5"]
 
 
-# --- run: failures leave nothing behind ------------------------------------------------------
-
-
 def test_failed_run_writes_nothing_and_reports_all(book, tmp_path) -> None:
     spec = _spec(
         sources={"orders": _src("Orders", "Order")},
@@ -343,7 +334,7 @@ def test_a_step_that_fails_at_run_lists_no_followup_noise(tmp_path) -> None:
         ],
         outputs={"o": {"input": "d"}},
     )
-    assert validate(spec, {"f": wb}).ok  # the problem only shows up at run time
+    assert validate(spec, {"f": wb}).ok
     rep = run(spec, {"f": wb}, tmp_path)
     assert rep.status == "failed"
     assert [i.where for i in rep.issues] == ["steps.c"]
@@ -355,7 +346,7 @@ def test_a_failing_write_removes_the_files_already_written(book, tmp_path) -> No
         sources={"orders": _src("Orders", "Order")},
         outputs={"one": {"input": "orders"}, "two": {"input": "orders"}},
     )
-    (tmp_path / "two.parquet.part").mkdir()  # a directory where the temporary file must go
+    (tmp_path / "two.parquet.part").mkdir()
     rep = run(spec, {"f": book}, tmp_path)
     assert rep.status == "failed" and rep.issues[0].where == "outputs.two"
     assert sorted(p.name for p in tmp_path.iterdir()) == ["two.parquet.part"]
@@ -382,9 +373,6 @@ def test_run_cannot_start_without_files_dict_or_with_a_file_as_out_dir(book, tmp
     (tmp_path / "f").write_text("x")
     with pytest.raises(PipelineError, match="cannot use"):
         run(spec, {"f": book}, tmp_path / "f")
-
-
-# --- the sandbox -----------------------------------------------------------------------------
 
 
 def test_a_run_can_only_write_inside_out_dir(book, tmp_path) -> None:
@@ -430,9 +418,6 @@ def test_a_spec_cannot_name_a_relation_with_the_helper_prefix() -> None:
         _spec(sources={"__v1": _src("S", "x")})
     with pytest.raises(SpecError):
         _spec(sources={"s": _src("S", "x")}, outputs={"a" * 65: {"input": "s"}})
-
-
-# --- more than one file, and the order of rows ----------------------------------------------
 
 
 def test_two_files_one_run(tmp_path) -> None:
@@ -605,7 +590,7 @@ def test_group_by_output_name_clashing_only_in_case_is_caught_by_validate() -> N
             },
         ],
     )
-    assert validate(spec, {"f": f}).ok  # TON vs Ton: not a clash, Ton is not an output
+    assert validate(spec, {"f": f}).ok
     spec2 = _spec(
         sources={"s": _src("S", "Key")},
         steps=[
@@ -640,9 +625,6 @@ def test_validate_text_names_the_columns_and_bad_files_become_an_issue() -> None
     assert not rep.ok and rep.issues[0].where == "files"
 
 
-# --- run: human checkpoints ------------------------------------------------------------------
-
-
 def test_run_without_hitl_is_unchanged(book, tmp_path) -> None:
     assert run(_pipeline(), {"f": book}, tmp_path).status == "ok"
 
@@ -654,10 +636,9 @@ def test_run_refused_until_checkpoint_approved(book, tmp_path) -> None:
     with pytest.raises(PipelineError) as e:
         run(_pipeline(), {"f": book}, tmp_path / "out", hitl=s)
     assert [i.where for i in e.value.issues] == ["hitl.after_propose_datasets"]
-    assert not (tmp_path / "out").exists()  # refused before touching the disk
+    assert not (tmp_path / "out").exists()
     s = approve(s, "after_propose_datasets", "dina")
     assert run(_pipeline(), {"f": book}, tmp_path / "out", hitl=s).status == "ok"
-    # both required: both reported
     both = HitlState(
         policy=HitlPolicy(
             checkpoints={"after_propose_datasets": "required", "after_spec": "required"}
@@ -740,7 +721,7 @@ def test_run_report_says_why_rows_were_lost_only_where_the_count_changed(tmp_pat
         {"id": "same", "node": "select", "inputs": ["uniq"], "config": {"columns": ["Item"]}},
     ]
     notes, rep = _stat_notes(_spec(sources={"s": src}, steps=steps), book, tmp_path)
-    assert notes["s"] == "" and notes["same"] == ""  # a source and a pass-through say nothing
+    assert notes["s"] == "" and notes["same"] == ""
     assert notes["nolabel"] == "dropped: Item matching /^Total$/"
     assert notes["pos"] == "kept rows where Qty > 0"
     assert notes["uniq"] == "repeated rows dropped (same Item)"

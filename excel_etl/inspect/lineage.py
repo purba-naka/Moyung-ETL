@@ -19,30 +19,25 @@ type Role = Literal["empty", "source", "mixed", "derived"]
 
 _WORD = r"[A-Za-z_\u00c0-\uffff][\w.\u00c0-\uffff]*"
 _STRING = re.compile(r'"(?:[^"]|"")*"')
-# `'Sheet name'!`, `Sheet!`, `Sheet1:Sheet3!` (3D), `'[1]Sheet'!` and `[1]Sheet!` (other file).
-# The lookbehind keeps `#REF!` and the `!` of `Sheet!A1:B2` ends from reading as sheet names.
 _PREFIX = re.compile(rf"'((?:[^']|'')+)'!|(?<![\w.'#$\]])((?:\[\d+\])?{_WORD}(?::{_WORD})?)!")
 _TOKEN = re.compile(r"(?<![\w.!'#$\[])([A-Za-z_\\][\w.\\]*)(?![\w.(!\[])")
 _NUMERIC = (int, float, bool, date, datetime, time, timedelta)
 
 
-# ponytail: shares of numeric cells that decide a role (see `classify`): under _MINOR a kind
-# of cell is noise, from _MAJOR it is what the sheet is about. Tuned on BALANSITAS;
-# upgrade: make them arguments if a workbook needs another cut.
 _MINOR = 0.1
 _MAJOR = 0.5
 
 
 @dataclass(frozen=True, slots=True)
 class _Refs:
-    sheets: tuple[str, ...]  # as written: may hold `A:B` (3D) or `[1]X` (other file)
-    names: frozenset[str]  # upper-case tokens that are defined names reaching a sheet
+    sheets: tuple[str, ...]
+    names: frozenset[str]
 
 
 @dataclass(frozen=True, slots=True)
 class Lineage:
-    edges: dict[tuple[str, str], int]  # (reader, source) -> formula cells; "[file]" = other file
-    cross: dict[str, frozenset[tuple[int, int]]]  # sheet -> cells whose formula leaves the sheet
+    edges: dict[tuple[str, str], int]
+    cross: dict[str, frozenset[tuple[int, int]]]
 
 
 def _unquote(s: str) -> str:
@@ -50,7 +45,7 @@ def _unquote(s: str) -> str:
 
 
 def _sheets_in(text: str) -> tuple[str, ...]:
-    if "!" not in text:  # most formulas stay on their own sheet; skip the regex for them
+    if "!" not in text:
         return ()
     out = []
     for m in _PREFIX.finditer(_STRING.sub('""', text)):
@@ -83,8 +78,6 @@ class _Resolver:
             return hit
         sheets = _sheets_in(text)
         tokens: frozenset[str] = frozenset()
-        # Measured on 144k formulas: one big `name1|name2|...` regex took 6.5 s, splitting into
-        # tokens and checking a set took 0.3 s. Names are matched case-insensitively.
         if self._names:
             rest = _PREFIX.sub(" ", _STRING.sub('""', text)).upper()
             tokens = frozenset(t for t in _TOKEN.findall(rest) if t in self._names)
@@ -93,7 +86,7 @@ class _Resolver:
     def _expand(self, ref: str) -> list[str]:
         if ref.startswith("[") or ref in self._pos:
             return [ref]
-        if ":" in ref:  # Sheet1:Sheet3 means every sheet between them, in tab order
+        if ":" in ref:
             a, _, b = ref.partition(":")
             if a in self._pos and b in self._pos:
                 lo, hi = sorted((self._pos[a], self._pos[b]))
@@ -111,13 +104,11 @@ class _Resolver:
         refs = self._parse(text)
         found = list(refs.sheets)
         for token in refs.names:
-            # a name local to another sheet is invisible from here, so it adds nothing
             scopes = self._names[token]
             found += scopes.get(own) or scopes.get(None) or ()
         out: set[str] = set()
         for ref in found:
             for name in self._expand(ref):
-                # a name that is not a sheet of this file is a link to another workbook
                 out.add(name if name in self._pos else "[file]")
         out.discard(own)
         return frozenset(out)
@@ -153,7 +144,6 @@ def classify(typed: int, local: int, cross: int) -> Role:
         return "derived" if typed_share < _MINOR else "mixed"
     if cross_share >= _MINOR:
         return "mixed"
-    # little crosses sheets: typed numbers make it a source; only local formulas make it derived
     return "source" if typed_share >= _MINOR else "derived"
 
 
@@ -184,7 +174,6 @@ class Votes:
         """(typed, local, cross) cells inside a row and column window."""
 
         def n(index: dict[int, list[int]]) -> int:
-            # walk the smaller side: the rows that have cells, or the rows asked for
             hits = index if len(index) < len(rows) else (r for r in rows if r in index)
             return sum(
                 bisect_left(index[r], cols.stop) - bisect_left(index[r], cols.start)
@@ -204,12 +193,9 @@ def votes(wb: Workbook, sheet: str) -> Votes:
 
 
 def sheet_role(wb: Workbook, sheet: str) -> Role:
-    # Excel has at most 1,048,576 rows and 16,384 columns. Formulas with no cached value are
-    # missing from `values`, so the row count cannot come from there.
     role = classify(*votes(wb, sheet).count(range(1 << 20), range(1 << 14)))
     if role != "empty":
         return role
-    # a sheet of texts only (a master list) is typed data too, the same rule as a region
     rows = wb.values(sheet)
     cells = [(r, c) for r, row in enumerate(rows) for c, v in enumerate(row) if v is not None]
     if not cells:
@@ -227,8 +213,6 @@ def region_role(wb: Workbook, sheet: str, box: tuple[int, int, int, int]) -> Rol
     """Role of one table block, from the cells inside its box."""
     r0, c0, r1, c1 = box
     role = classify(*votes(wb, sheet).count(range(r0, r1 + 1), range(c0, c1 + 1)))
-    # no number and no formula: a table of texts (master, mapping) that people typed. A single
-    # label or a single row is not a table, so it stays empty.
     return "source" if role == "empty" and _is_text_table(wb, sheet, box) else role
 
 

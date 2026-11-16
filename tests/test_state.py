@@ -57,9 +57,6 @@ def _full() -> JobState:
     )
 
 
-# --- the state itself ------------------------------------------------------------------------
-
-
 def test_full_state_round_trips_through_json():
     s = _full()
     assert JobState.model_validate_json(s.model_dump_json()) == s
@@ -77,7 +74,6 @@ def test_last_run_round_trips(tmp_path):
     "bad", ["", "Job1", "a b", "a/b", "a\\b", "..", ".x", "x.", "é", "x" * 101, "a\nb", "-"]
 )
 def test_bad_job_ids_refused(bad):
-    # "-" alone is fine as a char class member but must start with a letter or digit
     with pytest.raises(StateError):
         new_state(bad)
 
@@ -109,7 +105,7 @@ def test_add_file_replaces_same_id_and_maps_role():
     s = add_file(new_state("j"), "f1", "jan.xlsx", SHA, role="f")
     s = add_file(s, "f1", "feb.xlsx", "b" * 64)
     assert [(f.filename, f.sha256[0]) for f in s.files] == [("feb.xlsx", "b")]
-    assert s.roles == {"f": "f1"}  # role kept when none given
+    assert s.roles == {"f": "f1"}
     s = add_file(s, "f2", "other.xlsx", SHA, role="g")
     assert [f.id for f in s.files] == ["f1", "f2"] and s.roles == {"f": "f1", "g": "f2"}
 
@@ -118,12 +114,9 @@ def test_file_cap():
     s = new_state("j")
     for i in range(50):
         s = add_file(s, f"f{i}", "x.xlsx", SHA)
-    over = add_file(s, "f50", "x.xlsx", SHA)  # model_copy does not validate...
+    over = add_file(s, "f50", "x.xlsx", SHA)
     with pytest.raises(StateError, match="at most 50"):
-        Job(s).update(lambda _: over)  # ...so the update refuses it
-
-
-# --- job.update ------------------------------------------------------------------------------
+        Job(s).update(lambda _: over)
 
 
 def test_update_bumps_version_and_keeps_old_state_on_error():
@@ -146,7 +139,6 @@ def test_update_bumps_version_and_keeps_old_state_on_error():
 
 def test_update_refuses_a_state_that_would_not_load_again():
     job = Job(new_state("j"))
-    # model_copy skips validation: this role points nowhere
     with pytest.raises(StateError, match="not in files"):
         job.update(lambda s: s.model_copy(update={"roles": {"f": "ghost"}}))
     assert job.state.version == 0 and job.state.roles == {}
@@ -158,9 +150,6 @@ def test_update_result_is_independent_of_the_callers_object():
     mine.files.append(None)  # type: ignore[arg-type]
     job.state.files.append(None)  # type: ignore[arg-type]
     assert job.state.files == []
-
-
-# --- store mode ------------------------------------------------------------------------------
 
 
 def test_store_job_saves_on_every_update_and_reopens(tmp_path):
@@ -180,9 +169,9 @@ def test_two_writers_conflict_and_nothing_is_overwritten(tmp_path):
     a.update(lambda s: add_file(s, "f1", "a.xlsx", SHA))
     with pytest.raises(StateConflict, match="version 1 in the store, not 0"):
         b.update(lambda s: add_file(s, "f2", "b.xlsx", SHA))
-    assert b.state.version == 0 and not b.state.files  # b kept its state
+    assert b.state.version == 0 and not b.state.files
     assert [f.id for f in Job.open("j", store).state.files] == ["f1"]
-    b = Job.open("j", store)  # reload, redo
+    b = Job.open("j", store)
     b.update(lambda s: add_file(s, "f2", "b.xlsx", SHA))
     assert [f.id for f in Job.open("j", store).state.files] == ["f1", "f2"]
 
@@ -218,7 +207,7 @@ def test_store_edge_cases(tmp_path):
     with pytest.raises(StateError):
         Job.open("y", store)
     with pytest.raises(StateError):
-        store.save("y", "{}", 0)  # cannot tell the stored version: refuse, do not overwrite
+        store.save("y", "{}", 0)
     assert (tmp_path / "deep" / "dir" / "job-y.json").read_text(encoding="utf-8") == "garbage"
 
 
@@ -266,9 +255,6 @@ def test_a_path_under_a_file_reads_as_never_saved_on_every_os(tmp_path, monkeypa
     assert Job.open("j", store).state.version == 0
 
 
-# --- files -----------------------------------------------------------------------------------
-
-
 class Provider:
     def __init__(self, blobs):
         self.blobs = blobs
@@ -287,17 +273,17 @@ def test_open_files_returns_workbooks_by_role(tmp_path):
     assert list(books) == ["f"] and books["f"].sha256 == sha
     rep = run(_spec(), books, tmp_path / "out")
     assert rep.status == "ok", rep.text()
-    assert open_files(s, Provider({"f1": data}))["f"].sha256 == sha  # bytes too
+    assert open_files(s, Provider({"f1": data}))["f"].sha256 == sha
 
 
 def test_open_files_refuses_changed_file_missing_file_and_garbage(tmp_path):
     p = tmp_path / "a.xlsx"
     p.write_bytes(make_xlsx({"D": [["Ton"], [1]]}))
-    s = add_file(new_state("j"), "f1", "a.xlsx", SHA, role="f")  # SHA is not this file's hash
+    s = add_file(new_state("j"), "f1", "a.xlsx", SHA, role="f")
     with pytest.raises(StateError, match="not the one registered"):
         open_files(s, Provider({"f1": str(p)}))
     with pytest.raises(StateError, match="cannot be opened"):
-        open_files(s, Provider({}))  # provider has no such id
+        open_files(s, Provider({}))
     with pytest.raises(StateError, match="cannot be opened"):
         open_files(s, Provider({"f1": b"not a workbook"}))
     with pytest.raises(StateError, match="cannot be opened"):
@@ -318,7 +304,7 @@ def test_update_ignores_a_version_set_by_the_callback(tmp_path):
     store = FileStore(tmp_path)
     job = Job.open("j", store)
     job.update(lambda s: s.model_copy(update={"version": 99}))
-    assert job.state.version == 1  # the job counts, not the callback
+    assert job.state.version == 1
     job.update(lambda s: s.model_copy(update={"version": 0}))
     assert Job.open("j", store).state.version == 2
 
@@ -327,7 +313,7 @@ def test_update_callback_editing_its_argument_in_place_cannot_corrupt_the_job():
     job = Job(new_state("j"))
 
     def bad(s):
-        s.roles["r"] = "nope"  # in place, and the result is invalid
+        s.roles["r"] = "nope"
         return s
 
     with pytest.raises(StateError, match="not in files"):
@@ -352,7 +338,7 @@ def test_a_state_file_saved_with_a_bom_loads(tmp_path):
     store = FileStore(tmp_path)
     Job.open("j", store).update(lambda s: add_file(s, "f1", "a.xlsx", SHA))
     path = tmp_path / "job-j.json"
-    path.write_text(path.read_text(encoding="utf-8"), encoding="utf-8-sig")  # an editor's BOM
+    path.write_text(path.read_text(encoding="utf-8"), encoding="utf-8-sig")
     assert path.read_bytes().startswith(b"\xef\xbb\xbf")
     assert [f.id for f in Job.open("j", store).state.files] == ["f1"]
 
@@ -365,11 +351,11 @@ def test_reload_picks_up_what_another_writer_saved_and_keeps_state_without_a_sto
         b.update(lambda s: add_file(s, "f2", "b.xlsx", SHA))
     assert b.state.version == 0
     assert b.reload().version == 1 and [f.id for f in b.state.files] == ["f1"]
-    b.update(lambda s: add_file(s, "f2", "b.xlsx", SHA))  # the retry now works
+    b.update(lambda s: add_file(s, "f2", "b.xlsx", SHA))
     assert Job.open("j", store).state.version == 2
     plain = Job(new_state("p"))
     plain.update(lambda s: add_file(s, "f1", "a.xlsx", SHA))
-    assert plain.reload().version == 1  # nothing to read: left as it is
+    assert plain.reload().version == 1
 
 
 def test_reload_of_a_job_never_saved_keeps_the_empty_state(tmp_path):
@@ -398,7 +384,6 @@ def test_two_threads_saving_at_once_one_wins_and_none_is_lost(tmp_path):
     for t in threads:
         t.join()
     final = Job.open("j", store).state
-    # every save that said ok is in the file, and the version counts exactly those saves
     assert results.count("ok") == len(final.files) == final.version - 1
     assert results.count("ok") >= 1 and not list(tmp_path.glob("*.lock"))
 
@@ -416,18 +401,18 @@ def test_a_lock_left_by_a_dead_writer_is_taken_over_and_a_live_one_is_waited_for
     lock.write_text("", encoding="utf-8")
     old = time.time() - 3600
     os.utime(lock, (old, old))
-    Job.open("j", store).update(lambda s: s)  # stale: taken over
+    Job.open("j", store).update(lambda s: s)
     assert not lock.exists()
     monkeypatch.setattr(mod, "_LOCK_WAIT", 0.05)
-    lock.write_text("", encoding="utf-8")  # fresh: somebody is writing
+    lock.write_text("", encoding="utf-8")
     with pytest.raises(StateError, match="locked by another writer"):
         Job.open("j", store).update(lambda s: add_file(s, "f1", "a.xlsx", SHA))
-    assert lock.exists()  # not ours, not removed
+    assert lock.exists()
 
 
 def test_open_files_opens_only_the_roles_asked_for():
     opened: list[str] = []
-    data = make_xlsx({"D": [["a"], [1]]})  # built once: the zip holds a timestamp
+    data = make_xlsx({"D": [["a"], [1]]})
 
     class Spy:
         def open(self, file_id):
@@ -442,7 +427,7 @@ def test_open_files_opens_only_the_roles_asked_for():
         s = add_file(s, f"f{i}", f"{role}.xlsx", sha, role=role)
     assert set(open_files(s, Spy(), ["y"])) == {"y"} and opened == ["f1"]
     assert set(open_files(s, Spy())) == {"x", "y", "z"}
-    assert open_files(s, Spy(), ["nope"]) == {}  # a role with no file is the engine's to report
+    assert open_files(s, Spy(), ["nope"]) == {}
 
 
 def test_readers_during_writes_never_see_a_torn_file(tmp_path):
@@ -460,7 +445,7 @@ def test_readers_during_writes_never_see_a_torn_file(tmp_path):
                 if text is not None:
                     JobState.model_validate_json(text)
             except PermissionError:
-                continue  # Windows may refuse a read while the file is swapped
+                continue
             except Exception as e:
                 seen.append(f"{type(e).__name__}: {e}")
 

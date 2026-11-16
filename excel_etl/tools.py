@@ -70,7 +70,7 @@ def _cap(result: dict) -> dict:
     if isinstance(text, str) and len(text) > _MAX_TEXT:
         cut = _MAX_TEXT - 3
         result = {**result, "text": text[:cut] + "...", "truncated": True}
-        result.setdefault("next_offset", None)  # paged tools set their own; others cannot resume
+        result.setdefault("next_offset", None)
     return result
 
 
@@ -83,7 +83,7 @@ def _tool(fn: Callable[..., dict]) -> Callable[..., dict]:
     def wrapper(self: JobTools, *args: Any, **kwargs: Any) -> dict:
         try:
             sig.bind(self, *args, **kwargs)
-        except TypeError as e:  # the agent called it wrongly: say how it is called
+        except TypeError as e:
             params = ", ".join(list(sig.parameters)[1:])
             return {"error": f"{fn.__name__}({params}): {e}".replace(f"{fn.__name__}() ", "")}
         try:
@@ -101,11 +101,11 @@ def _tool(fn: Callable[..., dict]) -> Callable[..., dict]:
                 "error": f"{e}. Nothing was changed; reload the job and repeat.",
                 "conflict": True,
             }
-        except ValidationError as e:  # a model refused its input; keep pydantic's noise out
+        except ValidationError as e:
             return {"error": describe(e, "input")}
         except _ERRORS as e:
             return {"error": str(e.args[0]) if isinstance(e, KeyError) and e.args else str(e)}
-        except Exception as e:  # a bug must not end the agent's turn
+        except Exception as e:
             return {"error": f"internal error ({type(e).__name__}): {e}; this is a library bug"}
 
     return wrapper
@@ -146,9 +146,7 @@ class JobTools:
         self.job = job
         self.provider = provider
         self.out_dir = out_dir
-        self.per_version = per_version  # write into out_dir/v<N> so a rerun keeps older files
-
-    # --- helpers -----------------------------------------------------------------------------
+        self.per_version = per_version
 
     @property
     def _state(self) -> JobState:
@@ -168,8 +166,6 @@ class JobTools:
     def _version(self) -> int:
         h = self._state.history
         return h.current.number if h else 0
-
-    # --- host only: not given to the agent ---------------------------------------------------
 
     @_tool
     def add_file(self, file_id: str, filename: str, role: str = "") -> dict:
@@ -234,8 +230,6 @@ class JobTools:
         self.job.update(lambda s: s.model_copy(update={"loads": [*s.loads, rec][-200:]}))
         where = f"{plan.platform} {plan.table}"
         return {"text": f"recorded load of {output} to {where}: {status}, {rows} rows"}
-
-    # --- the agent's tools -------------------------------------------------------------------
 
     def agent_tools(self) -> list[Callable[..., dict]]:
         """The functions to give the agent, in a fixed order."""
@@ -314,7 +308,7 @@ class JobTools:
         self,
         file: str,
         ref: str,
-        range: str = "",  # noqa: A002 - the name the agent sees
+        range: str = "",  # noqa: A002
         mode: Literal["compressed", "raw"] = "compressed",
         offset: int = 0,
         budget: int = 24_000,
@@ -391,7 +385,7 @@ class JobTools:
         self,
         kind: Literal["clarify", "confirm", "choose"],
         question: str,
-        options: list[str] = [],  # noqa: B006 - never mutated
+        options: list[str] = [],  # noqa: B006
         ref: str = "",
     ) -> dict:
         """Ask the person something you cannot decide. clarify = free text, confirm = yes/no,
@@ -579,7 +573,7 @@ class JobTools:
         database: str = "",
         schema: str = "",
         stage: str = "",
-        existing_columns: list[str] = [],  # noqa: B006 - never mutated
+        existing_columns: list[str] = [],  # noqa: B006
     ) -> dict:
         """Plan the load of one output of the last run into a warehouse table. It runs
         nothing: it returns the steps and SQL for a person to approve and the host to run.

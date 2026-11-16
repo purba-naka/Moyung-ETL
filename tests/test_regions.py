@@ -81,10 +81,7 @@ def test_sample_layouts(sample_path) -> None:
 
     rekap = detect_regions(wb, "REKAP BALANS")
     assert _ref(rekap[0].box) == "A2:N9" and rekap[0].header_rows == (1, 2)
-    assert len(rekap[0].noise) == 1  # "Periode | Jul"
-
-
-# --- tables made only of text (master and mapping tables) ------------------------------------
+    assert len(rekap[0].noise) == 1
 
 
 def _text_book(rows, bold=True, col0=0, row0=0):
@@ -193,7 +190,6 @@ def test_a_slice_of_a_numeric_table_is_not_taken_for_a_master():
 def test_a_header_text_repeated_lower_in_its_column_without_bold_is_not_a_header():
     rows = [["Item", "Item"], ["a", "b"], ["Item", "c"], ["d", "e"], ["f", "g"]]
     assert all(not hdr for hdr, _ in _regions(_text_book(rows, bold=False)))
-    # the same block is read as a table once the top row is bold, which is the signal people use
     assert _regions(_text_book([["Item", "Kind"], *rows[1:]], bold=True)) == [((0,), "rows")]
 
 
@@ -215,7 +211,7 @@ def test_a_formula_inside_a_text_block_keeps_the_numeric_path_not_the_master_rul
     from excel_etl.inspect.regions import SheetGrid, _text_header
 
     g = SheetGrid(book, "S")
-    assert _text_header(g, (0, 0, 4, 1)) is False  # the master rule itself refuses formulas
+    assert _text_header(g, (0, 0, 4, 1)) is False
 
 
 def _grid(rows, bold=False):
@@ -237,7 +233,7 @@ _GOOD = [["Kode", "Nama"]] + [[f"K{i}", f"Nama {i}"] for i in range(6)]
 
 def test_each_rule_of_the_master_table_alone_turns_a_good_block_down():
     assert _verdict(_GOOD) is True
-    assert _verdict([["Kode", "Kode"], *_GOOD[1:]], bold=True) is False  # two columns, one name
+    assert _verdict([["Kode", "Kode"], *_GOOD[1:]], bold=True) is False
     sparse = [
         ["Kode", "Nama", "Jenis"],
         ["a", None, None],
@@ -246,11 +242,11 @@ def test_each_rule_of_the_master_table_alone_turns_a_good_block_down():
         ["d", None, None],
         ["e", "x", "y"],
     ]
-    assert _verdict(sparse, bold=True) is False  # most rows are half empty
+    assert _verdict(sparse, bold=True) is False
     repeated = [["Kode", "Nama"], ["a", "x"], ["Kode", "y"], ["c", "z"], ["d", "w"], ["e", "v"]]
-    assert _verdict(repeated, bold=False) is False  # the header text is also a record
-    assert _verdict(repeated, bold=True) is True  # bold is the signal that settles it
-    assert _verdict(_GOOD[:3]) is False  # too short to be a table
+    assert _verdict(repeated, bold=False) is False
+    assert _verdict(repeated, bold=True) is True
+    assert _verdict(_GOOD[:3]) is False
 
 
 def test_a_number_or_a_formula_anywhere_in_the_block_turns_it_down():
@@ -259,16 +255,13 @@ def test_a_number_or_a_formula_anywhere_in_the_block_turns_it_down():
     with_number = [["Kode", "Nama"], ["a", "x"], ["b", "y"], ["c", "z"], ["d", 7]]
     g = _grid(with_number, bold=True)
     assert _text_header(g, (0, 0, 4, 1)) is False
-    # the same block without the number is accepted, so the number is what refused it
     assert _verdict([*with_number[:4], ["d", "w"]], bold=True) is True
     g2 = SheetGrid(_text_book(_GOOD, bold=True), "S")
-    g2.formulas = frozenset({(3, 1)})  # a formula cell with no cached value
+    g2.formulas = frozenset({(3, 1)})
     assert _text_header(g2, (0, 0, 6, 1)) is False
 
 
 def test_a_single_column_of_texts_is_a_list_not_a_table():
-    # the block is 1 wide, so detect_regions drops it before the master rule is asked; the
-    # rule itself must still say no if it is ever asked
     one = [["Nama"]] + [[f"x{i}"] for i in range(6)]
     assert _verdict(one, bold=True) is False
     assert all(not hdr for hdr, _ in _regions(_text_book(one)))
@@ -281,10 +274,8 @@ def _first(rows):
 @pytest.mark.parametrize(
     ("rows", "want"),
     [
-        # records with a text first column are not matrices (the old rule called every one so)
         ([["Bulan", "Qty", "Nilai"], ["JAN", 1, 2], ["FEB", 3, 4], ["MAR", 5, 6]], "rows"),
         ([["Kabupaten", "Stok"], ["Bogor", 1], ["Depok", 2], ["Bekasi", 3]], "rows"),
-        # a period across the header is
         (
             [["Produk", "JAN", "FEB", "MAR"], ["Urea", 1, 2, 3], ["NPK", 4, 5, 6], ["ZA", 7, 8, 9]],
             "matrix",

@@ -21,9 +21,8 @@ from pydantic import BaseModel, ConfigDict, ValidationError
 type Relation = duckdb.DuckDBPyRelation
 
 _MAX_ERRORS = 10
-# the pattern of a spec name (pipeline.py); describe() recognises it to explain it in words
 _NAME_PATTERN = r"^(?:[A-Za-z]|_[A-Za-z0-9])[A-Za-z0-9_]{0,62}$"
-INTEGER_TYPE = re.compile(r"^U?(TINY|SMALL|BIG|HUGE)?INT(EGER)?$")  # duckdb whole-number types
+INTEGER_TYPE = re.compile(r"^U?(TINY|SMALL|BIG|HUGE)?INT(EGER)?$")
 NUMERIC_TYPE = re.compile(r"^(U?(TINY|SMALL|BIG|HUGE)?INT(EGER)?|FLOAT|DOUBLE|DECIMAL\(.*\))$")
 
 
@@ -34,7 +33,7 @@ class NodeError(Exception):
 @dataclass(frozen=True, slots=True)
 class Column:
     name: str
-    type: str  # duckdb type name: VARCHAR, DOUBLE, DATE, ...
+    type: str
 
 
 type Schema = tuple[Column, ...]
@@ -63,20 +62,28 @@ def sql_value(v: str | int | float | bool) -> str:
     if isinstance(v, str):
         return sql_text(v)
     if isinstance(v, float) and not math.isfinite(v):
-        # repr(nan) is `nan`, which SQL would read as a column name
         raise NodeError("nan and infinity are not valid values")
     return repr(v)
 
 
-def check_fits(lit: str, kind: str, message: str) -> None:
-    """Raise NodeError(message) when the literal cannot be cast to `kind`.
+def check_fits(value: str | int | float | bool, kind: str, message: str) -> str:
+    """The value as a SQL literal of `kind`; NodeError(message) when it cannot be one as is.
 
-    A constant is only evaluated here, not when binding an empty table.
+    A constant is only evaluated here, not when binding an empty table. A cast alone is not
+    enough: duckdb rounds 1.7 to 2 for INTEGER and turns a 400-digit int into 0, so the cast
+    value is compared back with the literal.
     """
     try:
-        connect().execute(f"SELECT CAST({lit} AS {kind})")
+        lit = sql_value(value)
+    except NodeError as e:
+        raise NodeError(f"{message}: {e}") from None
+    try:
+        (same,) = connect().execute(f"SELECT CAST({lit} AS {kind}) = {lit}").fetchone()
     except duckdb.Error:
         raise NodeError(message) from None
+    if same is not True:
+        raise NodeError(message)
+    return lit
 
 
 def _say(item: Any) -> str:
@@ -118,10 +125,8 @@ class Node:
 
     Config: ClassVar[type[NodeConfig]] = NodeConfig
     min_inputs: ClassVar[int] = 1
-    max_inputs: ClassVar[int | None] = 1  # None = any number
+    max_inputs: ClassVar[int | None] = 1
     name: ClassVar[str] = ""
-    # (config, what it does) pairs shown by `catalog`. tests/test_node_examples.py runs each
-    # one, so an example that stops working fails a test instead of misleading an agent.
     examples: ClassVar[tuple[tuple[dict[str, Any], str], ...]] = ()
 
     def __init__(self, config: Any) -> None:
@@ -167,7 +172,7 @@ def _fields(cls: type[Node]) -> str:
     def kind(p: dict[str, Any]) -> str:
         if "$ref" in p:
             ref = defs[p["$ref"].rsplit("/", 1)[-1]]
-            if "enum" in ref:  # a named choice list is shown as its choices
+            if "enum" in ref:
                 return kind(ref)
             inner = ", ".join(
                 f"{k}{'*' if k in ref.get('required', []) else ''}"
@@ -179,7 +184,7 @@ def _fields(cls: type[Node]) -> str:
         if "anyOf" in p:
             return " or ".join(kind(x) for x in p["anyOf"] if x.get("type") != "null")
         if p.get("type") == "array":
-            if "prefixItems" in p:  # a fixed-size list, such as a pair
+            if "prefixItems" in p:
                 return "[" + ", ".join(kind(x) for x in p["prefixItems"]) + "]"
             return f"[{kind(p.get('items', {})) or 'any'}]"
         if p.get("type") == "object":
@@ -262,8 +267,6 @@ def infer(n: Node, inputs: list[Schema]) -> Schema:
     """Columns a node produces from the columns it reads. Raises NodeError, never a stack trace."""
     check_arity(n, len(inputs))
     out = n.infer_schema(inputs)
-    # duckdb treats `Item` and `ITEM` as one name and renames the second to `ITEM_1`, so the
-    # run would not give what was promised. Checked once here instead of in every node.
     seen: dict[str, str] = {}
     for c in out:
         if (other := seen.setdefault(c.name.casefold(), c.name)) != c.name:

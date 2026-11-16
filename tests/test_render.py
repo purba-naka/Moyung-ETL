@@ -33,7 +33,7 @@ def test_compressed_summarizes_runs_and_texts() -> None:
     assert '"Ton": B3,D3' in lines
     assert '"sub c": C4:C7,E4:E7' in lines
     assert "A4:A7 date 2026-01-01..2026-01-04" in lines
-    assert "B4:B8 num 1.5..6 +=?" in lines  # uncached SUM joins the run
+    assert "B4:B8 num 1.5..6 +=?" in lines
     assert "all 0: D4:D8" in lines
 
 
@@ -56,7 +56,7 @@ def test_region_ref_budget_and_errors() -> None:
     assert page["truncated"] and len(page["text"]) <= 120
     nxt = page["next_offset"]
     rest = render_range(wb, "F1", "S", mode="raw", offset=nxt)
-    assert rest["text"].splitlines()[1].startswith(f"{nxt + 1}|")  # no blank rows in S
+    assert rest["text"].splitlines()[1].startswith(f"{nxt + 1}|")
 
     for ref, rng in (("F1.S1.R9", None), ("S", "B4:"), ("nope", None)):
         with pytest.raises(WorkbookError):
@@ -67,7 +67,6 @@ def test_region_ref_budget_and_errors() -> None:
 def test_sample_compressed_budget(sample_path) -> None:
     wb = Workbook.open(sample_path)
     pkg = render_range(wb, "F1", "(N) PKG")
-    # sheetwise needs ~34k tokens for this sheet
     assert not pkg["truncated"] and len(pkg["text"]) / 4 < 1000
     assert "A6:A806 date 2026-01-01..2027-12-31" in pkg["text"]
     for name in ("Per Bulan", "RKAP 2026", "(U) PKT"):

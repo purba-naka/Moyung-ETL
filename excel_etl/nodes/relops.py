@@ -22,8 +22,6 @@ _RESERVED = "__"
 
 
 def _fresh() -> str:
-    # A view name used twice makes an older relation read the newer data (measured), so every
-    # call gets its own.
     return f"__v{next(_ids)}"
 
 
@@ -64,6 +62,6 @@ def need(schema: Schema, column: str, who: str) -> Column:
 
 
 def unique(names: list[str], what: str, who: str) -> None:
-    keys = [n.casefold() for n in names]  # duckdb names ignore letter case
+    keys = [n.casefold() for n in names]
     if dup := next((n for n, k in zip(names, keys, strict=True) if keys.count(k) > 1), None):
         raise NodeError(f"{who}: {what} {dup!r} appears twice (letter case is ignored)")

@@ -45,7 +45,7 @@ class _Base(_Model):
 
 
 class _OnTable(_Base):
-    table: str = Field(min_length=1)  # a source or step id
+    table: str = Field(min_length=1)
 
 
 class NotNull(_OnTable):
@@ -61,7 +61,7 @@ class Unique(_OnTable):
 class Range(_OnTable):
     kind: Literal["range"]
     column: str = Field(min_length=1)
-    min: Scalar | None = None  # a date as "2026-01-31"
+    min: Scalar | None = None
     max: Scalar | None = None
 
     @model_validator(mode="after")
@@ -70,7 +70,7 @@ class Range(_OnTable):
             raise ValueError("give min, max or both")
         try:
             above = self.min is not None and self.max is not None and self.min > self.max
-        except TypeError:  # a number and a date text: the run says which one does not fit
+        except TypeError:
             above = False
         if above:
             raise ValueError(f"min {self.min} is above max {self.max}; no row could pass")
@@ -90,16 +90,16 @@ class Side(_Model):
 
     table: str = Field(min_length=1)
     agg: Literal["sum", "count", "avg", "min", "max"] = "sum"
-    column: str | None = None  # not needed for `count` (counts rows)
+    column: str | None = None
     where: str | None = None
 
     @model_validator(mode="after")
     def _where_is_safe(self) -> Side:
         if self.where is not None:
             try:
-                self.where = check_expression(self.where)  # same rules as the filter node
+                self.where = check_expression(self.where)
             except NodeError as e:
-                raise ValueError(str(e)) from None  # a spec error, not a raw node error
+                raise ValueError(str(e)) from None
         return self
 
 
@@ -107,10 +107,10 @@ class Reconcile(_Base):
     kind: Literal["reconcile"]
     left: Side
     right: Side | None = None
-    value: float | None = None  # compare with a number instead of another table
-    by: list[str] = []  # compare per group: these columns must exist on both sides
+    value: float | None = None
+    by: list[str] = []
     abs_tol: float = Field(default=0, ge=0)
-    rel_tol: float = Field(default=0, ge=0)  # fraction of the larger side, 0.01 = 1%
+    rel_tol: float = Field(default=0, ge=0)
 
     @model_validator(mode="after")
     def _shape(self) -> Reconcile:
@@ -143,8 +143,8 @@ class CheckResult(_Model):
     kind: str
     severity: Literal["error", "warn"]
     passed: bool
-    bad_rows: int  # rows that break the rule; for reconcile, groups that differ
-    message: str  # why it failed; empty when it passed
+    bad_rows: int
+    message: str
 
 
 class _Bad(Exception):
@@ -155,7 +155,6 @@ class _Bad(Exception):
 class _Plan:
     sql: str
     params: list[Any]
-    # rows of the query -> (number of bad rows, message when it is above 0)
     judge: Callable[[list[tuple]], tuple[int, str]]
 
 
@@ -242,7 +241,6 @@ def _plan_range(c: Range, schemas: dict[str, Schema]) -> _Plan:
     for sign, bound in (("<", c.min), (">", c.max)):
         if bound is not None:
             _check_bound(bound, kind, col)
-            # numbers compare as DOUBLE so min=2.5 on an integer column is not rounded
             bad.append(f"{q} {sign} CAST(? AS {'DOUBLE' if NUMERIC_TYPE.match(kind) else kind})")
             params.append(str(bound))
             bounds.append(f"{'min' if sign == '<' else 'max'} {bound}")
@@ -265,8 +263,6 @@ def _plan_accepted(c: AcceptedValues, schemas: dict[str, Schema]) -> _Plan:
     kind = _type(schemas, c.table, col)
     marks = ", ".join("?" * len(c.values))
     if NUMERIC_TYPE.match(kind):
-        # numbers compare as numbers, so a listed 1 accepts 1.0 and 1; a value that is not
-        # a number can never match, which is a mistake in the spec, not a data problem
         bad = [v for v in c.values if isinstance(v, bool) or not _is_number(v)]
         if bad:
             raise _Bad(f"{col!r} is {kind}; accepted_values must be numbers, got {bad[0]!r}")
@@ -274,7 +270,7 @@ def _plan_accepted(c: AcceptedValues, schemas: dict[str, Schema]) -> _Plan:
         cond = f"CAST({q} AS DOUBLE) NOT IN ({marks})"
     else:
         want = [str(v).lower() if isinstance(v, bool) else str(v) for v in c.values]
-        cond = f"CAST({q} AS VARCHAR) NOT IN ({marks})"  # NULL is skipped, as in range
+        cond = f"CAST({q} AS VARCHAR) NOT IN ({marks})"
     sql = (
         f"SELECT count(*) FILTER (WHERE {cond}), "
         f"list(DISTINCT CAST({q} AS VARCHAR)) FILTER (WHERE {cond}) FROM {quote(c.table)}"
@@ -307,13 +303,13 @@ def _side_sql(schemas: dict[str, Schema], side: Side, by: list[str]) -> tuple[st
             raise _Bad(f"{side.agg} needs a number column; {side.table}.{col} is {kind}")
         agg = f"{side.agg}({quote(col)})"
         if side.agg == "sum":
-            agg = f"coalesce({agg}, 0)"  # the sum of no rows is 0, as in a total row
+            agg = f"coalesce({agg}, 0)"
     label = f"{side.agg}({side.column or '*'}) of {side.table}"
     selects = [f"{quote(k)} AS k{i}" for i, k in enumerate(keys)]
     group = f" GROUP BY {', '.join(quote(k) for k in keys)}" if keys else ""
     cols = ", ".join([*selects, f"CAST({agg} AS DOUBLE) AS v"])
     if side.where is not None:
-        try:  # the same binding the filter node does: unknown columns and non-booleans fail here
+        try:
             (kind,) = bind(schemas[side.table], f"({side.where}) AS __e", "reconcile")
         except NodeError as e:
             raise _Bad(f"where of {side.table!r}: {e}") from None
@@ -335,7 +331,6 @@ def _plan_reconcile(c: Reconcile, schemas: dict[str, Schema]) -> _Plan:
         rsql, _, rlabel = _side_sql(schemas, c.right, c.by)
         on = " AND ".join(f"l.k{i} IS NOT DISTINCT FROM r.k{i}" for i in range(n)) or "true"
         ks = "".join(f"coalesce(l.k{i}, r.k{i}) AS k{i}, " for i in range(n))
-        # a group missing on one side counts as 0 for sum and count, as a difference otherwise
         zero = {"sum", "count"}
         lv = "coalesce(l.v, 0)" if c.left.agg in zero else "l.v"
         rv = "coalesce(r.v, 0)" if c.right.agg in zero else "r.v"

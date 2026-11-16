@@ -31,31 +31,20 @@ type Visibility = Literal["visible", "hidden", "very_hidden"]
 
 
 def _visibility(v: SheetVisibleEnum) -> Visibility:
-    # calamine's enum is a Rust type: no .name and not hashable, so it cannot be a dict key.
     if v == SheetVisibleEnum.Visible:
         return "visible"
     return "hidden" if v == SheetVisibleEnum.Hidden else "very_hidden"
 
 
 _CACHE_SIZE = 4
-# calamine allocates the whole A1..last-cell rectangle, and aborts the process (not an
-# exception) when it is huge, e.g. one value at XFD1048576. So we measure it in the XML first.
 _MAX_CELLS = 25_000_000
-_MAX_PART = 400_000_000  # unpacked bytes of one XML part; guards against zip bombs
+_MAX_PART = 400_000_000
 _ZIP_ERRORS = (zipfile.BadZipFile, zlib.error, ET.ParseError, KeyError)
 _NS_MAIN = "{http://schemas.openxmlformats.org/spreadsheetml/2006/main}"
 _NS_REL = "{http://schemas.openxmlformats.org/officeDocument/2006/relationships}"
 _NS_PKG = "{http://schemas.openxmlformats.org/package/2006/relationships}"
-# A cell with a first child tag holds something: f = formula, v = value, i = inline string.
-# Self-closing <c .../> never matches because the next tag after it is <c> or </row>.
-# ponytail: assumes the default namespace (no "x:" prefix), which is what Excel and openpyxl
-# write, and that `r=` is the first attribute of <c>; upgrade: an iterparse scan if a
-# producer breaks either.
 _CELL = re.compile(rb'<c r="([A-Z]+)(\d+)"([^>]*)><([fvi])')
 _ERROR_CELL = re.compile(rb't="e"')
-# A formula cell: group 3 = <f> attributes, group 4 = formula text (empty for a shared child).
-# Formula text never holds a raw `<` (it is written as &lt;), so [^<]* ends at </f> without the
-# backtracking a lazy `.*?` would do over 100 MB of XML.
 _FORMULA = re.compile(rb'<c r="([A-Z]+)(\d+)"[^>]*><f([^>]*?)(?:/>|>([^<]*)</f>)')
 _SHARED_ID = re.compile(rb'\bsi="(\d+)"')
 
@@ -75,7 +64,6 @@ def _sheet_paths(data: bytes) -> dict[str, str]:
     out: dict[str, str] = {}
     for s in book.iter(f"{_NS_MAIN}sheet"):
         t = target.get(s.get(f"{_NS_REL}id"), "")
-        # Targets are usually relative to xl/, but some writers use an absolute "/xl/..." path.
         path = t.lstrip("/") if t.startswith("/") else posixpath.normpath(f"xl/{t}")
         if "worksheets/" in path:
             out[s.get("name", "")] = path
@@ -97,8 +85,8 @@ class WorkbookError(ValueError):
 @dataclass(frozen=True, slots=True)
 class _Scan:
     formulas: frozenset[tuple[int, int]]
-    errors: frozenset[tuple[int, int]]  # cells holding #DIV/0!, #N/A ...; calamine shows ''
-    cells: int  # size of the A1..last-cell rectangle, which is what calamine allocates
+    errors: frozenset[tuple[int, int]]
+    cells: int
 
 
 def _scan_sheet(xml: bytes) -> _Scan:
@@ -120,7 +108,7 @@ def _scan_sheet(xml: bytes) -> _Scan:
 
 
 def _formula_texts(xml: bytes):
-    shared: dict[bytes, str] = {}  # shared-formula id -> text of its first cell
+    shared: dict[bytes, str] = {}
     for m in _FORMULA.finditer(xml):
         body = m[4]
         si = _SHARED_ID.search(m[3]) if b't="shared"' in m[3] else None
@@ -133,7 +121,7 @@ def _formula_texts(xml: bytes):
         elif si and si[1] in shared:
             text = shared[si[1]]
         else:
-            continue  # data table, or a shared child whose first cell is missing
+            continue
         yield int(m[2]) - 1, col_index(m[1]), text
 
 
@@ -141,7 +129,7 @@ def _formula_texts(xml: bytes):
 class DefinedName:
     name: str
     refers_to: str
-    sheet: str | None  # the sheet it is local to, None for a workbook-wide name
+    sheet: str | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -160,8 +148,6 @@ class CellMeta:
 
 
 def _normalize(value: object) -> Cell:
-    # calamine gives "" for empty cells and floats for every number, so 10 comes back
-    # as 10.0. We fix both here once, and nothing downstream has to remember it.
     if value == "":
         return None
     if isinstance(value, float) and value.is_integer():
@@ -178,18 +164,15 @@ class Workbook:
         try:
             self._cal = CalamineWorkbook.from_filelike(io.BytesIO(data))
             with zipfile.ZipFile(io.BytesIO(data)) as z:
-                # .xlsb and .ods are zips too, but only .xlsx has the XML we scan.
                 self._xlsx = "xl/workbook.xml" in z.namelist()
         except zipfile.BadZipFile:
-            self._xlsx = False  # .xls
+            self._xlsx = False
         except CalamineError as e:
             raise WorkbookError(f"not a readable Excel file: {e}") from e
         self.sheets: tuple[Sheet, ...] = tuple(
             Sheet(m.name, _visibility(m.visible)) for m in self._cal.sheets_metadata
         )
         self._names = {s.name for s in self.sheets}
-        # Workbooks are cached and shared, and a host may read one from several threads.
-        # calamine's reader is not thread safe ("Already borrowed"), so its calls take turns.
         self._cal_lock = threading.Lock()
         self._values: dict[str, Grid] = {}
         self._merged: dict[str, tuple[tuple[int, int, int, int], ...]] = {}
@@ -197,8 +180,6 @@ class Workbook:
         self._scans: dict[str, _Scan] = {}
         self._texts: dict[str, dict[tuple[int, int], str]] = {}
         self._names_def: tuple[DefinedName, ...] | None = None
-        # Views built from this file (lineage, ...) keep their result here, so it lives and
-        # dies with the cached Workbook.
         self.memo: dict[str, Any] = {}
         self._paths: dict[str, str] | None = None
         self._opx: openpyxl.Workbook | None = None
@@ -219,9 +200,6 @@ class Workbook:
             return wb
         wb = cls(data, sha)
         _cache[sha] = wb
-        # ponytail: keeps the last few files in memory per process; upgrade: size-based LRU
-        # if hosts open many large files at once. Not thread-safe; add a lock if a host
-        # opens files from several threads.
         if len(_cache) > _CACHE_SIZE:
             _cache.popitem(last=False)
         return wb
@@ -242,7 +220,7 @@ class Workbook:
                 if self._paths is None:
                     self._paths = _sheet_paths(self._data)
                 path = self._paths.get(sheet)
-                if path is None:  # chartsheet: no cells
+                if path is None:
                     self._scans[sheet] = _Scan(frozenset(), frozenset(), 0)
                 else:
                     with zipfile.ZipFile(io.BytesIO(self._data)) as z:
@@ -310,8 +288,6 @@ class Workbook:
                             i = int(local)
                         except ValueError:
                             i = -1
-                        # a scope id that is not a sheet number is damage; a negative one
-                        # would silently bind the name to the last sheet
                         if not 0 <= i < len(self.sheets):
                             raise WorkbookError(
                                 f"damaged file: defined name {d.get('name', '')!r} "
@@ -324,7 +300,7 @@ class Workbook:
 
     def values(self, sheet: str) -> Grid:
         """Cell values starting at A1. Rows can have different lengths; missing = None."""
-        scan = self._scan(sheet)  # also checks the sheet name
+        scan = self._scan(sheet)
         if sheet not in self._values:
             if scan is not None and scan.cells > _MAX_CELLS:
                 raise WorkbookError(
@@ -362,18 +338,12 @@ class Workbook:
         if sheet in self._meta:
             return self._meta[sheet]
         if not self._xlsx:
-            # ponytail: openpyxl only reads xlsx/xlsm; upgrade: parse .xls BIFF if users need it.
             raise WorkbookError("formulas and styles need an .xlsx/.xlsm file")
         rows = self.values(sheet)
         out: dict[tuple[int, int], CellMeta] = {}
         if rows:
-            # read_only sheets trust the file's <dimension> tag, which is sometimes wrong,
-            # so we take the size from calamine instead.
             bounds = {"max_row": len(rows), "max_col": max(map(len, rows))}
             with warnings.catch_warnings():
-                # openpyxl warns about parts it drops (conditional formatting extensions,
-                # WMF images). In read_only mode it parses the sheet while we iterate, so
-                # the filter has to cover the loop, not just load_workbook.
                 warnings.simplefilter("ignore", UserWarning)
                 ws = self._openpyxl()[sheet]
                 for r, row in enumerate(ws.iter_rows(min_row=1, min_col=1, **bounds)):
@@ -392,12 +362,12 @@ class Workbook:
 
 
 def _cell_meta(cell: object) -> CellMeta | None:
-    if cell.font is None:  # read_only EmptyCell: no value and no style
+    if cell.font is None:
         return None
     formula = None
     if cell.data_type == "f":
         v = cell.value
-        formula = getattr(v, "text", None) or str(v)  # ArrayFormula keeps the text in .text
+        formula = getattr(v, "text", None) or str(v)
     f = cell.fill
     b = cell.border
     meta = CellMeta(

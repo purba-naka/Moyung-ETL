@@ -20,8 +20,8 @@ from excel_etl.workbook import Cell, Grid, Workbook, WorkbookError, col_index
 type Role = Literal["empty", "source", "mixed", "derived"]
 
 _TEXT_MAX = 30
-_LINE_MAX = 600  # chars; one runaway line (16k columns wide) must not eat the whole budget
-_MAX_ROW, _MAX_COL = 1_048_576, 16_384  # Excel's own limits
+_LINE_MAX = 600
+_MAX_ROW, _MAX_COL = 1_048_576, 16_384
 
 
 def col_letters(c: int) -> str:
@@ -56,10 +56,6 @@ def _name(s: str) -> str:
 
 
 def _paging(offset: int, limit: int | None = None, *, paged: bool = False) -> None:
-    # Checked here, once, so an agent that sends offset=-1 or limit=0 gets an error instead
-    # of a truncated page whose next_offset points at the same page forever. The paged
-    # tools (workbook_map, formula_lineage, sheet_regions, propose_datasets) need a limit:
-    # a host that sends null for an omitted arg gets this error, not a TypeError later on.
     if not isinstance(offset, int) or isinstance(offset, bool) or offset < 0:
         raise WorkbookError(f"offset must be an integer >= 0, got {offset!r}")
     if paged and limit is None:
@@ -83,10 +79,10 @@ class SheetSummary:
     id: str
     name: str
     visible: str
-    used: str | None  # "B3:FC807", None when the sheet has no cells
+    used: str | None
     cells: int
     regions: int
-    formula_pct: int | None  # None when formulas cannot be read (.xls)
+    formula_pct: int | None
     role: Role
 
 
@@ -104,7 +100,6 @@ def _summary(wb: Workbook, file_id: str, i: int) -> SheetSummary:
         cells=len(g.cells),
         regions=len(detect_regions(wb, sheet.name, g)),
         formula_pct=pct,
-        # .xls has no formula text to follow, so everything numeric there counts as typed
         role=sheet_role(wb, sheet.name),
     )
 
@@ -113,7 +108,7 @@ def _compact(n: int) -> str:
     return f"{n / 1000:.1f}k" if n >= 1000 else str(n)
 
 
-_MAX_LISTED_NAMES = 600  # characters of sheet names a generated name_regex may list
+_MAX_LISTED_NAMES = 600
 
 
 def _shape_groups(wb: Workbook) -> list[tuple[list[int], str | None]]:
@@ -138,8 +133,6 @@ def _shape_groups(wb: Workbook) -> list[tuple[list[int], str | None]]:
             by_pattern.setdefault(shape, []).append(i)
         pattern = None
         if len(by_pattern) > 1:
-            # One name shape holds nearly all sheets (dated days) and a few others share the
-            # layout too (Template, Copy of Template): the shape wins and the rest are not read.
             top, members = max(by_pattern.items(), key=lambda kv: len(kv[1]))
             if len(members) >= 3 and len(indexes) - len(members) <= max(2, len(indexes) // 10):
                 pattern = top
@@ -147,18 +140,11 @@ def _shape_groups(wb: Workbook) -> list[tuple[list[int], str | None]]:
         elif by_pattern:
             pattern = next(iter(by_pattern))
         if pattern is None:
-            # No shared look (Jan..Dec, Hari 1..Hari 25, names typed by hand): list the names.
-            # The pattern is the group itself, so no outsider can match it. A long list is
-            # still a legal regex, but a spec nobody can read; past the cap, names differ.
             listed = "|".join(re.escape(all_names[i]) for i in indexes)
             if len(listed) <= _MAX_LISTED_NAMES:
                 groups.append((indexes, f"(?:{listed})"))
                 continue
         if pattern is not None:
-            # A few same-named sheets with a different layout (a broken day, a typo in a
-            # header) must not cost the whole group its pattern, so they are excluded by name.
-            # More than one outsider per ten members means the name says little about the
-            # shape (three months and one odd one is not a pattern): give up then.
             outsiders = [
                 name
                 for i, name in enumerate(all_names)
@@ -238,7 +224,6 @@ def formula_lineage(wb: Workbook, file_id: str, offset: int = 0, limit: int = 10
     page = readers[offset : offset + limit]
     lines = [f"{file_id} {len(readers)} sheets read other sheets. sheet <- sheet xN"]
     for name in page:
-        # biggest source first: that is the one an agent should look at
         src = sorted(reads[name], key=lambda x: (-x[1], x[0]))
         parts = [f"{ids[d]} {_name(d)} x{n}" if d in ids else f"{d} x{n}" for d, n in src]
         more = f", +{len(parts) - 6} more" if len(parts) > 6 else ""
@@ -308,8 +293,6 @@ def sheet_regions(wb: Workbook, file_id: str, sheet: str, offset: int = 0, limit
     ]
     lines += [_region_line(rid, r, region_role(wb, name, r.box)) for rid, r in page]
     if small and offset == 0:
-        # ponytail: headerless blocks (notes, KPIs, side calcs) get one summary line;
-        # upgrade: a `kind` filter if the agent needs to page through them.
         lines.append(
             "headerless: " + few([f"{rid.rsplit('.', 1)[1]} {_box(r.box)}" for rid, r in small], 10)
         )
@@ -323,7 +306,6 @@ _REGION_ID = re.compile(r"^(.+\.S[0-9]{1,6})\.R([0-9]{1,6})$", re.ASCII)
 def _parse_range(s: str) -> Box:
     if not isinstance(s, str):
         raise WorkbookError(f"range must be a string like 'B4:N40', got {s!r}")
-    # upper() first would turn the ligature "ﬀ" into "FF", so only plain ASCII gets through
     m = _A1.fullmatch(s.strip().replace("$", "")) if s.isascii() else None
     if m is None and s.isascii():
         m = _A1.fullmatch(s.strip().replace("$", "").upper())
@@ -357,7 +339,6 @@ def _target(
         raise WorkbookError(f"ref must be a string, got {ref!r}")
     names = {s.name for s in wb.sheets}
     m = _REGION_ID.match(ref)
-    # a sheet that is literally named like a region id wins over reading it as one
     if not m or ref in names:
         sid, name = _resolve(wb, file_id, ref)
         return f"{sid} {_name(name)}", name, _parse_range(rng) if rng is not None else None, None
@@ -370,7 +351,6 @@ def _target(
 def _region(wb: Workbook, file_id: str, ref: str) -> tuple[str, str, Region, SheetGrid]:
     """Region id (`F1.S12.R3`) -> (label, sheet name, region, grid)."""
     m = _REGION_ID.match(ref) if isinstance(ref, str) else None
-    # a sheet literally named like a region id is a sheet, the same as in _target
     if m is None or ref in {s.name for s in wb.sheets}:
         raise WorkbookError(
             f"{ref!r} is not a region id like {file_id}.S12.R3; get one from sheet_regions"
@@ -406,7 +386,7 @@ def _fmt(v: object, digits: int = 4) -> str:
         return v.isoformat()
     if isinstance(v, timedelta):
         return str(v)
-    s = " ".join(str(v).split())  # newlines and runs of spaces in labels carry no meaning
+    s = " ".join(str(v).split())
     return s if len(s) <= _TEXT_MAX else s[: _TEXT_MAX - 1] + "…"
 
 
@@ -429,11 +409,10 @@ def _rects(runs: list[tuple[int, int, int]]) -> list[str]:
     return out
 
 
-def _compressed(g: SheetGrid, box: Box) -> list[str]:
+def _scan(g: SheetGrid, box: Box) -> tuple[dict[str, list[tuple[int, int]]], list[tuple]]:
+    """Split a box into text cells by value and typed value runs per column."""
     top, left, bottom, right = box
     texts: dict[str, list[tuple[int, int]]] = {}
-    # value runs per column: [kind, row0, row1, min, max, has uncached formula].
-    # Blanks and text do not break a run; an uncached formula joins whatever run it is in.
     runs: list[tuple[str, int, int, int, object, object, bool]] = []
     for c in range(left, right + 1):
         cur: list | None = None
@@ -456,7 +435,6 @@ def _compressed(g: SheetGrid, box: Box) -> list[str]:
             if cur and cur[0] == kind:
                 cur[2] = r
                 if kind != "bool":
-                    # naive and timezone-aware datetimes do not compare; keep the old range
                     with contextlib.suppress(TypeError):
                         cur[3], cur[4] = min(cur[3], v), max(cur[4], v)
                 continue
@@ -466,15 +444,16 @@ def _compressed(g: SheetGrid, box: Box) -> list[str]:
         if cur:
             runs.append((cur[0], cur[1], cur[2], c, cur[3], cur[4], cur[5]))
 
+    return texts, runs
+
+
+def _text_lines(texts: dict[str, list[tuple[int, int]]]) -> list[str]:
     lines = []
-    # text seen once: one line per row (`r4: A=TANGGAL|T=Total Produksi`), reads like the
-    # header it usually is; text seen more than once: inverted index (`"Ton": B5,D5,..`)
     by_row: dict[int, list[str]] = {}
     for text, cells in texts.items():
         if len(cells) == 1:
             r, c = cells[0]
             by_row.setdefault(r, []).append(f"{col_letters(c)}={text}")
-    # a row holding one lone label (month markers down column A) goes in a per-column line
     by_col: dict[str, list[str]] = {}
     for r in sorted(by_row):
         if len(by_row[r]) == 1:
@@ -493,7 +472,11 @@ def _compressed(g: SheetGrid, box: Box) -> list[str]:
             else:
                 col_runs.append([c, r, r])
         lines.append(f'"{text}": ' + few(_rects([tuple(x) for x in col_runs]), 3))
+    return lines
 
+
+def _run_lines(runs: list[tuple]) -> list[str]:
+    lines = []
     groups: dict[tuple[str, int, int, bool], list] = {}
     for kind, r0, r1, c, lo, hi, uncached in runs:
         grp = groups.setdefault((kind, r0, r1, uncached), [[], lo, hi])
@@ -506,18 +489,23 @@ def _compressed(g: SheetGrid, box: Box) -> list[str]:
         groups.items(), key=lambda x: (x[0][1], x[1][0][0][0])
     ):
         if kind == "num" and lo == hi == 0 and not uncached:
-            zeros += _rects(cols)  # placeholder columns: list once, not one line each
+            zeros += _rects(cols)
             continue
         if kind == "formula":
             desc = "=?"
         else:
-            lo_s, hi_s = _fmt(lo, 3), _fmt(hi, 3)  # a range only needs the scale
+            lo_s, hi_s = _fmt(lo, 3), _fmt(hi, 3)
             span = "" if kind == "bool" else f" {lo_s}" + ("" if lo == hi else f"..{hi_s}")
             desc = kind + span + (" +=?" if uncached else "")
         lines.append(f"{few(_rects(cols), 6)} {desc}")
     if zeros:
         lines.append("all 0: " + few(zeros, 12))
-    return [_clip(x) for x in lines]
+    return lines
+
+
+def _compressed(g: SheetGrid, box: Box) -> list[str]:
+    texts, runs = _scan(g, box)
+    return [_clip(x) for x in _text_lines(texts) + _run_lines(runs)]
 
 
 def _raw(g: SheetGrid, box: Box):
@@ -544,7 +532,7 @@ def render_range(
     wb: Workbook,
     file_id: str,
     ref: str,
-    range: str | None = None,  # noqa: A002 - tool argument name the agent sees
+    range: str | None = None,  # noqa: A002
     mode: Literal["compressed", "raw"] = "compressed",
     offset: int = 0,
     budget: int = 24_000,
@@ -607,8 +595,6 @@ def column_names(g: SheetGrid, region: Region, sep_safe: bool = True) -> list[st
     clean = _name if sep_safe else (lambda s: " ".join(s.split()))
     _, left, _, right = region.box
     rows = region.header_rows
-    # ponytail: a parent label that is not merged is carried right until the next label
-    # (JANUARI over PKG..TOTAL); upgrade: stop at ColumnGroup edges if a sheet has a gap.
     filled: list[list[str | None]] = []
     for hr in rows[:-1]:
         last, row = None, []
@@ -621,7 +607,6 @@ def column_names(g: SheetGrid, region: Region, sep_safe: bool = True) -> list[st
         parts = [row[i] for row in filled] + ([g.label(rows[-1], c)] if rows else [])
         out: list[str] = []
         for p in parts:
-            # a vertical merge repeats its label on every header row, so keep it once
             if p and (not out or out[-1] != clean(_fmt(p))):
                 out.append(clean(_fmt(p)))
         names.append("|".join(out) or "-")
@@ -651,7 +636,7 @@ def _profile_column(g: SheetGrid, c: int, rows: list[int]) -> str:
     vals = values[main]
     parts = [main]
     if main in ("num", "date", "datetime", "time", "duration"):
-        with contextlib.suppress(TypeError):  # naive vs aware datetimes
+        with contextlib.suppress(TypeError):
             lo, hi = min(vals), max(vals)
             parts.append(_fmt(lo, 3) if lo == hi else f"{_fmt(lo, 3)}..{_fmt(hi, 3)}")
     distinct = list(dict.fromkeys(vals))
@@ -732,8 +717,6 @@ def find_text(
     key = text_key(query)
     if not key:
         raise WorkbookError(f"query {query!r} is empty once whitespace is trimmed")
-    # values() is cached per sheet and the normalized texts are kept on the workbook, so
-    # later pages of the same query cost one pass of containment checks.
     norm: dict[str, str] = wb.memo.setdefault("text_keys", {})
 
     def _key(v: str) -> str:
@@ -759,7 +742,7 @@ def find_text(
             _clip(f"{file_id}.S{i} {_name(s.name)}{flag}: {len(hits)} hits | {shown}{more}")
         )
     q = _name(query)
-    if len(q) > 40:  # a huge query must not eat the head line
+    if len(q) > 40:
         q = q[:39] + "…"
     head = (
         f"{file_id}: '{q}' matches {cells} cells in "
@@ -773,16 +756,76 @@ def _shape(g: Grid) -> tuple[int, int]:
 
 
 def _same(x: Cell, y: Cell) -> bool:
-    # type first: True must not pass as 1, and after Workbook normalization an integer
-    # float is already an int, so equal values of different types are real diffs
     return type(x) is type(y) and x == y
 
 
 def _d(v: Cell) -> str:
-    # repr for floats: a diff the agent cannot see (0.3 vs 0.30000000000000004) is no diff
     if v is None:
         return "-"
     return _name(repr(v)) if isinstance(v, float) else _name(_fmt(v))
+
+
+def _diff_cells(ga: list, gb: list, rows: int, cols: int) -> tuple[int, int, list, int, list[int]]:
+    """(differing cells, filled cells, first 6 diffs, differing rows, first 6 such rows)."""
+    differ = filled = 0
+    first: list[tuple[int, int, Cell, Cell]] = []
+    diff_rows = 0
+    first_rows: list[int] = []
+    last_row = -1
+    for r in range(rows):
+        row_a, row_b = ga[r], gb[r]
+        for c in range(cols):
+            va = row_a[c] if c < len(row_a) else None
+            vb = row_b[c] if c < len(row_b) else None
+            if va is None and vb is None:
+                continue
+            filled += 1
+            if _same(va, vb):
+                continue
+            differ += 1
+            if len(first) < 6:
+                first.append((r, c, va, vb))
+            if r != last_row:
+                diff_rows += 1
+                if len(first_rows) < 6:
+                    first_rows.append(r)
+                last_row = r
+
+    return differ, filled, first, diff_rows, first_rows
+
+
+def _shape_parts(
+    wb: Workbook,
+    aname: str,
+    bname: str,
+    sa: tuple[int, int],
+    sb: tuple[int, int],
+    differ: int,
+    filled: int,
+) -> list[str]:
+    """Shape, diff count, formula count and region parts of the compare_sheets second line."""
+    (ar, ac), (br, bc) = sa, sb
+    same_shape = sa == sb
+
+    def _count(x: frozenset[tuple[int, int]] | None) -> str:
+        return "?" if x is None else str(len(x))
+
+    boxes_a = [x.box for x in detect_regions(wb, aname)]
+    boxes_b = [x.box for x in detect_regions(wb, bname)]
+    shape_txt = f"shape {ar}x{ac} both" if same_shape else f"shape {ar}x{ac} vs {br}x{bc}"
+    parts = [shape_txt]
+    if differ:
+        where = "" if same_shape else "on the shared part "
+        parts.append(f"{where}{differ} of {filled} filled cells differ")
+    elif not same_shape:
+        parts.append("shared part same values")
+    parts.append(f"formulas {_count(wb.formula_cells(aname))} vs {_count(wb.formula_cells(bname))}")
+    if boxes_a or boxes_b:
+        ranges = "same ranges" if boxes_a == boxes_b else "ranges differ"
+        parts.append(f"regions {len(boxes_a)} vs {len(boxes_b)} {ranges}")
+    else:
+        parts.append("regions 0")
+    return parts
 
 
 def compare_sheets(wb: Workbook, file_id: str, a: str, b: str, budget: int = 24_000) -> dict:
@@ -805,37 +848,8 @@ def compare_sheets(wb: Workbook, file_id: str, a: str, b: str, budget: int = 24_
     ga, gb = wb.values(aname), wb.values(bname)
     (ar, ac), (br, bc) = _shape(ga), _shape(gb)
     same_shape = (ar, ac) == (br, bc)
-    # cells past the shared rectangle cannot be compared, so the shape line carries them
     rows, cols = min(ar, br), min(ac, bc)
-    differ = filled = 0
-    first: list[tuple[int, int, Cell, Cell]] = []
-    diff_rows = 0
-    first_rows: list[int] = []
-    last_row = -1
-    for r in range(rows):
-        row_a, row_b = ga[r], gb[r]
-        for c in range(cols):
-            va = row_a[c] if c < len(row_a) else None
-            vb = row_b[c] if c < len(row_b) else None
-            if va is None and vb is None:
-                continue
-            filled += 1
-            if _same(va, vb):
-                continue
-            differ += 1
-            if len(first) < 6:
-                first.append((r, c, va, vb))
-            if r != last_row:  # row-major order, so each row counts once
-                diff_rows += 1
-                if len(first_rows) < 6:
-                    first_rows.append(r)
-                last_row = r
-
-    def _count(x: frozenset[tuple[int, int]] | None) -> str:
-        return "?" if x is None else str(len(x))  # None = .xls, no formula scan
-
-    boxes_a = [x.box for x in detect_regions(wb, aname)]
-    boxes_b = [x.box for x in detect_regions(wb, bname)]
+    differ, filled, first, diff_rows, first_rows = _diff_cells(ga, gb, rows, cols)
     verdict = (
         "same values"
         if same_shape and not differ
@@ -844,19 +858,7 @@ def compare_sheets(wb: Workbook, file_id: str, a: str, b: str, budget: int = 24_
         else "shapes differ"
     )
     lines = [f"{aid} {_name(aname)} vs {bid} {_name(bname)}: {verdict}"]
-    shape_txt = f"shape {ar}x{ac} both" if same_shape else f"shape {ar}x{ac} vs {br}x{bc}"
-    parts = [shape_txt]
-    if differ:
-        where = "" if same_shape else "on the shared part "
-        parts.append(f"{where}{differ} of {filled} filled cells differ")
-    elif not same_shape:
-        parts.append("shared part same values")
-    parts.append(f"formulas {_count(wb.formula_cells(aname))} vs {_count(wb.formula_cells(bname))}")
-    if boxes_a or boxes_b:
-        ranges = "same ranges" if boxes_a == boxes_b else "ranges differ"
-        parts.append(f"regions {len(boxes_a)} vs {len(boxes_b)} {ranges}")
-    else:
-        parts.append("regions 0")
+    parts = _shape_parts(wb, aname, bname, (ar, ac), (br, bc), differ, filled)
     lines.append("; ".join(parts))
     if differ:
         cells = ", ".join(f"{a1(r, c)} {_d(va)}|{_d(vb)}" for r, c, va, vb in first)
@@ -866,9 +868,31 @@ def compare_sheets(wb: Workbook, file_id: str, a: str, b: str, budget: int = 24_
     text = "\n".join(lines)
     return {
         "text": _clip(text, budget),
-        "truncated": len(text) > budget,  # no paging; a caller with a small budget calls again
+        "truncated": len(text) > budget,
         "next_offset": None,
     }
+
+
+def _derived_lines(wb: Workbook, file_id: str, edges: dict, derived: dict[str, int]) -> list[str]:
+    """One line per sheet holding derived tables that read other sheets."""
+    reads: dict[str, list[tuple[int, str]]] = {}
+    for (src, dst), n in edges.items():
+        reads.setdefault(src, []).append((n, dst))
+    dlines = []
+    for i, s in enumerate(wb.sheets, start=1):
+        src = sorted(reads.get(s.name, ()), key=lambda x: (-x[0], x[1]))
+        if s.name not in derived or not src:
+            continue
+        parts = [f"{'[file]' if d == '[file]' else _name(d)} x{n}" for n, d in src]
+        more = f", +{len(parts) - 4} more" if len(parts) > 4 else ""
+        dlines.append(
+            _clip(
+                f"{file_id}.S{i} {_name(s.name)}: {derived[s.name]} derived tables <- "
+                + ", ".join(parts[:4])
+                + more
+            )
+        )
+    return dlines
 
 
 def _proposals(wb: Workbook, file_id: str) -> tuple[list[str], list[str], int, int, int]:
@@ -877,7 +901,7 @@ def _proposals(wb: Workbook, file_id: str) -> tuple[list[str], list[str], int, i
     if (hit := wb.memo.get(key)) is not None:
         return hit
     props: list[str] = []
-    derived: dict[str, int] = {}  # sheet -> its derived tables that read another sheet
+    derived: dict[str, int] = {}
     counts = {"source": 0, "mixed": 0}
     n_derived = 0
     lin = lineage(wb)
@@ -891,7 +915,7 @@ def _proposals(wb: Workbook, file_id: str) -> tuple[list[str], list[str], int, i
         )
         for j, r in enumerate(detect_regions(wb, s.name, g), start=1):
             if not r.header_rows:
-                continue  # headerless blocks are notes and KPIs, not datasets
+                continue
             role = region_role(wb, s.name, r.box)
             grouped = j == first_header and (i - 1) in groups and role == "source"
             if grouped and groups[i - 1][0][0] != i - 1:
@@ -899,8 +923,6 @@ def _proposals(wb: Workbook, file_id: str) -> tuple[list[str], list[str], int, i
             if role == "derived":
                 n_derived += 1
                 top, left, bottom, right = r.box
-                # a table that only totals its own sheet has nothing to reconcile against;
-                # only a cross cell inside the table counts, not a stray KPI cell outside
                 if any(top <= x <= bottom and left <= y <= right for x, y in cross):
                     derived[s.name] = derived.get(s.name, 0) + 1
                 continue
@@ -909,7 +931,7 @@ def _proposals(wb: Workbook, file_id: str) -> tuple[list[str], list[str], int, i
             shown = ", ".join(names[:2])
             more = f" (+{len(names) - 2})" if len(names) > 2 else ""
             flag = "" if s.visible == "visible" else f" [{s.visible}]"
-            totals = set(r.total_rows)  # the same data rows profile_region counts
+            totals = set(r.total_rows)
             nrows = sum(1 for x in range(r.data_start, r.box[2] + 1) if x not in totals)
             note = f"|{_group_note(file_id, *groups[i - 1])}" if grouped else ""
             props.append(
@@ -918,24 +940,7 @@ def _proposals(wb: Workbook, file_id: str) -> tuple[list[str], list[str], int, i
                     f"|{nrows}|{r.box[3] - r.box[1] + 1}|{shown}{more}{note}"
                 )
             )
-    reads: dict[str, list[tuple[int, str]]] = {}
-    for (src, dst), n in lin.edges.items():
-        reads.setdefault(src, []).append((n, dst))
-    dlines = []
-    for i, s in enumerate(wb.sheets, start=1):
-        # a table that only totals its own sheet has nothing to reconcile against
-        src = sorted(reads.get(s.name, ()), key=lambda x: (-x[0], x[1]))
-        if s.name not in derived or not src:
-            continue
-        parts = [f"{'[file]' if d == '[file]' else _name(d)} x{n}" for n, d in src]
-        more = f", +{len(parts) - 4} more" if len(parts) > 4 else ""
-        dlines.append(
-            _clip(
-                f"{file_id}.S{i} {_name(s.name)}: {derived[s.name]} derived tables <- "
-                + ", ".join(parts[:4])
-                + more
-            )
-        )
+    dlines = _derived_lines(wb, file_id, lin.edges, derived)
     out = (props, dlines, counts["source"], counts["mixed"], n_derived)
     wb.memo[key] = out
     return out

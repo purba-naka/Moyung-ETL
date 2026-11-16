@@ -72,7 +72,6 @@ def test_bad_input_raises_workbook_error(source, sheet) -> None:
 
 
 def test_bad_sheet_error_lists_only_a_few_names() -> None:
-    # a 500-sheet workbook must not turn an error message into a wall of names
     wb = Workbook.open(make_xlsx({f"S{i}": [[i]] for i in range(7)}))
     with pytest.raises(WorkbookError, match=r"S4,\+2$"):
         wb.values("nope")

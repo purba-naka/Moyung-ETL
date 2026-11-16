@@ -148,7 +148,6 @@ def test_error_text_is_short_and_names_the_expression() -> None:
 
 
 def test_the_connection_cannot_read_files_even_if_a_name_slips_through(tmp_path) -> None:
-    # layer 3: a function not on the deny list still has no file access
     (tmp_path / "x.csv").write_text("a\n1\n")
     con = connect()
     with pytest.raises(Exception, match="(?i)disabled|permission|not allowed"):
@@ -158,9 +157,6 @@ def test_the_connection_cannot_read_files_even_if_a_name_slips_through(tmp_path)
 
 
 def test_star_in_an_aggregate_is_refused_either_way() -> None:
-    # `min(COLUMNS(*))` and `count(*)` are both aggregates, caught before the STAR node is
-    # reached. `upper(*)` has the same shape as `count(*)` (a call with no argument) but is
-    # harmless: it cannot bind to anything.
     for expr, name in [("min(COLUMNS(*))", "min"), ("count(*)", "count_star")]:
         with pytest.raises(NodeError, match=f"aggregate '{name}'"):
             check_expression(expr)
@@ -186,7 +182,6 @@ def test_star_in_an_aggregate_is_refused_either_way() -> None:
     ],
 )
 def test_aggregates_are_refused_wherever_they_are(expr: str) -> None:
-    # in a plain SELECT they would collapse the whole table to one row instead of per row
     with pytest.raises(NodeError, match="aggregate .* is not allowed here; use the group_by node"):
         check_expression(expr)
 
@@ -218,15 +213,13 @@ def test_every_passing_expression_is_one_column_that_cannot_touch_other_data() -
     for expr in ["a + 1", "upper(c)", "year(d)", "CASE WHEN a > 0 THEN c END", "greatest(a, 2)"]:
         rel = con.sql(f"select ({check_expression(expr)}) as __e from t")
         assert rel.columns == ["__e"]
-        assert len(rel.fetchall()) == 1  # one row in, one row out
+        assert len(rel.fetchall()) == 1
 
 
 def test_parser_behaviour_the_shape_check_leans_on() -> None:
-    # pinned so a duckdb upgrade that parses these differently shows up here, not in production
     for escape in ["1) WHERE (1", "1) AS x WHERE (1=1"]:
         with pytest.raises(NodeError, match="syntax error"):
             check_expression(escape)
-    # these two do parse; only the shape check stops them
     for escape in ["1) UNION SELECT 2 --", "1) AS x FROM t --"]:
         with pytest.raises(NodeError, match="nothing around"):
             check_expression(escape)
@@ -240,7 +233,7 @@ def test_a_sleep_cannot_hold_a_run_even_when_it_reaches_the_engine() -> None:
     start = time.perf_counter()
     with pytest.raises(NodeError, match="not allowed"):
         build("filter", {"where": "pg_sleep(30) = true"})
-    assert time.perf_counter() - start < 5  # refused when the spec is read, nothing slept
+    assert time.perf_counter() - start < 5
 
 
 def test_a_window_function_in_an_expression_points_to_the_window_step() -> None:

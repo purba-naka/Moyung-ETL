@@ -33,9 +33,6 @@ class _Part(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
-# --- join ------------------------------------------------------------------------------------
-
-
 class JoinKey(_Part):
     left: str
     right: str
@@ -84,7 +81,7 @@ class Join(Node):
                     f"{self.name}: key {p.left!r} is {lc.type} but {p.right!r} is {rc.type}; "
                     "cast one side first so they compare as the same thing"
                 )
-        merged = {p.left for p in pairs if p.left == p.right}  # a key named alike is one column
+        merged = {p.left for p in pairs if p.left == p.right}
         sfx = self.config.suffixes
         left_names = {c.name for c in left}
         right_names = {c.name for c in right}
@@ -137,9 +134,6 @@ class Join(Node):
                 ref = f"{side}.{quote(src)}"
             parts.append(f"{ref} AS {quote(col.name)}")
         how = {"inner": "INNER", "left": "LEFT", "right": "RIGHT", "full": "FULL"}[self.config.how]
-        # A join returns rows in whatever order the plan finds them (measured on 300k rows:
-        # many-to-many output was not in left order). Positions make it: left rows in table
-        # order, each one's matches in right table order, unmatched right rows last.
         left = f"(SELECT *, row_number() OVER () AS __lp FROM {names[0]})"
         right = f"(SELECT *, row_number() OVER () AS __rp FROM {names[1]})"
         return (
@@ -151,9 +145,6 @@ class Join(Node):
         schemas = [schema_of(r) for r in inputs]
         self.infer_schema(schemas)
         return apply(inputs, lambda names: self._sql(names, schemas))
-
-
-# --- union -----------------------------------------------------------------------------------
 
 
 @node("union")
@@ -187,7 +178,6 @@ class Union(Node):
                 )
             first = schemas[0]
             return [(c.name, [s[i].name for s in schemas]) for i, c in enumerate(first)]
-        # matched without letter case, like duckdb; the first spelling names the output
         order: dict[str, str] = {}
         for s in schemas:
             for c in s:
@@ -244,11 +234,7 @@ class Union(Node):
             selects.append(f"SELECT {', '.join(items)} FROM {name}")
         stacked = " UNION ALL ".join(selects)
         if not cfg.distinct:
-            # UNION ALL keeps the inputs stacked in order (measured on 600k rows; this holds
-            # while preserve_insertion_order is on, which `connect()` leaves at its default)
             return stacked
-        # distinct = keep the first copy of each row in stacked order; plain UNION would
-        # return the survivors in hash order
         cols = ", ".join(quote(c) for c, _, _ in plan)
         if cfg.source_column:
             cols += f", {quote(cfg.source_column)}"
@@ -263,9 +249,6 @@ class Union(Node):
         return apply(inputs, lambda names: self._sql(names, schemas))
 
 
-# --- group_by --------------------------------------------------------------------------------
-
-
 class Agg(_Part):
     name: str = Field(min_length=1)
     fn: Literal[
@@ -273,7 +256,7 @@ class Agg(_Part):
         "join_text",
     ]  # fmt: skip
     column: str | None = None
-    separator: str = ", "  # join_text only
+    separator: str = ", "
 
     @model_validator(mode="after")
     def _column_rules(self) -> Agg:
@@ -341,7 +324,7 @@ class GroupBy(Node):
                 pick = "arg_min" if a.fn == "first" else "arg_max"
                 expr = f"{pick}({col}, __pos) FILTER (WHERE {col} IS NOT NULL)"
                 out = kind
-            else:  # join_text
+            else:
                 expr = f"string_agg(CAST({col} AS VARCHAR), {sql_text(a.separator)} ORDER BY __pos)"
                 out = "VARCHAR"
             plan.append((a, expr, out))
@@ -366,9 +349,6 @@ class GroupBy(Node):
         schema = schema_of(rel)
         self.infer_schema([schema])
         return apply([rel], lambda names: self._sql(names[0], schema))
-
-
-# --- pivot -----------------------------------------------------------------------------------
 
 
 @node("pivot")
@@ -420,7 +400,7 @@ class Pivot(Node):
             raise NodeError(f"{self.name}: new column {sorted(clash)[0]!r} is also a `by` column")
         for v in cfg.values:
             check_fits(
-                sql_value(v),
+                v,
                 pc.type,
                 f"{self.name}: value {v!r} does not fit column {cfg.column!r} ({pc.type})",
             )

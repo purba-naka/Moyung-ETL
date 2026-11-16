@@ -37,34 +37,26 @@ _ALLOWED = frozenset(
         "CONSTANT",
         "FUNCTION",
         "OPERATOR",
-        "TYPE",  # the target of a CAST
+        "TYPE",
     }
 )
 
-# Functions that read files or the network, read or change session state, run SQL from text,
-# or build a value whose size the caller sets. Matched case-insensitively on the bare name.
 _DENIED_FUNCTIONS = frozenset(
     {
-        # files, network, other databases
         "read_csv", "read_csv_auto", "read_json", "read_json_auto", "read_ndjson",
         "read_parquet", "read_text", "read_blob", "parquet_scan", "parquet_metadata",
         "glob", "sniff_csv", "iceberg_scan", "delta_scan", "sqlite_scan", "postgres_scan",
         "mysql_scan", "excel_scan", "read_xlsx", "http_get", "http_post",
-        # running SQL from a string
         "query", "query_table", "json_execute_serialized_sql", "json_serialize_sql",
         "json_deserialize_sql", "parse_query", "from_json_sql",
-        # session and database state
         "getvariable", "current_setting", "set_variable", "nextval", "currval",
         "setseed", "checkpoint", "force_checkpoint", "load_extension", "install_extension",
         "which_secret", "duckdb_secrets", "pragma_database_size", "current_database",
         "current_schema", "current_schemas", "current_catalog",
-        # raise an error on demand, or take unbounded time or memory
         "error", "sleep_ms", "pg_sleep", "pg_sleep_for", "pg_sleep_until", "sleep", "repeat",
         "range", "generate_series", "list_resize", "array_resize", "lpad", "rpad",
         "random_bytes",
-        # tell the caller about the machine or the server version
         "version", "duckdb_version", "pg_backend_pid", "txid_current", "current_query",
-        # not reproducible: a rerun of the same spec would give other data
         "random", "uuid", "gen_random_uuid", "uuidv4", "uuidv7", "now", "current_timestamp",
         "current_date", "current_time", "today", "get_current_timestamp",
         "get_current_time", "localtime", "localtimestamp", "transaction_timestamp",
@@ -96,7 +88,7 @@ def _walk(node: Any, expr: str) -> None:
             )
             raise _fail(expr, f"{what} is not allowed; {use}")
         if cls == "FUNCTION":
-            name = str(node.get("function_name", "")).lower()  # duckdb already lowercases
+            name = str(node.get("function_name", "")).lower()
             if name in _DENIED_FUNCTIONS:
                 raise _fail(expr, f"function {name!r} is not allowed")
             if name in _aggregates():
@@ -164,10 +156,6 @@ def check_expression(expr: str) -> str:
         raise _fail(text, "must be one expression")
     node = statements[0]["node"]
     items = node.get("select_list") or []
-    # Defence in depth: with the parser of duckdb 2.0 the wrapping `( ... )` already makes
-    # `1) WHERE (1` or `1) UNION ...` a syntax error or a node without a select list, so
-    # several of these checks never fire today. They stay because that grammar is duckdb's,
-    # not ours, and an upgrade could loosen it; tests/test_sqlexpr.py pins today's behaviour.
     bare = (
         node.get("type") == "SELECT_NODE"
         and len(items) == 1
@@ -184,9 +172,6 @@ def check_expression(expr: str) -> str:
     if not bare:
         raise _fail(text, "must be one expression, nothing around it (no FROM, WHERE, UNION, ...)")
     _walk(items[0], text)
-    # Last layer. The wrapper `SELECT (<expr>)` forgives a stray `)` or `(`: `val) OR (1=1`
-    # passes every check above, and once a caller joins several checked texts with AND, the OR
-    # escapes its own brackets. The text must also be one expression with no wrapper at all.
     if _parse(text, wrap=False).get("error"):
         raise _fail(text, "brackets do not match, or this is not one expression")
     return text

@@ -30,7 +30,6 @@ def test_calamine_contract() -> None:
     assert rows[0][2] == 10.0 and isinstance(rows[0][2], float)
     assert isinstance(rows[1][0], date)
     assert sheet.merged_cell_ranges == [((0, 0), (0, 1))]
-    # SheetVisibleEnum is a Rust enum, not a Python Enum, so it has no .name; compare members.
     assert [m.visible for m in wb.sheets_metadata] == [
         SheetVisibleEnum.Visible,
         SheetVisibleEnum.Hidden,

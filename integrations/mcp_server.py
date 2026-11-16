@@ -19,7 +19,7 @@ import sys
 from collections.abc import Callable
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))  # run from a checkout
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from excel_etl.state import FileStore, Job  # noqa: E402
 from excel_etl.tools import JobTools  # noqa: E402
@@ -42,12 +42,10 @@ class DiskFiles:
 def make_tools(args: argparse.Namespace) -> Callable[[], JobTools]:
     store, files = FileStore(args.state_dir), DiskFiles(Path(args.allow_dir))
     out = args.out_dir or str(Path(args.state_dir) / "out" / args.job)
-    # A fresh JobTools per call reads the state again, so a human's `approve` from the other
-    # process is seen at once instead of ending in a version conflict.
     return lambda: JobTools(Job.open(args.job, store), files, out_dir=out, per_version=True)
 
 
-def build_server(fresh: Callable[[], JobTools]):  # -> MCPServer, kept untyped: mcp is optional
+def build_server(fresh: Callable[[], JobTools]):
     from mcp.server.mcpserver import MCPServer
 
     server = MCPServer(
@@ -62,7 +60,6 @@ def build_server(fresh: Callable[[], JobTools]):  # -> MCPServer, kept untyped: 
         def call(*a, _name: str = name, **kw) -> dict:
             return getattr(fresh(), _name)(*a, **kw)
 
-        # signature + resolved hints come from the real method, so the schema stays flat
         call = functools.wraps(method)(functools.partial(call))
         call.__signature__ = inspect.signature(method, eval_str=True)  # type: ignore[attr-defined]
         call.__annotations__ = {

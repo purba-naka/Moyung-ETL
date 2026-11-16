@@ -24,7 +24,7 @@ if TYPE_CHECKING:
 
 type How = Literal["name", "name_like", "fallback", "name_regex"]
 _BIGINT = (-(2**63), 2**63 - 1)
-_HEADER_SEARCH = 12  # rows from a table's top in which its header may start
+_HEADER_SEARCH = 12
 
 
 def _find_sheet(wb: Workbook, source: Source) -> tuple[str, How]:
@@ -80,7 +80,7 @@ def _header(wb: Workbook, g: SheetGrid, sheet: str, source: Source) -> tuple[int
             }
             if all(a in texts for a in anchors):
                 return r, reg
-    for r in range(len(g.values)):  # only to tell "not found" from "found outside a table"
+    for r in range(len(g.values)):
         texts = {text_key(lbl) for c in range(len(g.values[r])) if (lbl := g.label(r, c))}
         found = found or all(a in texts for a in anchors)
     where = "but not inside a table" if found else "not found"
@@ -91,8 +91,6 @@ def _header(wb: Workbook, g: SheetGrid, sheet: str, source: Source) -> tuple[int
 
 
 def _unique(names: list[str]) -> list[str]:
-    # compared without letter case: duckdb treats `Ton` and `TON` as one name and would
-    # rename the second to `TON_1` when the table is created
     seen: set[str] = set()
     out = []
     for n in names:
@@ -133,17 +131,15 @@ class Location:
     """Where a source table sits in one workbook. Rows and columns are 0-based."""
 
     sheet: str
-    how: How  # how the sheet was found
+    how: How
     header: int
     left: int
     right: int
-    names: tuple[str, ...]  # column names, header levels joined as PARENT|LEAF
+    names: tuple[str, ...]
     grid: SheetGrid
-    last: int  # last row of the table (0-based), by the `end` rule of the source
-    below: int  # filled rows after `last`: data the `end` rule cut off
-    errors: int  # cells of the table holding an Excel error; they are read as NULL
-    # first row (0-based) the region finder sees as data, when header_rows reaches it: the
-    # column names then hold data values. None when the header stops above the data.
+    last: int
+    below: int
+    errors: int
     data_in_header: int | None = None
 
 
@@ -348,7 +344,6 @@ def read_location(
 
     cols = [[row[i] for row in rows] for i in range(len(names))]
     types = [_type([v for v in col if v is not None]) for col in cols]
-    # a text column holding other kinds (a `JAN` label among dates) keeps each as its text form
     cols = [
         [_as_text(v) for v in col] if t == "VARCHAR" else col
         for col, t in zip(cols, types, strict=True)
@@ -360,7 +355,6 @@ def read_location(
         + ")"
     )
     if rows:
-        # one list parameter per column, unnested: ~100x faster than executemany per row
         con.execute(
             f"INSERT INTO {quote(name)} SELECT " + ", ".join(f"unnest(?::{t}[])" for t in types),
             cols,

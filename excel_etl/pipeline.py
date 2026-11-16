@@ -24,11 +24,8 @@ from pydantic import (
 from excel_etl.nodes.base import _NAME_PATTERN, describe
 from excel_etl.quality import Check, tables_of
 
-# Letters, digits and `_`, up to 64 characters, not starting with `__` (helper columns and
-# views inside queries use that prefix). No lookahead: pydantic's regex engine has none.
 _IDENT = _NAME_PATTERN
 _END = re.compile(r"until_blank_rows\(([0-9]+)\)")
-# Output names become file names; Windows cannot create these whatever the extension.
 _DEVICE_NAMES = frozenset(
     {
         "con",
@@ -40,7 +37,6 @@ _DEVICE_NAMES = frozenset(
     }
 )
 
-# a name becomes a relation name in duckdb, so letters, digits and _ only
 Ident = Annotated[str, StringConstraints(pattern=_IDENT)]
 
 
@@ -49,7 +45,6 @@ class SpecError(Exception):
 
 
 class _Model(BaseModel):
-    # a misspelled key must fail loudly instead of silently dropping what the agent meant
     model_config = ConfigDict(extra="forbid")
 
 
@@ -62,8 +57,8 @@ class SheetRef(_Model):
     """
 
     name: str | None = None
-    name_like: str | None = None  # the sheet name as seen when the spec was written
-    fallback_contains: list[str] = []  # texts that must appear on the sheet if the name moved
+    name_like: str | None = None
+    fallback_contains: list[str] = []
     name_regex: str | None = None
     sheet_column: str | None = None
 
@@ -101,7 +96,7 @@ class RegionRef(_Model):
     warns when filled rows lie below the end).
     """
 
-    header_anchor: list[str] = Field(min_length=1)  # texts that must be in the header
+    header_anchor: list[str] = Field(min_length=1)
     header_rows: int = Field(default=1, ge=1, le=10)
     end: str = "until_blank_rows(2)"
 
@@ -115,15 +110,13 @@ class RegionRef(_Model):
     def blank_gap(self) -> int:
         """How many empty rows in a row end the table (the one place `end` is read)."""
         m = _END.fullmatch(self.end)
-        assert m is not None  # checked when the spec was built
+        assert m is not None
         return int(m[1])
 
 
 class ColumnExpect(_Model):
-    match: str | None = None  # header text, letter case and spacing ignored
+    match: str | None = None
     match_regex: str | None = None
-    # checked against the duckdb type of every matched column ("float" also accepts whole
-    # numbers: a column of 1, 2, 3 is a number either way)
     type: Literal["text", "int", "float", "date", "datetime", "bool"] | None = None
     required: bool = True
 
@@ -140,7 +133,7 @@ class ColumnExpect(_Model):
 
 
 class Source(_Model):
-    file_role: str = Field(min_length=1)  # a free label; the host maps it to a file in `files`
+    file_role: str = Field(min_length=1)
     sheet: SheetRef
     region: RegionRef
     expect_columns: list[ColumnExpect] = []
@@ -188,12 +181,11 @@ class Output(_Model):
     """
 
     input: Ident
-    format: Literal["parquet", "csv"] = "parquet"  # the host picks the path, not the spec
+    format: Literal["parquet", "csv"] = "parquet"
     load: LoadTarget | None = None
 
     @model_serializer(mode="wrap")
     def _omit_empty_load(self, handler: Any) -> dict[str, Any]:
-        # most outputs have no load; a `"load": null` on each would only be noise in get_spec
         data = handler(self)
         if data.get("load") is None:
             data.pop("load", None)
@@ -204,13 +196,11 @@ class PipelineSpec(_Model):
     sources: dict[Ident, Source] = {}
     steps: list[Step] = []
     outputs: dict[Ident, Output] = {}
-    checks: dict[Ident, Check] = {}  # rules and totals to hold before anything is written
-    # source -> {column: why it is left out}; a person accepts these (`accept_exclusions`)
+    checks: dict[Ident, Check] = {}
     excluded: dict[Ident, dict[str, Annotated[str, StringConstraints(min_length=3)]]] = {}
 
     @model_serializer(mode="wrap")
     def _omit_empty_excluded(self, handler: Any) -> dict[str, Any]:
-        # most specs leave nothing out; an empty `excluded` in every get_spec is only noise
         data = handler(self)
         if not data.get("excluded"):
             data.pop("excluded", None)
@@ -218,7 +208,6 @@ class PipelineSpec(_Model):
 
     @model_validator(mode="after")
     def _names_and_wiring(self) -> PipelineSpec:
-        # duckdb ignores letter case in names, so `Data` and `data` would be one table
         lower: dict[str, str] = {}
         for name in self.sources:
             if (other := lower.setdefault(name.lower(), name)) != name:
@@ -230,7 +219,6 @@ class PipelineSpec(_Model):
             if (other := lower.setdefault(step.id.lower(), step.id)) != step.id:
                 raise ValueError(f"names {other!r} and {step.id!r} differ only in letter case")
             for inp in step.inputs:
-                # only earlier names count, so the steps form an order and cannot loop
                 if inp not in known:
                     raise ValueError(
                         f"step {step.id!r} reads {inp!r}, which is not a source or an earlier step"

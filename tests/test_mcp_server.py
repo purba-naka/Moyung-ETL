@@ -51,7 +51,6 @@ async def test_mcp_tools_flat_and_flow(tmp_path: Path) -> None:
         assert "outside the allowed folder" in _text(outside)
         assert "Sales" in _text(await c.call_tool("workbook_map", {"file": "F1"}))
 
-    # the human side runs in another process; the server sees it without a reload
     assert mcp_server.main([*argv, "approve", "after_propose_datasets", "gilbert"]) == 0
     async with Client(mcp_server.build_server(fresh)) as c:
         assert "after_propose_datasets" in _text(await c.call_tool("job_summary", {}))
