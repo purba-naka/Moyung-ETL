@@ -269,9 +269,10 @@ def parse_spec(text: str) -> PipelineSpec:
 def patch_spec(spec: PipelineSpec, patch_json: str) -> PipelineSpec:
     """Apply a small edit instead of rewriting the whole spec.
 
-    The patch is JSON: `steps` (a list of steps: one whose id exists replaces it in place, a
-    new one goes right before the first step that reads it, else at the end), `remove` (step
-    ids), `sources` and `outputs` (objects: a name replaces that entry, `null` removes it).
+    The patch is JSON: `steps` (a list of steps: one whose id exists replaces it, a new one
+    is added; then steps are ordered so each comes after the steps it reads, otherwise
+    keeping their order), `remove` (step ids), `sources` and `outputs` (objects: a name
+    replaces that entry, `null` removes it).
     The result is checked like any spec, so a step still read by another one cannot be
     removed. Raises SpecError.
     """
@@ -305,13 +306,11 @@ def patch_spec(spec: PipelineSpec, patch_json: str) -> PipelineSpec:
         if "id" not in new:
             raise SpecError("steps: each step needs an id")
         at = next((i for i, s in enumerate(steps) if s["id"] == new["id"]), None)
-        if at is not None:
+        if at is None:
+            steps.append(new)
+        else:
             steps[at] = new
-            continue
-        reader = next(
-            (i for i, s in enumerate(steps) if new["id"] in s.get("inputs", [])), len(steps)
-        )
-        steps.insert(reader, new)
+    steps[:] = _order_steps(steps)
     for key in ("sources", "outputs", "excluded"):
         for name, value in (patch.get(key) or {}).items():
             if value is None:
@@ -319,6 +318,24 @@ def patch_spec(spec: PipelineSpec, patch_json: str) -> PipelineSpec:
             else:
                 data.setdefault(key, {})[name] = value
     return parse_spec(json.dumps(data))
+
+
+def _order_steps(steps: list[dict]) -> list[dict]:
+    """Stable topological order: each step after the steps it reads. Raises SpecError on a cycle."""
+    ids = {s["id"] for s in steps}
+    done: set[str] = set()
+    todo, out = list(steps), []
+    while todo:
+        ready = next(
+            (s for s in todo if all(i in done or i not in ids for i in s.get("inputs") or [])),
+            None,
+        )
+        if ready is None:
+            raise SpecError(f"steps read each other in a cycle: {[s['id'] for s in todo]}")
+        todo.remove(ready)
+        out.append(ready)
+        done.add(ready["id"])
+    return out
 
 
 def dump_spec(spec: PipelineSpec) -> str:

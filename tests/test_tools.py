@@ -649,3 +649,23 @@ def test_source_for_region_says_what_to_fix(tools):
     tools.add_file("a", "jan.xlsx", "g")
     assert "which role is F1" in tools.source_for_region("F1.S1.R1")["error"]
     assert json.loads(tools.source_for_region("F1.S1.R1", "g")["text"])["file_role"] == "g"
+
+
+def test_save_spec_refuses_an_empty_spec(tools):
+    assert "no sources and no steps" in tools.save_spec("{}")["error"]
+    assert "spec: none yet" in tools.job_summary()["text"]
+
+
+def test_source_for_region_needs_a_full_region_id(tools):
+    assert "F1.S2.R1" in tools.source_for_region("R1")["error"]
+
+
+def test_docstrings_name_output_shape_and_per_version_approval(tools):
+    assert '"format": "parquet|csv"' in tools.save_spec.__doc__
+    assert "per spec version" in tools.run_pipeline.__doc__
+
+
+def test_job_summary_shows_which_version_was_approved(tools):
+    tools.save_spec(spec_json())
+    tools.approve("after_propose_datasets", "gil")
+    assert "after_propose_datasets (v1)" in tools.job_summary()["text"]

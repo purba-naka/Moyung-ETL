@@ -118,3 +118,10 @@ def test_excluded_must_name_a_source_and_give_a_reason():
         parse_spec(json.dumps({**base, "excluded": {"s": {"Feb": ""}}}))
     spec = patch_spec(parse_spec(json.dumps(base)), json.dumps({"excluded": {"s": {"Feb": "old"}}}))
     assert spec.excluded == {"s": {"Feb": "old"}}
+
+
+def test_text_columns_with_numbers_are_listed_as_skipped(tmp_path):
+    data = make_xlsx({"D": [["Region", "Jan", "Odd"], ["North", 1, 5], ["South", 2, "n/a"]]})
+    spec = {"sources": {"s": SOURCE}, "steps": [], "outputs": {"o": {"input": "s"}}}
+    v = run(parse_spec(json.dumps(spec)), {"f": data}, tmp_path).verify
+    assert v.skipped == ("s.Odd (e.g. 'n/a')",) and "skipped 1" in v.text()

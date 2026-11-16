@@ -279,3 +279,21 @@ def test_only_parquet_can_be_loaded_and_two_outputs_cannot_share_a_table() -> No
         parse_spec(_with_load({"table": "t"}, fmt="csv"))
     with pytest.raises(SpecError, match="load into the same table"):
         parse_spec(_with_load({"table": "Sales"}, second={"table": "sales"}))
+
+
+def test_patch_orders_a_replaced_step_after_a_step_added_with_it() -> None:
+    from excel_etl.pipeline import patch_spec
+
+    spec = parse_spec(
+        _text(steps=[{"id": "b", "node": "cast", "inputs": ["produksi_npk_pkg"]}], outputs={})
+    )
+    patch = {
+        "steps": [
+            {"id": "b", "node": "cast", "inputs": ["a"]},
+            {"id": "a", "node": "cast", "inputs": ["produksi_npk_pkg"]},
+        ]
+    }
+    assert [s.id for s in patch_spec(spec, json.dumps(patch)).steps] == ["a", "b"]
+    cycle = {"steps": [{"id": "b", "node": "cast", "inputs": ["b"]}]}
+    with pytest.raises(SpecError, match="cycle"):
+        patch_spec(spec, json.dumps(cycle))

@@ -270,12 +270,13 @@ class JobTools:
         files = [f"F{i} {f.filename}" for i, f in enumerate(s.files, start=1)]
         roles = ", ".join(f"{r}={f}" for r, f in s.roles.items()) or "none"
         run_ = s.last_run
+        approved = ", ".join(f"{c} ({a.ref})" if a.ref else c for c, a in s.hitl.approvals.items())
         lines = [
             f"job {s.job_id} (saved {s.version} times)",
             f"files: {', '.join(files) or 'none'}; roles: {roles}",
             f"spec: {'v' + str(self._version()) if s.history else 'none yet'}",
             f"waiting questions: {len(s.hitl.pending)}",
-            f"approvals: {', '.join(s.hitl.approvals) or 'none'}",
+            f"approvals: {approved or 'none'}",
             f"last run: {run_.status if run_ else 'never'}",
             f"known source places: {', '.join(s.binds) or 'none'}",
         ]
@@ -355,8 +356,9 @@ class JobTools:
         from the file, so you do not type them; a table repeated on same-shaped sheets comes
         back with name_regex + sheet_column. `file_role` is the role of that file (see
         job_summary); empty means the only role there is."""
-        head = region_id.split(".")[0] if isinstance(region_id, str) and "." in region_id else "F1"
-        fid, wb = self._file(head)
+        if not isinstance(region_id, str) or "." not in region_id:
+            raise ValueError(f"{region_id!r} is not a region id; use the form F1.S2.R1")
+        fid, wb = self._file(region_id.split(".")[0])
         ref = self._state.files[int(fid[1:]) - 1]
         roles = [r for r, f in self._state.roles.items() if f == ref.id]
         role = file_role or (roles[0] if len(roles) == 1 else "")
@@ -419,14 +421,18 @@ class JobTools:
         """Save a pipeline spec (JSON text) as the next version. It is checked against the
         files first; a spec with problems is not saved. `note` says why (needed from v2).
         Repeated sheets use one source: sheet={"name_regex":"day-[0-9]{2}",
-        "sheet_column":"source_sheet"}; full names match and every match must hold the table."""
-        return self._commit(parse_spec(spec_json), note)
+        "sheet_column":"source_sheet"}; full names match and every match must hold the table.
+        outputs: {"name": {"input": "<step or source>", "format": "parquet|csv"}}."""
+        spec = parse_spec(spec_json)
+        if not spec.sources and not spec.steps:
+            raise ValueError("the spec has no sources and no steps; nothing was saved")
+        return self._commit(spec, note)
 
     @_tool
     def edit_spec(self, patch_json: str, note: str = "") -> dict:
         """Change the saved spec without sending all of it again; saved as the next version
         like save_spec. patch_json: {"steps": [step, ...] (same id = replace that step, new id
-        = added before the step that reads it, else at the end), "remove": ["step_id"],
+        = added; then each step is ordered after the steps it reads), "remove": ["step_id"],
         "sources": {"name": source or null}, "outputs": {"name": output or null},
         "excluded": {"source": {"column": "why it is left out"} or null}}.
         Use it for repairs; use save_spec for a first version or a rewrite."""
@@ -528,7 +534,8 @@ class JobTools:
     @_tool
     def run_pipeline(self) -> dict:
         """Run the saved spec and write its outputs. Refused until the checkpoints that
-        need a person's approval are approved. The result is kept as the last run."""
+        need a person's approval are approved. Approval is per spec version: every
+        save_spec/edit_spec needs a new approval. The result is kept as the last run."""
         s = self._state
         if s.history is None:
             raise StateError("no spec saved yet; use save_spec")

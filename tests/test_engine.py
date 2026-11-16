@@ -798,3 +798,34 @@ def test_an_unsupported_cast_is_not_blamed_on_mixed_text():
     step = Step(id="d", node="derive", inputs=["s"])
     text = _explain(caught.value, step, {})
     assert "mixes text" not in text and "VARCHAR" in text
+
+
+def test_run_warns_about_a_total_row_and_nan_left_in_an_output(tmp_path) -> None:
+    rows = [["Item", "Qty"], ["pen", 2], ["Total", 2]]
+    spec = _spec(
+        sources={"s": _src("D", "Item")},
+        steps=[
+            {
+                "id": "d",
+                "node": "derive",
+                "inputs": ["s"],
+                "config": {"name": "X", "expr": "CAST('NaN' AS DOUBLE)"},
+            }
+        ],
+        outputs={"o": {"input": "d"}},
+    )
+    rep = run(spec, {"f": make_xlsx({"D": rows})}, tmp_path)
+    text = " ".join(rep.warnings)
+    assert rep.status == "ok" and "'X' has 2 NaN" in text and "drop_regex" in text
+
+
+def test_a_failed_publish_names_the_outputs_already_replaced(book, tmp_path) -> None:
+    spec = _spec(
+        sources={"orders": _src("Orders", "Order")},
+        outputs={"one": {"input": "orders"}, "two": {"input": "orders"}},
+    )
+    (tmp_path / "two.parquet").mkdir()
+    (tmp_path / "two.parquet" / "x").write_text("x")
+    rep = run(spec, {"f": book}, tmp_path)
+    assert rep.status == "failed"
+    assert "already replaced: one.parquet; still old: two.parquet" in rep.issues[0].message
