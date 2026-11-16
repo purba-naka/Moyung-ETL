@@ -7,7 +7,6 @@ from __future__ import annotations
 
 from typing import Literal
 
-import duckdb
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from excel_etl.nodes.base import (
@@ -19,22 +18,15 @@ from excel_etl.nodes.base import (
     NodeError,
     Relation,
     Schema,
-    connect,
+    check_fits,
     node,
     quote,
     schema_of,
+    sql_text,
+    sql_value,
 )
-from excel_etl.nodes.excel import common_type, sql_text
+from excel_etl.nodes.excel import common_type
 from excel_etl.nodes.relops import apply, check_reserved, need, shape, unique
-
-
-def _value_lit(v: str | int | float | bool) -> str:
-    """A config value as a SQL literal: bools and numbers bare, text quoted."""
-    if isinstance(v, bool):
-        return "TRUE" if v else "FALSE"
-    if isinstance(v, int | float):
-        return repr(v)
-    return sql_text(v)
 
 
 class _Part(BaseModel):
@@ -426,15 +418,12 @@ class Pivot(Node):
         clash = {cfg._name(v) for v in cfg.values} & set(cfg.by)
         if clash:
             raise NodeError(f"{self.name}: new column {sorted(clash)[0]!r} is also a `by` column")
-        con = connect()
         for v in cfg.values:
-            try:
-                # a constant is only evaluated here, not when binding an empty table
-                con.execute(f"SELECT CAST({_value_lit(v)} AS {pc.type})")
-            except duckdb.Error:
-                raise NodeError(
-                    f"{self.name}: value {v!r} does not fit column {cfg.column!r} ({pc.type})"
-                ) from None
+            check_fits(
+                sql_value(v),
+                pc.type,
+                f"{self.name}: value {v!r} does not fit column {cfg.column!r} ({pc.type})",
+            )
         return pc.type, vc.type
 
     def _sql(self, name: str, schema: Schema) -> str:
@@ -444,7 +433,7 @@ class Pivot(Node):
         col, val = quote(cfg.column), quote(cfg.value)
         items = []
         for v in cfg.values:
-            match = f"{col} = CAST({_value_lit(v)} AS {ptype})"
+            match = f"{col} = CAST({sql_value(v)} AS {ptype})"
             if cfg.fn == "first":
                 agg = f"arg_min({val}, __pos) FILTER (WHERE {match} AND {val} IS NOT NULL)"
             elif cfg.fn == "last":

@@ -121,6 +121,8 @@ class SheetGrid:
         try:
             meta = self._wb.meta(self._sheet)
         except WorkbookError:
+            # Bold is only a tie-breaker, and the grid has no place to keep warnings. If the
+            # styles cannot be read, we just say "not bold" and let the other signals decide.
             return False
         cells = [c for c in range(c0, c1 + 1) if (r, c) in self.cells]
         return bool(cells) and all((m := meta.get((r, c))) is not None and m.bold for c in cells)
@@ -278,19 +280,11 @@ def _text_header(g: SheetGrid, box: Box) -> bool:
     return not any(g.label(r, c) == head[c - left] for r in body for c in range(left, right + 1))
 
 
-def _analyze(g: SheetGrid, box: Box, split: bool = True) -> list[Region]:
-    top, left, bottom, right = box
-    data = [r for r in range(top, bottom + 1) if g.is_data(r, box)]
-    if not data:
-        if _text_header(g, box):
-            return [Region(box, (top,), top + 1, (), (), "rows", (), ())]
-        return [Region(box, (), top, (), (), "columns", (), ())]
-    # a dashboard row of numbers above the header is not where the data starts: take the
-    # first run of _RUN data rows (or the first data row in a tiny table)
-    rows = set(data)
-    first = next((r for r in data if all(r + i in rows for i in range(_RUN))), data[0])
-    data = [r for r in data if r >= first]
-    data_cols = {c for r in data for c in range(left, right + 1) if (r, c) in g.filled}
+def _header_rows(
+    g: SheetGrid, box: Box, first: int, data_cols: set[int]
+) -> tuple[tuple[int, ...], int, tuple[ColumnGroup, ...]]:
+    """Walk up from the first data row and return (header rows, last header row, groups)."""
+    top, left, _, right = box
 
     def wide(r: int) -> bool:
         return 2 * sum((r, c) in g.filled for c in data_cols) >= len(data_cols)
@@ -308,7 +302,32 @@ def _analyze(g: SheetGrid, box: Box, split: bool = True) -> list[Region]:
         if not (wide(r) or (r < end and sparse_parent)):
             break
         r -= 1
-    header = tuple(range(r + 1, end + 1))
+    return tuple(range(r + 1, end + 1)), end, groups
+
+
+def _total_rows(g: SheetGrid, data: list[int], left: int, right: int) -> tuple[int, ...]:
+    return tuple(
+        rr
+        for rr in data
+        if any(isinstance(v, str) and _TOTAL.match(v) for v in g.row(rr, left, right))
+    )
+
+
+def _analyze(g: SheetGrid, box: Box, split: bool = True) -> list[Region]:
+    top, left, bottom, right = box
+    data = [r for r in range(top, bottom + 1) if g.is_data(r, box)]
+    if not data:
+        if _text_header(g, box):
+            return [Region(box, (top,), top + 1, (), (), "rows", (), ())]
+        return [Region(box, (), top, (), (), "columns", (), ())]
+    # a dashboard row of numbers above the header is not where the data starts: take the
+    # first run of _RUN data rows (or the first data row in a tiny table)
+    rows = set(data)
+    first = next((r for r in data if all(r + i in rows for i in range(_RUN))), data[0])
+    data = [r for r in data if r >= first]
+    data_cols = {c for r in data for c in range(left, right + 1) if (r, c) in g.filled}
+
+    header, end, groups = _header_rows(g, box, first, data_cols)
     start = header[0] if header else first
 
     if split and header:
@@ -336,11 +355,7 @@ def _analyze(g: SheetGrid, box: Box, split: bool = True) -> list[Region]:
     # headerless table needs to be told apart from a table whose columns are the records.
     matrix = has_labels and periods >= 2
     orient: Orientation = ("matrix" if matrix else "rows") if header else "columns"
-    totals = tuple(
-        rr
-        for rr in data
-        if any(isinstance(v, str) and _TOTAL.match(v) for v in g.row(rr, left, right))
-    )
+    totals = _total_rows(g, data, left, right)
     merged_hdr = tuple(
         m
         for m in g.merged

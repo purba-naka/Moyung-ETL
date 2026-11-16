@@ -281,6 +281,23 @@ def _merge(p: Profile, target: str, source: str, keys: list[str], cols: Typed) -
 type Build = Callable[[Profile, Where, str, str, Mode, list[str], Typed, bool], list[Step]]
 
 
+def _upsert(
+    p: Profile, fq: str, tmp: str, keys: list[str], cols: Typed, create: str, copy: str
+) -> list[Step]:
+    # Replace and append differ too much per platform to share; only the
+    # scratch-table merge is the same shape everywhere.
+    return [
+        _step("create", create, "a scratch table for the new rows"),
+        _step("copy", copy, "load the file into the scratch table"),
+        _step(
+            "merge",
+            _merge(p, fq, tmp, keys, cols),
+            "update rows with the same keys, add the others",
+        ),
+        _step("cleanup", f"DROP TABLE IF EXISTS {tmp}", "remove the scratch table"),
+    ]
+
+
 def _snowflake(
     p: Profile,
     w: Where,
@@ -327,24 +344,15 @@ def _snowflake(
         steps.append(_step("copy", f"COPY INTO {fq} FROM {src} {fmt}", why))
     else:
         tmp = p.path(w.database, w.schema_name, f"{table}__load")
-        steps += [
-            _step(
-                "create",
-                f"CREATE OR REPLACE TRANSIENT TABLE {tmp} LIKE {fq}",
-                "a scratch table for the new rows",
-            ),
-            _step(
-                "copy",
-                f"COPY INTO {tmp} FROM {src} {fmt} FORCE = TRUE",
-                "load the file into the scratch table",
-            ),
-            _step(
-                "merge",
-                _merge(p, fq, tmp, keys, cols),
-                "update rows with the same keys, add the others",
-            ),
-            _step("cleanup", f"DROP TABLE IF EXISTS {tmp}", "remove the scratch table"),
-        ]
+        steps += _upsert(
+            p,
+            fq,
+            tmp,
+            keys,
+            cols,
+            f"CREATE OR REPLACE TRANSIENT TABLE {tmp} LIKE {fq}",
+            f"COPY INTO {tmp} FROM {src} {fmt} FORCE = TRUE",
+        )
     return steps
 
 
@@ -398,29 +406,22 @@ def _databricks(
         ]
     else:
         tmp = p.path(w.database, w.schema_name, f"{table}__load")
-        steps += [
+        steps.append(
             _step(
                 "create",
                 f"CREATE TABLE IF NOT EXISTS {_ddl(p, fq, cols, props)}",
                 "make the table if it is not there yet",
-            ),
-            _step(
-                "create",
-                f"CREATE OR REPLACE TABLE {_ddl(p, tmp, cols, props)}",
-                "a scratch table for the new rows",
-            ),
-            _step(
-                "copy",
-                f"COPY INTO {tmp} FROM {src} FILEFORMAT = PARQUET",
-                "load the file into the scratch table",
-            ),
-            _step(
-                "merge",
-                _merge(p, fq, tmp, keys, cols),
-                "update rows with the same keys, add the others",
-            ),
-            _step("cleanup", f"DROP TABLE IF EXISTS {tmp}", "remove the scratch table"),
-        ]
+            )
+        )
+        steps += _upsert(
+            p,
+            fq,
+            tmp,
+            keys,
+            cols,
+            f"CREATE OR REPLACE TABLE {_ddl(p, tmp, cols, props)}",
+            f"COPY INTO {tmp} FROM {src} FILEFORMAT = PARQUET",
+        )
     return steps
 
 

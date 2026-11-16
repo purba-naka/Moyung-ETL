@@ -225,7 +225,11 @@ class FileStore:
     @contextlib.contextmanager
     def _locked(self, path: Path) -> Iterator[None]:
         """A lock file made with O_EXCL (atomic on every OS). A lock older than `_STALE`
-        seconds belongs to a process that died and is taken over."""
+        seconds belongs to a process that died and is taken over.
+
+        ponytail: takeover is best-effort. Two writers can both see the same stale lock, and
+        the slower `unlink` may remove the fresh lock of the faster one. Fine for dev/test;
+        upgrade: a host StateStore with real locking for many processes."""
         lock = path.with_name(path.name + ".lock")
         deadline = time.monotonic() + _LOCK_WAIT
         while True:

@@ -18,6 +18,7 @@ from excel_etl.nodes.base import (
     node,
     quote,
     schema_of,
+    sql_text,
 )
 
 
@@ -25,10 +26,6 @@ def check_column(schema: Schema, column: str, node_name: str) -> None:
     if column not in {c.name for c in schema}:
         shown = ", ".join(c.name for c in schema[:12]) + (", ..." if len(schema) > 12 else "")
         raise NodeError(f"{node_name}: no column {column!r}; columns: {shown}")
-
-
-def sql_text(s: str) -> str:
-    return "'" + s.replace("'", "''") + "'"
 
 
 @node("drop_rows")

@@ -16,7 +16,7 @@ from pathlib import Path
 from pydantic import BaseModel
 
 from excel_etl.engine import RunReport, run
-from excel_etl.pipeline import parse_spec
+from excel_etl.pipeline import SpecError, parse_spec
 from excel_etl.rebind import BindReport, rebind
 from excel_etl.workbook import Workbook
 
@@ -57,7 +57,11 @@ def auto(file: str | Path, specs_dir: str | Path, out_dir: str | Path) -> AutoRe
         name = path.stem
         try:
             spec = parse_spec(path.read_text(encoding="utf-8"))
-        except Exception as e:  # noqa: BLE001  (a broken spec file must not stop the others)
+        except (
+            SpecError,
+            OSError,
+            UnicodeDecodeError,
+        ) as e:  # a broken file must not stop the others
             tried[name] = f"bad spec: {e}"
             continue
         files = {s.file_role: wb for s in spec.sources.values()}
