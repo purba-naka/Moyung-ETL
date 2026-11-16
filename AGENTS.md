@@ -112,6 +112,10 @@ EXCEL_ETL_SAMPLE="C:/Users/ggnpg/Downloads/(2026) BALANSITAS AMONIAK, UREA, NPK,
 4. Setelah koding: jalankan **P2–P5** (§8) berurutan, lalu §6 verifikasi.
 5. Setelah selesai: centang checklist, isi **Log** (tanggal, apa, keputusan), perbarui
    **Berikutnya** di `IMPLEMENTATION.md`.
+5a. Setiap laporan hasil ke user wajib memuat bagian **Verifikasi**: perintah yang
+   dijalankan dan hasil nyatanya (ruff, jumlah test passed/failed, cek khusus untuk
+   perubahan itu seperti round-trip, perbandingan output lama vs baru, atau repro bug
+   yang kini gagal). Tanpa bukti yang dijalankan, jangan menulis "selesai".
 6. Keputusan desain baru -> `IMPLEMENTATION.md` §Keputusan; bila mengubah desain,
    perbarui juga `DESIGN.md`.
 7. Ragu soal requirement -> tanya user, jangan menebak.

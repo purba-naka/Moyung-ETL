@@ -50,6 +50,8 @@ def test_parse_and_roundtrip() -> None:
     assert spec.sources["produksi_npk_pkg"].expect_columns[1].required is False
     assert spec.outputs["npk"].format == "csv"
     assert parse_spec(dump_spec(spec)) == spec
+    assert "null" not in dump_spec(spec)
+    assert len(dump_spec(spec)) < len(spec.model_dump_json(indent=2))
 
 
 def test_defaults_and_empty_spec() -> None:
