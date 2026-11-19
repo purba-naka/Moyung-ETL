@@ -137,6 +137,30 @@ def test_full_path_inspect_save_ask_approve_run(tools, tmp_path):
     assert "last run: ok" in tools.job_summary()["text"]
 
 
+def test_run_history_grows_one_line_per_run(tools):
+    tools.save_spec(spec_json(), "")
+    tools.approve("after_propose_datasets", "dina", "v1")
+    assert tools.run_pipeline()["ok"]
+    assert "earlier runs" not in tools.last_run()["text"]
+    assert tools.run_pipeline()["ok"]
+    text = tools.last_run()["text"]
+    assert "earlier runs of this job (newest first, 1):" in text
+    assert "at|spec ref|status|seconds|output rows|failed checks" in text
+    assert text.count("|v1|ok|") == 1 and text.rstrip().endswith("|3|-")
+    runs = tools._state.runs
+    assert len(runs) == 2 and [r.ref for r in runs] == ["v1", "v1"]
+    assert runs[0].rows == {"totals": 3} and runs[0].checks_failed == ()
+
+
+def test_run_history_keeps_only_the_last_20(tools):
+    tools.save_spec(spec_json(), "")
+    tools.approve("after_propose_datasets", "dina", "v1")
+    for _ in range(22):
+        assert tools.run_pipeline()["ok"]
+    assert len(tools._state.runs) == 20
+    assert "earlier runs of this job (newest first, 19):" in tools.last_run()["text"]
+
+
 def test_approval_for_an_older_version_does_not_cover_the_next(tools):
     tools.save_spec(spec_json())
     tools.approve("after_propose_datasets", "dina", "v1")

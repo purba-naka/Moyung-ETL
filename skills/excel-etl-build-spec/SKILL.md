@@ -62,7 +62,14 @@ Tool names may carry a prefix in your host.
 
 Add at least one per output. Examples with all kinds are in `references/patterns.md`.
 
-- `not_null`, `unique`, `range`, `accepted_values`: facts about one table.
+- `not_null`, `unique`, `range`, `accepted_values`, `regex`: facts about one table. `regex`
+  needs a text column and matches anywhere in the value (anchor with `^...$` for the whole
+  value); the syntax is RE2 (no lookaround, no backreferences); NULL does not match, so pair
+  it with `not_null` when NULL is wrong.
+- `row_count`, `duplicate_rows`: the shape of one table (how many rows, and no two rows the
+  same in every column). Good as `severity: "warn"` on a monthly file.
+- `foreign_key`: every value of a column exists in a column of another table (NULL is
+  skipped; pair with `not_null` when NULL is wrong).
 - `reconcile`: a total in the sheet against the sum of the rows. Give each side a `where`
   to pick the total row on one side and the detail rows on the other. This is the check
   that catches a lost or doubled row.

@@ -8,6 +8,12 @@ check of severity `error` fails the run before any file is written; `warn` is on
     unique           no two rows share the same values in the columns (NULL equals NULL here)
     range            numbers or dates within min / max (NULL is skipped: use not_null for that)
     accepted_values  values (compared as text) are among a list
+    regex            text values contain a match of the pattern (RE2 syntax: no lookaround,
+                     no backreferences; anchor with ^ and $ to check the whole value;
+                     NULL does not match: pair with not_null)
+    row_count        the table has between min and max rows (give one or both)
+    duplicate_rows   no two rows are the same in every column
+    foreign_key      values of a column all exist in another table (NULL is skipped)
     reconcile        an aggregate of one table equals that of another table, or a number,
                      optionally per group; tolerance absolute and/or relative
 
@@ -31,6 +37,7 @@ from excel_etl.nodes.base import NUMERIC_TYPE, NodeError, Schema, quote
 from excel_etl.nodes.sqlexpr import bind, check_expression
 
 _ORDERED = re.compile(r"^(DATE|TIME|TIMESTAMP.*)$")
+_TEMPORAL = re.compile(r"^(DATE|TIMESTAMP.*)$")
 _EXAMPLES = 5
 
 type Scalar = str | int | float
@@ -83,6 +90,50 @@ class AcceptedValues(_OnTable):
     values: list[str | int | float | bool] = Field(min_length=1)
 
 
+class Regex(_OnTable):
+    kind: Literal["regex"]
+    column: str = Field(min_length=1)
+    pattern: str = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def _compiles(self) -> Regex:
+        try:
+            with duckdb.connect() as con:
+                con.execute("SELECT regexp_matches('', ?)", [self.pattern]).fetchall()
+        except duckdb.Error as e:
+            first = str(e).splitlines()[0]
+            raise ValueError(
+                f"pattern {self.pattern!r} is not valid RE2 (no lookaround, no backreferences): "
+                f"{first}"
+            ) from e
+        return self
+
+
+class RowCount(_OnTable):
+    kind: Literal["row_count"]
+    min: int | None = Field(default=None, ge=0)
+    max: int | None = Field(default=None, ge=0)
+
+    @model_validator(mode="after")
+    def _some_bound(self) -> RowCount:
+        if self.min is None and self.max is None:
+            raise ValueError("give min, max or both")
+        if self.min is not None and self.max is not None and self.min > self.max:
+            raise ValueError(f"min {self.min} is above max {self.max}; no count could pass")
+        return self
+
+
+class DuplicateRows(_OnTable):
+    kind: Literal["duplicate_rows"]
+
+
+class ForeignKey(_OnTable):
+    kind: Literal["foreign_key"]
+    column: str = Field(min_length=1)
+    ref_table: str = Field(min_length=1)
+    ref_column: str = Field(min_length=1)
+
+
 class Side(_Model):
     """One side of a reconcile: an aggregate of a column, over all rows or the rows that pass
     `where` (a scalar SQL expression such as `"Item" = 'Total'`; this is how the total row of
@@ -125,7 +176,16 @@ class Reconcile(_Base):
 
 
 type Check = Annotated[
-    NotNull | Unique | Range | AcceptedValues | Reconcile, Field(discriminator="kind")
+    NotNull
+    | Unique
+    | Range
+    | AcceptedValues
+    | Regex
+    | RowCount
+    | DuplicateRows
+    | ForeignKey
+    | Reconcile,
+    Field(discriminator="kind"),
 ]
 
 
@@ -133,6 +193,8 @@ def tables_of(c: Check) -> list[str]:
     """Every table a check reads."""
     if isinstance(c, Reconcile):
         return [c.left.table, *([c.right.table] if c.right else [])]
+    if isinstance(c, ForeignKey):
+        return [c.table, c.ref_table]
     return [c.table]  # type: ignore[union-attr]
 
 
@@ -291,6 +353,86 @@ def _is_number(v: object) -> bool:
         return False
 
 
+def _plan_regex(c: Regex, schemas: dict[str, Schema]) -> _Plan:
+    (col,) = _cols(schemas, c.table, [c.column])
+    kind = _type(schemas, c.table, col)
+    if kind not in ("VARCHAR", "NULL"):
+        raise _Bad(f"regex needs a text column; {col!r} is {kind}")
+    q = quote(col)
+    bad = f"{q} IS NULL OR NOT regexp_matches(CAST({q} AS VARCHAR), ?)"
+    sql = (
+        f"SELECT count(*) FILTER (WHERE {bad}), "
+        f"list_sort(list(DISTINCT {q}) FILTER (WHERE {bad}))[1:{_EXAMPLES}] "
+        f"FROM {quote(c.table)}"
+    )
+
+    def judge(rows: list[tuple]) -> tuple[int, str]:
+        n, seen = rows[0]
+        shown = [str(v) for v in (seen or [])]
+        return n, f"{n} value(s) of {col!r} do not match /{c.pattern}/: {_list(shown)}"
+
+    return _Plan(sql, [c.pattern, c.pattern], judge)
+
+
+def _plan_row_count(c: RowCount, schemas: dict[str, Schema]) -> _Plan:
+    sql = f"SELECT count(*) FROM {quote(c.table)}"
+    if c.min is not None and c.max is not None:
+        bounds = f"between {c.min} and {c.max}"
+    elif c.min is not None:
+        bounds = f"at least {c.min}"
+    else:
+        bounds = f"at most {c.max}"
+
+    def judge(rows: list[tuple]) -> tuple[int, str]:
+        n = rows[0][0]
+        short = max(0, (c.min or 0) - n)
+        over = max(0, n - (c.max if c.max is not None else n))
+        bad = short + over
+        side = "short" if short else "over"
+        return bad, f"table has {n} row(s), expected {bounds}: {side} by {bad}"
+
+    return _Plan(sql, [], judge)
+
+
+def _plan_duplicate_rows(c: DuplicateRows, schemas: dict[str, Schema]) -> _Plan:
+    sql = (
+        f"SELECT coalesce(sum(k - 1), 0), count(*) FROM "
+        f"(SELECT count(*) AS k FROM (SELECT t AS row FROM {quote(c.table)} t) "
+        f"GROUP BY row HAVING count(*) > 1)"
+    )
+
+    def judge(rows: list[tuple]) -> tuple[int, str]:
+        bad, groups = rows[0]
+        return bad, f"{bad} duplicate row(s) in {c.table!r} ({groups} group(s) of them)"
+
+    return _Plan(sql, [], judge)
+
+
+def _plan_foreign_key(c: ForeignKey, schemas: dict[str, Schema]) -> _Plan:
+    (col,) = _cols(schemas, c.table, [c.column])
+    (ref,) = _cols(schemas, c.ref_table, [c.ref_column])
+    kind, ref_kind = _type(schemas, c.table, col), _type(schemas, c.ref_table, ref)
+    both_numeric = NUMERIC_TYPE.match(kind) and NUMERIC_TYPE.match(ref_kind)
+    both_temporal = _TEMPORAL.match(kind) and _TEMPORAL.match(ref_kind)
+    if "NULL" not in (kind, ref_kind) and kind != ref_kind and not (both_numeric or both_temporal):
+        raise _Bad(f"{c.table}.{col} is {kind} but {c.ref_table}.{ref} is {ref_kind}")
+    q, r = quote(col), quote(ref)
+    sql = (
+        f"SELECT count(*), list_sort(list(DISTINCT t.{q}))[1:{_EXAMPLES}] "
+        f"FROM {quote(c.table)} t "
+        f"LEFT JOIN {quote(c.ref_table)} p ON t.{q} = p.{r} "
+        f"WHERE t.{q} IS NOT NULL AND p.{r} IS NULL"
+    )
+
+    def judge(rows: list[tuple]) -> tuple[int, str]:
+        n, seen = rows[0]
+        shown = [str(v) for v in (seen or [])]
+        where = f"{c.table}.{col} missing from {c.ref_table}.{ref}"
+        return n, f"{n} row(s) with a value of {where}: {_list(shown)}"
+
+    return _Plan(sql, [], judge)
+
+
 def _side_sql(schemas: dict[str, Schema], side: Side, by: list[str]) -> tuple[str, list[str], str]:
     """`SELECT k0.., v FROM table GROUP BY ..` for one side; the group columns as written."""
     keys = _cols(schemas, side.table, by)
@@ -365,6 +507,10 @@ _PLANS: dict[str, Callable[[Any, dict[str, Schema]], _Plan]] = {
     "unique": _plan_unique,
     "range": _plan_range,
     "accepted_values": _plan_accepted,
+    "regex": _plan_regex,
+    "row_count": _plan_row_count,
+    "duplicate_rows": _plan_duplicate_rows,
+    "foreign_key": _plan_foreign_key,
     "reconcile": _plan_reconcile,
 }
 

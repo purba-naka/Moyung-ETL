@@ -4,24 +4,26 @@ The spec holds anchors, not cell addresses, so "shifted" needs something to comp
 `BindRecord` an earlier bind returned. The host keeps the records (the library keeps no state).
 
   exact    contract holds, table is where it was (or there is no earlier record)
-  shifted  contract holds, but the sheet name or the table's position moved: run as is
-  drift    the contract broke or the columns changed in a way the spec does not cover: repair
+  shifted  contract holds, but the sheet name, the table's position or a column's type moved:
+           safe widening only (BIGINT -> DOUBLE, DATE -> TIMESTAMP): run as is
+  drift    the contract broke, the columns changed in a way the spec does not cover, or a
+           column's type narrowed or turned into text: repair
   missing  sheet, header or file not found: look for candidates
 
-ponytail: rebind reads headers, not cell values, so it cannot see a column turn from numbers
-to text; `expect_columns.type` is checked by `validate`/`run`, which do read the table.
-Upgrade: store a type per column in the record and diff it.
+Each record stores the duckdb type of every column, read the same way the pipeline reads it,
+so a column that turned from numbers into text is caught here, before a run fails on a cast.
 """
 
 from __future__ import annotations
 
 from typing import Literal
 
+import duckdb
 from pydantic import BaseModel, ConfigDict
 
 from excel_etl.engine import FileInput, open_file
 from excel_etl.inspect.encode import a1, few
-from excel_etl.nodes.base import NodeError
+from excel_etl.nodes.base import NodeError, quote, schema_of
 from excel_etl.nodes.source import (
     Location,
     expect_hits,
@@ -29,6 +31,7 @@ from excel_etl.nodes.source import (
     locate_all,
     matching_sheets,
     missing_required,
+    read_locations,
 )
 from excel_etl.pipeline import PipelineSpec, Source
 from excel_etl.workbook import Workbook, WorkbookError
@@ -41,12 +44,14 @@ class _Model(BaseModel):
 
 
 class BindRecord(_Model):
-    """Where a source's table was found. Rows and columns are 0-based."""
+    """Where a source's table was found. Rows and columns are 0-based. `types` maps a
+    casefolded column name to the duckdb type the pipeline reads it as."""
 
     sheet: str
     header_row: int
     first_col: int
     columns: tuple[str, ...]
+    types: dict[str, str] = {}
     sheets: int = 1
 
 
@@ -84,7 +89,7 @@ class BindReport(_Model):
         return "\n".join(lines)
 
 
-def _record(locs: list[Location]) -> BindRecord:
+def _record(locs: list[Location], types: dict[str, str]) -> BindRecord:
     first = locs[0]
     columns_by_key: dict[str, str] = {}
     for loc in locs:
@@ -96,6 +101,7 @@ def _record(locs: list[Location]) -> BindRecord:
         header_row=first.header,
         first_col=first.left,
         columns=columns,
+        types={c.casefold(): types[c.casefold()] for c in columns if c.casefold() in types},
         sheets=len(locs),
     )
 
@@ -104,8 +110,15 @@ def _covered(source: Source, name: str) -> bool:
     return any(expect_hits(w, [name]) for w in source.expect_columns)
 
 
-def _judge(source: Source, locs: list[Location], old: BindRecord | None) -> SourceBind:
-    rec = _record(locs)
+_WIDENS = {("BIGINT", "DOUBLE"), ("DATE", "TIMESTAMP")}
+
+
+def _judge(
+    source: Source, locs: list[Location], old: BindRecord | None, types: dict[str, str]
+) -> SourceBind:
+    rec = _record(locs, types)
+    if not types and old is not None:
+        rec = rec.model_copy(update={"types": old.types})
     loc = locs[0]
     names = rec.columns
     drift: list[str] = []
@@ -130,18 +143,45 @@ def _judge(source: Source, locs: list[Location], old: BindRecord | None) -> Sour
         was, now = set(old.columns), set(names)
         added = [n for n in names if n not in was]
         gone = [n for n in old.columns if n not in now]
-        for label, names in (("added", added), ("removed", gone)):
-            if names:
-                moved.append(f"columns {label}: {few(names, 6)}")
-                loose = [n for n in names if not _covered(source, n)]
+        for label, cols in (("added", added), ("removed", gone)):
+            if cols:
+                moved.append(f"columns {label}: {few(cols, 6)}")
+                loose = [n for n in cols if not _covered(source, n)]
                 if loose:
                     drift.append(
                         f"columns {label} that no expect_columns entry covers: {few(loose, 6)}; "
                         f"decide for each: add it to the steps that need it (a group_by agg, a "
                         f"select), or add an expect_columns entry to accept it as it is"
                     )
+        for key, was_type in old.types.items():
+            if key not in types or was_type == types[key]:
+                continue
+            col = next((n for n in names if n.casefold() == key), key)
+            if (was_type, types[key]) in _WIDENS:
+                moved.append(f"column {col!r} type {was_type} -> {types[key]} (safe widening)")
+            else:
+                drift.append(
+                    f"column {col!r} was {was_type}, is now {types[key]}: see the values first "
+                    f"(profile_region, sample_data). A cast that turns unreadable values into "
+                    f"NULL drops them silently: ask the person before casting. Otherwise "
+                    f"update expect_columns and the steps that read it"
+                )
     status: Status = "drift" if drift else "shifted" if moved else "exact"
     return SourceBind(status=status, record=rec, diff=tuple([*drift, *moved]))
+
+
+def _read_types(
+    con: duckdb.DuckDBPyConnection, source: Source, locs: list[Location], name: str
+) -> dict[str, str]:
+    """The table's column types as the pipeline reads them (`{casefolded column: duckdb type}`).
+    Empty when the table cannot be read: the run will fail on it with the real error."""
+    try:
+        rel = read_locations(locs, source, con, name)
+        return {c.name.casefold(): c.type for c in schema_of(rel)}
+    except (NodeError, WorkbookError, duckdb.Error):
+        return {}
+    finally:
+        con.execute(f"DROP TABLE IF EXISTS {quote(name)}")
 
 
 def rebind(
@@ -152,8 +192,9 @@ def rebind(
     """Find each source of `spec` in `files` (file_role -> path, bytes or Workbook).
 
     `previous` is the `records()` of an earlier report, to tell shifted from exact and to
-    spot columns that came or went. Without it only the contract and the sheet are judged.
-    Nothing is run and nothing is raised for a bad file: it shows up as `missing`.
+    spot columns that came or went, and to diff each column's type against the last bind.
+    Without it only the contract and the sheet are judged. Nothing is raised for a bad file:
+    it shows up as `missing`.
     """
     previous = previous or {}
     bad_files = None if isinstance(files, dict) else "files must be a dict of file_role -> file"
@@ -161,33 +202,40 @@ def rebind(
         files = {}
     books: dict[str, Workbook | str] = {}
     out: dict[str, SourceBind] = {}
-    for name, source in spec.sources.items():
-        role = source.file_role
-        if role not in books:
-            if role not in files:
-                known = ", ".join(sorted(files)) or "none"
-                books[role] = bad_files or f"no file for file_role {role!r}; files given: {known}"
-            else:
-                try:
-                    books[role] = open_file(files[role])
-                except (WorkbookError, OSError, TypeError) as e:
-                    books[role] = f"file {role!r}: {e}"
-        wb = books[role]
-        if isinstance(wb, str):
-            out[name] = SourceBind(status="missing", record=None, diff=(), message=wb)
-            continue
-        try:
-            locs = locate_all(wb, source)
-        except (NodeError, WorkbookError) as e:
-            matched = bool(matching_sheets(wb, source))
-            out[name] = SourceBind(
-                status="drift" if matched else "missing",
-                record=None,
-                diff=(str(e),) if matched else (),
-                message="" if matched else str(e),
-            )
-            continue
-        out[name] = _judge(source, locs, previous.get(name))
+    con = duckdb.connect()
+    try:
+        for name, source in spec.sources.items():
+            role = source.file_role
+            if role not in books:
+                if role not in files:
+                    known = ", ".join(sorted(files)) or "none"
+                    books[role] = bad_files or (
+                        f"no file for file_role {role!r}; files given: {known}"
+                    )
+                else:
+                    try:
+                        books[role] = open_file(files[role])
+                    except (WorkbookError, OSError, TypeError) as e:
+                        books[role] = f"file {role!r}: {e}"
+            wb = books[role]
+            if isinstance(wb, str):
+                out[name] = SourceBind(status="missing", record=None, diff=(), message=wb)
+                continue
+            try:
+                locs = locate_all(wb, source)
+            except (NodeError, WorkbookError) as e:
+                matched = bool(matching_sheets(wb, source))
+                out[name] = SourceBind(
+                    status="drift" if matched else "missing",
+                    record=None,
+                    diff=(str(e),) if matched else (),
+                    message="" if matched else str(e),
+                )
+                continue
+            types = _read_types(con, source, locs, name)
+            out[name] = _judge(source, locs, previous.get(name), types)
+    finally:
+        con.close()
     return BindReport(sources=out)
 
 
