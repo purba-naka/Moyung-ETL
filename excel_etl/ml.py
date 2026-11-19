@@ -17,10 +17,17 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal, get_args
 
 import duckdb
-from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    StringConstraints,
+    model_serializer,
+    model_validator,
+)
 
 from excel_etl.nodes.base import (
     _NAME_PATTERN,
@@ -28,7 +35,17 @@ from excel_etl.nodes.base import (
     Column,
     Schema,
     quote,
+    schema_of,
     sql_text,
+)
+from excel_etl.prep import (
+    METADATA_VERSION,
+    CategoricalRule,
+    MissingRule,
+    NumericRule,
+    apply,
+    check_rules,
+    fit,
 )
 
 Ident = Annotated[str, StringConstraints(pattern=_NAME_PATTERN)]
@@ -40,9 +57,11 @@ _PART = "__ml_part"
 _CONTINUOUS = ("FLOAT", "DOUBLE", "DECIMAL")
 _MAX_CLASSES = 20
 ARTIFACT_NOTES = {
-    "preprocessing_metadata.json": "split settings and the parameters learned from train",
-    "feature_schema.json": "each column's type and role (id, feature, target)",
-    "preparation_report.json": "rows per partition, dropped columns, target classes per partition",
+    "preprocessing_metadata.json": "split settings and what was learned from train (apply it "
+    "to new data with apply_preprocessing)",
+    "feature_schema.json": "each output column's type and role (id, feature, target)",
+    "preparation_report.json": "rows per partition, dropped columns, empty values, rows cut, "
+    "target classes per partition",
 }
 ARTIFACT_FILES = tuple(ARTIFACT_NOTES)
 EXAMPLE = {
@@ -53,7 +72,18 @@ EXAMPLE = {
     "ids": ["customer_id"],
     "exclude": ["note"],
     "split": {"strategy": "stratified", "test_size": 0.2, "validation_size": 0.1, "seed": 42},
+    "missing": {"age": {"strategy": "median"}},
+    "numerical": {"spend": {"strategy": "standard_scale"}},
+    "categorical": {"segment": {"strategy": "one_hot", "unknown": "ignore"}},
 }
+
+
+def _choices(rule: type[BaseModel]) -> str:
+    return " | ".join(get_args(rule.model_fields["strategy"].annotation))
+
+
+def _max_categories() -> int:
+    return CategoricalRule.model_fields["max_categories"].default
 
 
 def describe() -> str:
@@ -72,6 +102,16 @@ def describe() -> str:
             "exists only when it is above 0), seed* (any integer, such as 42), by (the column "
             "for time and group; refused for random and stratified)",
             "every column of the input must be placed in target, features, ids or exclude.",
+            "to prepare new rows later with the same numbers, give preprocessing_metadata.json "
+            "to apply_preprocessing (a library function), never re-run the spec on the new "
+            "rows: that would learn new numbers.",
+            "preprocessing (optional, learned from the train rows only, applied to all "
+            f"partitions): missing = {{column: {{strategy: {_choices(MissingRule)}, value for "
+            f"constant}}}}; numerical = {{column: {{strategy: {_choices(NumericRule)}}}}}; "
+            f"categorical = {{column: {{strategy: {_choices(CategoricalRule)}, unknown: ignore | "
+            f"error, max_categories: {_max_categories()}}}}}. Only features can have rules. "
+            "The learned numbers are written to preprocessing_metadata.json; a one_hot column "
+            "is named <column>_<value> and exists only after the run.",
             "example: " + json.dumps(EXAMPLE),
         ]
     )
@@ -114,6 +154,31 @@ class MlSpec(_Model):
     ids: list[str] = []
     exclude: list[str] = []
     split: Split
+    missing: dict[str, MissingRule] = {}
+    numerical: dict[str, NumericRule] = {}
+    categorical: dict[str, CategoricalRule] = {}
+
+    @model_serializer(mode="wrap")
+    def _omit_empty_rules(self, handler: Any) -> dict[str, Any]:
+        data = handler(self)
+        for key in ("missing", "numerical", "categorical"):
+            if not data.get(key):
+                data.pop(key, None)
+        return data
+
+    @model_validator(mode="after")
+    def _one_transform_per_column(self) -> MlSpec:
+        both = {c.casefold() for c in self.numerical} & {c.casefold() for c in self.categorical}
+        if both:
+            raise ValueError(
+                f"column {sorted(both)[0]!r} is under numerical and categorical: it is one or "
+                "the other"
+            )
+        for section in (self.missing, self.numerical, self.categorical):
+            keys = [c.casefold() for c in section]
+            if len(keys) != len(set(keys)):
+                raise ValueError("a column is listed twice (letter case is ignored)")
+        return self
 
     @model_validator(mode="after")
     def _one_role_per_column(self) -> MlSpec:
@@ -144,14 +209,6 @@ class MlSpec(_Model):
 
 def _lookup(schema: Schema) -> dict[str, Column]:
     return {c.name.casefold(): c for c in schema}
-
-
-def output_columns(ml: MlSpec, schema: Schema) -> Schema:
-    """The columns of every partition: ids, then features, then the target (names as in the
-    input). Call after `check_columns` found nothing."""
-    by_name = _lookup(schema)
-    ordered = [*ml.ids, *ml.features, ml.target]
-    return tuple(by_name[c.casefold()] for c in ordered)
 
 
 def check_columns(ml: MlSpec, schema: Schema) -> list[str]:
@@ -200,6 +257,7 @@ def check_columns(ml: MlSpec, schema: Schema) -> list[str]:
             f"stratified needs a category target, but {target.name!r} is {target.type}; "
             "use a random split, or turn the target into classes first"
         )
+    problems += check_rules(ml, schema)
     if ml.split.by is not None:
         column = by_name[ml.split.by.casefold()]
         if ml.split.strategy == "time" and not (
@@ -220,6 +278,9 @@ class MlResult:
     columns: Schema
     classes: dict[str, dict[str, int]] = field(default_factory=dict)
     warnings: list[str] = field(default_factory=list)
+    metadata: dict[str, Any] = field(default_factory=dict)
+    cut: dict[str, int] = field(default_factory=dict)
+    missing: dict[str, dict[str, int]] = field(default_factory=dict)
 
 
 def _u_expression(ml: MlSpec) -> str:
@@ -298,21 +359,98 @@ def split(
                 )
         if problems:
             return None, problems
-        columns = output_columns(ml, schema)
-        selected = ", ".join(f"b.{quote(c.name)}" for c in columns)
-        for part, table in tables.items():
-            con.execute(f"DROP TABLE IF EXISTS {quote(table)}")
-            con.execute(
-                f"CREATE TABLE {quote(table)} AS SELECT {selected} FROM {_BASE} b "
-                f"JOIN {_PART} p USING ({_ROW}) WHERE p.__ml_p = '{part}' ORDER BY b.{_ROW}"
-            )
         classes, distinct = _classes(con, ml, by_name)
-        result = MlResult(total, {p: counts[p] for p in tables}, columns, classes)
-        result.warnings = _warnings(ml, classes, distinct)
+        result, problems = _prepare(con, ml, schema, tables, counts)
+        if result is None:
+            return None, problems
+        result.rows_in = total
+        result.classes = classes
+        result.warnings = [*_warnings(ml, classes, distinct), *result.warnings]
         return result, []
     finally:
         con.execute(f"DROP TABLE IF EXISTS {_BASE}")
         con.execute(f"DROP TABLE IF EXISTS {_PART}")
+
+
+def _prepare(
+    con: duckdb.DuckDBPyConnection,
+    ml: MlSpec,
+    schema: Schema,
+    tables: dict[PartName, str],
+    counts: dict[str, int],
+) -> tuple[MlResult | None, list[str]]:
+    """Make the partition tables: the raw rows of each partition, then the preprocessing
+    learned from the train rows applied to every one of them."""
+    raws = {part: f"__ml_raw_{part}" for part in tables}
+    by_name = _lookup(schema)
+    try:
+        for part, raw in raws.items():
+            con.execute(f"DROP TABLE IF EXISTS {raw}")
+            con.execute(
+                f"CREATE TABLE {raw} AS SELECT b.* FROM {_BASE} b "
+                f"JOIN {_PART} p USING ({_ROW}) WHERE p.__ml_p = '{part}'"
+            )
+        metadata, problems, warnings = fit(con, ml, schema, raws["train"])
+        if metadata is None:
+            return None, problems
+        for part, table in tables.items():
+            if found := apply(con, raws[part], metadata, table):
+                return None, [f"{part}: {p}" for p in found]
+        final = {
+            part: con.execute(f"SELECT count(*) FROM {quote(table)}").fetchall()[0][0]
+            for part, table in tables.items()
+        }
+        if empty := [p for p, n in final.items() if not n]:
+            return None, [f"dropping rows with empty values leaves {', '.join(empty)} with no rows"]
+        columns = schema_of(con.table(tables["train"]))
+        metadata["output_columns"] = _output_columns(ml, metadata, columns)
+        missing = _missing_counts(con, ml, by_name, raws)
+        result = MlResult(0, final, columns, warnings=warnings, metadata=metadata, missing=missing)
+        result.cut = {
+            part: counts[part] - final[part] for part in tables if counts[part] != final[part]
+        }
+        return result, []
+    finally:
+        for raw in raws.values():
+            con.execute(f"DROP TABLE IF EXISTS {raw}")
+
+
+def _output_columns(ml: MlSpec, metadata: dict[str, Any], columns: Schema) -> list[dict[str, str]]:
+    """Each output column with its type and role; an encoded column names its source."""
+    ids, target = {c.casefold() for c in ml.ids}, ml.target.casefold()
+    derived = {
+        f"{entry['column']}_{value}": entry["column"]
+        for entry in metadata["features"]
+        if entry["categorical"] and entry["categorical"]["strategy"] == "one_hot"
+        for value in entry["categorical"]["categories"]
+    }
+    out = []
+    for column in columns:
+        key = column.name.casefold()
+        role = "id" if key in ids else "target" if key == target else "feature"
+        item = {"name": column.name, "type": column.type, "role": role}
+        if column.name in derived:
+            item["derived_from"] = derived[column.name]
+        out.append(item)
+    return out
+
+
+def _missing_counts(
+    con: duckdb.DuckDBPyConnection,
+    ml: MlSpec,
+    by_name: dict[str, Column],
+    raws: dict[PartName, str],
+) -> dict[str, dict[str, int]]:
+    """Empty values per feature column and partition, before anything is filled."""
+    names = [by_name[f.casefold()].name for f in ml.features]
+    counts = ", ".join(f"count(*) FILTER (WHERE {quote(n)} IS NULL)" for n in names)
+    out: dict[str, dict[str, int]] = {}
+    for part, raw in raws.items():
+        row = con.execute(f"SELECT {counts} FROM {raw}").fetchall()[0]
+        for name, n in zip(names, row, strict=True):
+            if n:
+                out.setdefault(name, {})[part] = n
+    return out
 
 
 def _warnings(ml: MlSpec, classes: dict[str, dict[str, int]], distinct: int) -> list[str]:
@@ -363,16 +501,10 @@ def artifacts(ml: MlSpec, schema: Schema, result: MlResult) -> dict[str, str]:
     """The JSON files that describe the prepared dataset, by file name. Keys are sorted and
     nothing depends on the clock, so the same run gives byte-identical files."""
     by_name = _lookup(schema)
-    placed = {c.name for c in result.columns}
-    dropped = [c.name for c in schema if c.name not in placed]
-    ids, features = {c.casefold() for c in ml.ids}, {c.casefold() for c in ml.features}
-
-    def role(column: Column) -> str:
-        key = column.name.casefold()
-        return "id" if key in ids else "feature" if key in features else "target"
-
+    declared = {c.casefold() for c in (*ml.ids, *ml.features, ml.target)}
+    dropped = [c.name for c in schema if c.name.casefold() not in declared]
     metadata = {
-        "version": 1,
+        "version": METADATA_VERSION,
         "dataset": ml.name,
         "split": {
             "strategy": ml.split.strategy,
@@ -381,21 +513,23 @@ def artifacts(ml: MlSpec, schema: Schema, result: MlResult) -> dict[str, str]:
             "validation_size": ml.split.validation_size,
             "seed": ml.split.seed,
         },
-        "preprocessing": {},
+        "preprocessing": result.metadata,
     }
     feature_schema = {
-        "version": 1,
+        "version": METADATA_VERSION,
         "dataset": ml.name,
         "target": by_name[ml.target.casefold()].name,
-        "columns": [{"name": c.name, "type": c.type, "role": role(c)} for c in result.columns],
+        "columns": result.metadata["output_columns"],
     }
     report = {
-        "version": 1,
+        "version": METADATA_VERSION,
         "dataset": ml.name,
         "input": ml.input,
         "rows_in": result.rows_in,
         "partitions": result.rows,
         "dropped_columns": sorted(dropped),
+        "rows_cut_for_empty_values": result.cut,
+        "empty_values": result.missing,
         "target_classes": result.classes,
         "target_type": by_name[ml.target.casefold()].type,
     }

@@ -465,7 +465,7 @@ def test_the_missing_validation_table_is_explained():
 
 def test_the_run_text_says_what_each_artifact_holds(data, tmp_path):
     text = run(_spec(), {"c": data}, tmp_path / "out").text()
-    assert "feature_schema.json|artifact: each column's type and role" in text
+    assert "feature_schema.json|artifact: each output column's type and role" in text
 
 
 def test_the_target_class_balance_is_reported_for_a_random_split_too(data, tmp_path):

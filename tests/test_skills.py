@@ -16,10 +16,11 @@ import pytest
 from pydantic import BaseModel, TypeAdapter
 
 from excel_etl.hitl import CHECKPOINTS
-from excel_etl.ml import MlSpec
+from excel_etl.ml import MlSpec, Split
 from excel_etl.nodes import build, names
 from excel_etl.nodes.base import _REGISTRY
 from excel_etl.pipeline import Output, PipelineSpec, RegionRef, Source, Step
+from excel_etl.prep import CategoricalRule, MissingRule, NumericRule
 from excel_etl.quality import Check
 from excel_etl.state import Job, new_state
 from excel_etl.tools import JobTools
@@ -83,8 +84,10 @@ def _known_words() -> set[str]:
         words |= _fields(cls.Config) | _choices(cls.Config)
     for model in (PipelineSpec, Source, Step, Output, RegionRef):
         words |= _fields(model)
+    for model in (MlSpec, Split, MissingRule, NumericRule, CategoricalRule):
+        words |= _fields(model) | _choices(model)
     words |= _check_words()
-    host = {"record_load", "add_file", "approve", "answer", "reload_job"}
+    host = {"record_load", "add_file", "approve", "answer", "reload_job", "apply_preprocessing"}
     return words | host | {"try_strptime", "until_blank_rows", "file_id", "next_offset"}
 
 
