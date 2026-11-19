@@ -25,6 +25,7 @@ from excel_etl.nodes import Column, NodeError, Schema, build, infer, quote, sche
 from excel_etl.nodes.base import check_arity, connect, sql_text
 from excel_etl.nodes.source import (
     Location,
+    accepted_types,
     expect_hits,
     expect_label,
     locate_all,
@@ -249,7 +250,8 @@ def _check_columns(source: Source, schema: Schema, st: _State, where: str) -> No
                 st.issue(
                     where,
                     f"column {col.name!r} is {col.type} but expect_columns "
-                    f"{expect_label(want)} says {want.type}",
+                    f"{expect_label(want)} says {want.type} "
+                    f"(accepts {'/'.join(accepted_types(want.type))})",
                 )
 
 

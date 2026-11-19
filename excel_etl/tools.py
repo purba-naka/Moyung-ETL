@@ -724,8 +724,16 @@ class JobTools:
             )
         )
         text = rep.text(full=False)
+        if self._state.binds and not (bound := rebind(spec, files, self._state.binds)).ok:
+            text += (
+                "\nwarning: the sources changed since the last rebind_sources "
+                f"({bound.text().splitlines()[0]}); read its report before trusting the numbers"
+            )
         if why := gate(self._state.hitl, "after_run", failed=rep.status != "ok"):
-            text += f"\nask the person before going on: {why}"
+            text += (
+                f"\nthe run finished with status {rep.status}; the checks and problems are "
+                f"listed above. Ask the person before going on: {why}"
+            )
         return {"ok": rep.status == "ok", "text": text}
 
     @_tool
