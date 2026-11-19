@@ -363,3 +363,112 @@ def test_defaults_of_the_new_settings_are_left_out_of_the_saved_spec():
     set_ = dump_spec(_typed_spec(decimal=",", types={"a": "text"}))
     assert '"decimal": ","' in set_ and '"types"' in set_
     assert parse_spec(set_) == _typed_spec(decimal=",", types={"a": "text"})
+
+
+JSON_ARRAY = json.dumps(
+    [
+        {"id": 1, "name": "a", "price": 1.5, "d": "2026-01-02", "tags": ["x"]},
+        {"id": 2, "price": 2, "d": "2026-01-03", "tags": []},
+    ]
+).encode()
+JSON_LINES = b'{"id": 1, "v": "x"}\n{"id": 2, "v": "y", "extra": true}\n'
+
+
+def _json_spec(kind):
+    return parse_spec(
+        json.dumps(
+            {
+                "sources": {"j": {"kind": kind, "file_role": "j"}},
+                "outputs": {"o": {"input": "j", "format": "csv"}},
+            }
+        )
+    )
+
+
+def test_json_array_reads_keys_as_columns_with_engine_types():
+    rep = validate(_json_spec("json"), {"j": JSON_ARRAY})
+    assert rep.ok, rep.issues
+    types = {c.name: c.type for c in rep.schemas["j"]}
+    assert types["id"] == "BIGINT" and types["price"] == "DOUBLE" and types["d"] == "DATE"
+    assert types["name"] == "VARCHAR" and types["tags"] == "VARCHAR[]"
+
+
+def test_jsonl_reads_one_object_per_line_and_missing_keys_are_null(tmp_path):
+    rep = run(_json_spec("jsonl"), {"j": JSON_LINES}, tmp_path / "out")
+    assert rep.status == "ok", rep.issues
+    assert [n.node for n in rep.nodes if n.kind == "source"] == ["read_jsonl"]
+    assert [c.name for c in validate(_json_spec("jsonl"), {"j": JSON_LINES}).schemas["j"]] == [
+        "id",
+        "v",
+        "extra",
+    ]
+    assert (tmp_path / "out" / "o.csv").read_text().splitlines()[1] == "1,x,"
+
+
+def test_json_and_jsonl_refuse_each_other_with_advice():
+    as_jsonl = validate(_json_spec("jsonl"), {"j": JSON_ARRAY}).issues[0].message
+    as_json = validate(_json_spec("json"), {"j": JSON_LINES}).issues[0].message
+    assert "starts with [ is json" in as_jsonl and "should start with [" in as_json
+
+
+def test_a_json_object_or_binary_file_is_an_issue_not_an_exception():
+    assert not validate(_json_spec("json"), {"j": b'{"data": []}'}).ok
+    assert "binary" in validate(_json_spec("json"), {"j": b"\x00\x01"}).issues[0].message
+    assert "UTF-16" in validate(_json_spec("json"), {"j": "[]".encode("utf-16")}).issues[0].message
+
+
+def test_json_filenames_decide_the_kind_and_csv_settings_are_refused():
+    names = ("a.json", "b.JSONL", "c.ndjson")
+    assert [kind_of_filename(n) for n in names] == ["json", "jsonl", "jsonl"]
+    with pytest.raises(SpecError):
+        parse_spec(
+            json.dumps({"sources": {"j": {"kind": "json", "file_role": "j", "delimiter": ";"}}})
+        )
+
+
+def test_json_file_flows_through_the_tools_and_rebind(tmp_path):
+    t = _tools(tmp_path, {"a": JSON_LINES}, a=("events.jsonl", "j"))
+    assert t.list_files()["text"].endswith("|jsonl")
+    assert "id BIGINT" in t.workbook_map("F1")["text"]
+    spec = json.dumps(
+        {
+            "sources": {"e": {"kind": "jsonl", "file_role": "j"}},
+            "outputs": {"o": {"input": "e"}},
+        }
+    )
+    assert t.save_spec(spec, "")["saved"]
+    t.approve("after_propose_datasets", "dina", "v1")
+    assert t.rebind_sources()["ok"]
+    assert t.run_pipeline()["ok"]
+
+
+def test_workbook_map_works_for_every_table_kind(tmp_path, parquet):
+    blobs = {"p": parquet.read_bytes(), "j": JSON_ARRAY, "l": JSON_LINES, "c": CSV.encode()}
+    t = _tools(
+        tmp_path,
+        blobs,
+        p=("p.parquet", "p"),
+        j=("a.json", "j"),
+        l=("a.jsonl", "l"),
+        c=("a.csv", "c"),
+    )
+    for n, kind in ((1, "parquet"), (2, "json"), (3, "jsonl"), (4, "csv")):
+        text = t.workbook_map(f"F{n}")["text"]
+        assert f"|{kind}|" in text and "first rows:" in text and "source:" in text, text
+        assert ("delimiter" in text) == (kind == "csv")
+
+
+def test_a_cut_off_json_file_is_refused_not_read_partly():
+    message = validate(_json_spec("json"), {"j": b'[{"a": 1},'}).issues[0].message
+    assert "cut off" in message
+
+
+def test_a_json_column_of_mixed_types_reads_as_text_not_the_json_type():
+    rep = validate(_json_spec("json"), {"j": b'[{"a": 1}, {"a": "x"}, {"a": 2.5}]'})
+    assert [(c.name, c.type) for c in rep.schemas["j"]] == [("a", "VARCHAR")]
+
+
+def test_read_errors_do_not_show_the_temporary_file_path():
+    rep = validate(_json_spec("json"), {"j": b'[{"a": 1, "a": 2}]'})
+    assert not rep.ok
+    assert "excel_etl_" not in rep.issues[0].message and "<file>" in rep.issues[0].message

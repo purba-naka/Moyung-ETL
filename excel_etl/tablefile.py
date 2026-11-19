@@ -16,8 +16,9 @@ import weakref
 from pathlib import Path
 from typing import Literal
 
-FileKind = Literal["excel", "csv", "parquet"]
-TableFormat = Literal["csv", "parquet"]
+FileKind = Literal["excel", "csv", "parquet", "json", "jsonl"]
+TableFormat = Literal["csv", "parquet", "json", "jsonl"]
+_TEXT_FORMATS = ("csv", "json", "jsonl")
 
 _SUFFIXES: dict[str, FileKind] = {
     ".csv": "csv",
@@ -25,6 +26,9 @@ _SUFFIXES: dict[str, FileKind] = {
     ".txt": "csv",
     ".parquet": "parquet",
     ".pq": "parquet",
+    ".json": "json",
+    ".jsonl": "jsonl",
+    ".ndjson": "jsonl",
 }
 _CHUNK = 1 << 20
 _PARQUET_MAGIC = b"PAR1"
@@ -76,6 +80,13 @@ class TableFile:
         tf._check_shape()
         return tf
 
+    def _ends_with(self, last: bytes) -> bool:
+        """Whether the last non-blank byte of the file is `last`."""
+        size = self.path.stat().st_size
+        with self.path.open("rb") as f:
+            f.seek(max(0, size - 1024))
+            return f.read().rstrip()[-1:] == last
+
     def _check_shape(self) -> None:
         with self.path.open("rb") as f:
             head = f.read(8192)
@@ -83,10 +94,22 @@ class TableFile:
             raise TableFileError("the file is empty")
         if self.format == "parquet" and not head.startswith(_PARQUET_MAGIC):
             raise TableFileError("not a Parquet file (it does not start with PAR1)")
-        if self.format == "csv" and head.startswith((b"\xff\xfe", b"\xfe\xff")):
+        if self.format in _TEXT_FORMATS and head.startswith((b"\xff\xfe", b"\xfe\xff")):
             raise TableFileError("the file is UTF-16 text; only UTF-8 is read, save it as UTF-8")
-        if self.format == "csv" and (b"\x00" in head or head.startswith(_PARQUET_MAGIC)):
-            raise TableFileError("not a text file: it looks binary, not CSV (only UTF-8 is read)")
+        if self.format in _TEXT_FORMATS and (b"\x00" in head or head.startswith(_PARQUET_MAGIC)):
+            raise TableFileError(
+                f"not a text file: it looks binary, not {self.format} (only UTF-8 is read)"
+            )
+        first = head.removeprefix(b"\xef\xbb\xbf").lstrip()[:1]
+        if self.format == "json" and first != b"[":
+            raise TableFileError("a json file is one array of objects: it should start with [")
+        if self.format == "json" and not self._ends_with(b"]"):
+            raise TableFileError("the json file looks cut off: it should end with ]")
+        if self.format == "jsonl" and first != b"{":
+            raise TableFileError(
+                "a jsonl file has one object per line: it should start with { "
+                "(a file that starts with [ is json)"
+            )
 
 
 def as_table_file(ref: object, kind: str) -> TableFile:

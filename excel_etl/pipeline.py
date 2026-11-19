@@ -143,8 +143,9 @@ class Source(_Model):
     """One table read from a file. `kind` says what the file is and is left out of the saved
     spec while it is `excel`.
 
-    `excel` finds the table in a workbook: `sheet` and `region` are required. `csv` and
-    `parquet` files already are a table, so `sheet` and `region` are refused. A `csv` may set
+    `excel` finds the table in a workbook: `sheet` and `region` are required. `csv`,
+    `parquet`, `json` (one array of objects) and `jsonl` (one object per line) files already
+    are a table, so `sheet` and `region` are refused. A `csv` may set
     `delimiter` (default: detected), `header` (default true; false names the columns
     column0, column1, ...), `decimal` (`","` reads 1,5 as 1.5) and `types` (column name to
     text/int/float/date/datetime/bool, for a column whose type would otherwise be guessed

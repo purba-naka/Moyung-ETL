@@ -319,4 +319,4 @@ def test_unknown_source_kind_names_the_supported_ones():
     bad["sources"]["produksi_npk_pkg"]["kind"] = "xml"
     with pytest.raises(SpecError, match="excel"):
         parse_spec(json.dumps(bad))
-    assert SOURCE_KINDS == ("excel", "csv", "parquet")
+    assert SOURCE_KINDS == ("excel", "csv", "parquet", "json", "jsonl")
