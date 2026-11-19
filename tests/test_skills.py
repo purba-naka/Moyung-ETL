@@ -16,6 +16,7 @@ import pytest
 from pydantic import BaseModel, TypeAdapter
 
 from excel_etl.hitl import CHECKPOINTS
+from excel_etl.ml import MlSpec
 from excel_etl.nodes import build, names
 from excel_etl.nodes.base import _REGISTRY
 from excel_etl.pipeline import Output, PipelineSpec, RegionRef, Source, Step
@@ -139,6 +140,8 @@ def _kind(snippet: dict) -> str:
         return "step"
     if "file_role" in snippet:
         return "source"
+    if "split" in snippet:
+        return "ml"
     return "output" if "input" in snippet else "check"
 
 
@@ -151,7 +154,8 @@ def _snippets() -> list[tuple[str, dict]]:
 
 
 def test_the_patterns_file_has_snippets_of_every_kind() -> None:
-    assert {_kind(s) for _, s in _snippets()} == {"step", "check", "source", "output"}
+    kinds = {_kind(s) for _, s in _snippets()}
+    assert kinds == {"step", "check", "source", "output", "ml"}
     used = {s["node"] for _, s in _snippets() if "node" in s}
     assert {"unpivot", "unpivot_groups", "fill_down", "drop_rows", "window", "group_by"} <= used
     checks = {s["kind"] for _, s in _snippets() if _kind(s) == "check"}
@@ -179,6 +183,8 @@ def test_every_json_snippet_is_a_valid_step_check_source_or_output(snippet: dict
         build(snippet["node"], snippet["config"])
     elif "file_role" in snippet:
         Source.model_validate(snippet)
+    elif "split" in snippet:
+        MlSpec.model_validate(snippet)
     elif "input" in snippet:
         Output.model_validate(snippet)
         assert snippet["load"]["table"]

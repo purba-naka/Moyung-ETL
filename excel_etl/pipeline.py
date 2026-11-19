@@ -21,6 +21,7 @@ from pydantic import (
     model_validator,
 )
 
+from excel_etl.ml import MlSpec
 from excel_etl.nodes.base import _NAME_PATTERN, describe
 from excel_etl.quality import Check, tables_of
 from excel_etl.tablefile import FileKind
@@ -255,12 +256,15 @@ class PipelineSpec(_Model):
     outputs: dict[Ident, Output] = {}
     checks: dict[Ident, Check] = {}
     excluded: dict[Ident, dict[str, Annotated[str, StringConstraints(min_length=3)]]] = {}
+    ml: MlSpec | None = None
 
     @model_serializer(mode="wrap")
     def _omit_empty_excluded(self, handler: Any) -> dict[str, Any]:
         data = handler(self)
         if not data.get("excluded"):
             data.pop("excluded", None)
+        if data.get("ml") is None:
+            data.pop("ml", None)
         return data
 
     @model_validator(mode="after")
@@ -281,6 +285,20 @@ class PipelineSpec(_Model):
                         f"step {step.id!r} reads {inp!r}, which is not a source or an earlier step"
                     )
             known.add(step.id)
+        if (ml := self.ml) is not None:
+            if ml.input not in known:
+                raise ValueError(f"ml reads {ml.input!r}, which is not a source or a step")
+            for table in ml.tables().values():
+                if table in known:
+                    raise ValueError(
+                        f"the ml table {table!r} has the same name as a source or step; "
+                        "change ml.name"
+                    )
+                if (other := lower.setdefault(table.lower(), table)) != table:
+                    raise ValueError(
+                        f"the ml table {table!r} and {other!r} differ only in letter case"
+                    )
+                known.add(table)
         for name, chk in self.checks.items():
             for t in tables_of(chk):
                 if t not in known:
@@ -293,7 +311,13 @@ class PipelineSpec(_Model):
         files: dict[str, str] = {}
         for name, out in self.outputs.items():
             if out.input not in known:
-                raise ValueError(f"output {name!r} reads {out.input!r}, which is not defined")
+                late = self.ml is not None and out.input == f"{self.ml.name}_validation"
+                hint = (
+                    " (the validation table exists only when ml.split.validation_size is set)"
+                    if late
+                    else ""
+                )
+                raise ValueError(f"output {name!r} reads {out.input!r}, which is not defined{hint}")
             if name.lower() in _DEVICE_NAMES:
                 raise ValueError(f"output name {name!r} is a reserved file name on Windows")
             if (other := files.setdefault(name.lower(), name)) != name:
@@ -339,11 +363,11 @@ def patch_spec(spec: PipelineSpec, patch_json: str) -> PipelineSpec:
         raise SpecError(f"the patch must be a JSON object: {e}") from None
     if not isinstance(patch, dict):
         raise SpecError("the patch must be a JSON object")
-    unknown = set(patch) - {"steps", "remove", "sources", "outputs", "excluded"}
+    unknown = set(patch) - {"steps", "remove", "sources", "outputs", "excluded", "ml"}
     if unknown:
         raise SpecError(
             f"patch: {sorted(unknown)} is not a setting here; "
-            "use steps, remove, sources, outputs, excluded"
+            "use steps, remove, sources, outputs, excluded, ml"
         )
     remove, new_steps = patch.get("remove", []), patch.get("steps", [])
     if not isinstance(remove, list) or not all(isinstance(r, str) for r in remove):
@@ -374,6 +398,11 @@ def patch_spec(spec: PipelineSpec, patch_json: str) -> PipelineSpec:
                 data.get(key, {}).pop(name, None)
             else:
                 data.setdefault(key, {})[name] = value
+    if "ml" in patch:
+        if patch["ml"] is None:
+            data.pop("ml", None)
+        else:
+            data["ml"] = patch["ml"]
     return parse_spec(json.dumps(data))
 
 

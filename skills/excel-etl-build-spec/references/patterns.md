@@ -170,6 +170,34 @@ Nothing lost between input and output:
 {"kind": "foreign_key", "table": "lines", "column": "Ref", "ref_table": "sales", "ref_column": "Ref"}
 ```
 
+## A dataset for machine learning (train, validation, test)
+
+The `ml` section cuts one table into partitions and writes what describes them. It only
+prepares data: nothing here trains or scores a model, and it does not yet fill, encode or
+scale values (`fill_missing` before `ml` can fill a fixed value; tell the person that the
+rest is left to the model code). Every column of `input` must be placed
+under `features`, `ids` (kept, not a feature), `exclude` (dropped on purpose) or be the
+`target`; a column left out is an error. The partitions are tables named `<name>_train`,
+`<name>_validation` (when `validation_size` is set) and `<name>_test`: write them with
+`outputs` and check them with `checks`. A run also writes `feature_schema.json`,
+`preparation_report.json` and `preprocessing_metadata.json` next to them.
+
+```json
+{"name": "churn", "input": "clean", "target": "churn",
+ "features": ["age", "spend", "segment"], "ids": ["customer_id"], "exclude": ["note"],
+ "split": {"strategy": "stratified", "test_size": 0.2, "validation_size": 0.1, "seed": 42}}
+```
+
+Choosing roles: `ids` are keys kept for tracing (an id left among the features leaks);
+`exclude` is for personal data, free-text notes and columns that would give the answer away;
+`features` is the rest the model may use. `validation_size` is optional: without it there is
+no `<name>_validation` table. `seed` is required (any integer): the same rows in the same
+order, seed and settings always give the same partitions; add a `sort` step before `ml` when
+the order is not already fixed. `node_catalog("ml")` lists the fields. To change only the
+seed, send the whole `ml` section in `edit_spec`.
+`random` and `stratified` (keeps the target's class balance) take no `by`; `time` (the newest
+rows go to test) and `group` (a group never spans two partitions) need `"by": "<column>"`.
+
 ## Where an output goes in a database
 
 Only when the person wants the result in a warehouse; the `excel-etl-load` skill covers the

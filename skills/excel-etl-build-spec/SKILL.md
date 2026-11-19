@@ -27,6 +27,8 @@ Tool names may carry a prefix in your host.
    summarise. `references/patterns.md` maps an Excel shape to the nodes that fix it.
 5. `save_spec(spec_json, note)`. It validates against the files and does not save a spec
    with problems. Read every listed problem, fix them all, save again.
+   To prepare a dataset for machine learning (train/validation/test), add the `ml`
+   section last: see "A dataset for machine learning" in patterns.md.
 6. Add `checks` (see "Checks"), save again with a `note` saying what changed. For a small
    change after the first version use `edit_spec(patch_json, note)`: `{"steps": [...]}` (same
    id replaces, a new id is placed before the step that reads it), `"remove": [ids]`,
