@@ -373,6 +373,14 @@ def read_location(
     return con.table(name)
 
 
+_CSV_TYPES = {
+    "text": "VARCHAR",
+    "int": "BIGINT",
+    "float": "DOUBLE",
+    "date": "DATE",
+    "datetime": "TIMESTAMP",
+    "bool": "BOOLEAN",
+}
 _WIDEN_TO_BIGINT = {"TINYINT", "SMALLINT", "INTEGER", "UTINYINT", "USMALLINT", "UINTEGER"}
 _WIDEN_TO_DOUBLE = {"FLOAT"}
 
@@ -388,6 +396,14 @@ def read_table_file(
         reader = f"read_parquet({path})"
     else:
         options = f", delim = {sql_text(source.delimiter)}" if source.delimiter else ""
+        if source.decimal != ".":
+            options += f", decimal_separator = {sql_text(source.decimal)}"
+        if source.types:
+            pairs = ", ".join(
+                f"{sql_text(column)}: {sql_text(_CSV_TYPES[kind])}"
+                for column, kind in source.types.items()
+            )
+            options += f", types = {{{pairs}}}"
         reader = f"read_csv({path}, header = {'true' if source.header else 'false'}{options})"
     described = con.execute(f"DESCRIBE SELECT * FROM {reader}").fetchall()
     columns = []

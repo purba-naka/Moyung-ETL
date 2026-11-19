@@ -99,6 +99,15 @@ way as for Excel (whole numbers BIGINT, decimals DOUBLE), so steps and checks wo
 ```
 
 A csv without a header row: `"header": false` names the columns `column0`, `column1`, ...
+
+A csv guesses each column's type from its values, so a total row or one stray word turns a
+number column into text, and a later file without it reads as numbers again. Pin the types you
+rely on, and set `decimal` when numbers use a comma:
+
+```json
+{"kind": "csv", "file_role": "sales", "delimiter": ";", "decimal": ",", "types": {"order": "text"}}
+```
+
 `sheet_regions`, `render_range` and the other sheet tools refuse such a file; `workbook_map`
 shows its columns, row count and first rows.
 

@@ -296,3 +296,70 @@ def test_parquet_decimal_and_timestamp_variants_satisfy_expect_columns():
 
     assert type_fits("float", "DECIMAL(18,3)") and type_fits("datetime", "TIMESTAMP_NS")
     assert not type_fits("int", "DECIMAL(18,3)") and not type_fits("text", "DECIMAL(18,3)")
+
+
+TOTAL_CSV = b"order;amt\n1;1,5\n2;2,5\nTotal;4,0\n"
+
+
+def _typed_spec(**settings):
+    source = {"kind": "csv", "file_role": "c", "delimiter": ";", **settings}
+    return _spec(sources={"c": source})
+
+
+def test_a_total_row_makes_a_column_text_until_types_says_otherwise(tmp_path):
+    path = tmp_path / "t.csv"
+    path.write_bytes(TOTAL_CSV)
+    schema = validate(_typed_spec(), {"c": path}).schemas["c"]
+    assert [(c.name, c.type) for c in schema] == [("order", "VARCHAR"), ("amt", "VARCHAR")]
+    typed = _typed_spec(decimal=",", types={"order": "text"})
+    schema = validate(typed, {"c": path}).schemas["c"]
+    assert [(c.name, c.type) for c in schema] == [("order", "VARCHAR"), ("amt", "DOUBLE")]
+
+
+def test_types_pin_a_column_so_a_file_without_the_total_row_keeps_the_same_type(tmp_path):
+    spec = _typed_spec(types={"order": "text"})
+    with_total, without = tmp_path / "a.csv", tmp_path / "b.csv"
+    with_total.write_bytes(TOTAL_CSV)
+    without.write_bytes(b"order;amt\n1;x\n2;y\n")
+    first = validate(spec, {"c": with_total}).schemas["c"]
+    second = validate(spec, {"c": without}).schemas["c"]
+    assert first[0].type == second[0].type == "VARCHAR"
+
+
+def test_types_naming_a_missing_column_is_an_issue_not_an_exception(tmp_path):
+    path = tmp_path / "t.csv"
+    path.write_bytes(TOTAL_CSV)
+    rep = validate(_typed_spec(types={"nope": "text"}), {"c": path})
+    assert not rep.ok and "nope" in rep.issues[0].message
+
+
+def test_types_that_cannot_hold_the_values_are_an_issue(tmp_path):
+    path = tmp_path / "t.csv"
+    path.write_bytes(TOTAL_CSV)
+    rep = validate(_typed_spec(types={"order": "int"}), {"c": path})
+    assert not rep.ok and "order" in rep.issues[0].message
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        {"kind": "parquet", "file_role": "c", "types": {"a": "text"}},
+        {"kind": "parquet", "file_role": "c", "decimal": ","},
+        {**_excel_source(), "decimal": ","},
+        {"kind": "csv", "file_role": "c", "types": {"a": "money"}},
+        {"kind": "csv", "file_role": "c", "decimal": ";"},
+    ],
+)
+def test_csv_only_settings_and_their_values_are_checked(source):
+    with pytest.raises(SpecError):
+        parse_spec(json.dumps({"sources": {"c": source}, "outputs": {}}))
+
+
+def test_defaults_of_the_new_settings_are_left_out_of_the_saved_spec():
+    from excel_etl.pipeline import dump_spec
+
+    plain = dump_spec(_spec())
+    assert '"types"' not in plain and '"decimal"' not in plain and '"header"' not in plain
+    set_ = dump_spec(_typed_spec(decimal=",", types={"a": "text"}))
+    assert '"decimal": ","' in set_ and '"types"' in set_
+    assert parse_spec(set_) == _typed_spec(decimal=",", types={"a": "text"})

@@ -144,7 +144,8 @@ Same table across many sheets: `"sheet": {"name_regex": "day-[0-9]{2}", "sheet_c
 Two-row header: `"header_rows": 2` gives columns like `Sales|Qty`.
 
 CSV and Parquet: `{"kind": "csv", "file_role": "f"}` (or `"parquet"`), no `sheet` or `region`;
-a csv also takes `delimiter` and `header`. The kind of a registered file comes from its
+a csv also takes `delimiter`, `header`, `decimal` (`","` for 1,5) and `types` (column name to
+text/int/float/date/datetime/bool: pin a column whose guessed type changes between files). The kind of a registered file comes from its
 extension (`.csv`, `.tsv`, `.txt`, `.parquet`; anything else is a workbook). Differences from
 Excel: no sheets, regions or formulas, so `workbook_map` is the only discovery tool (it lists
 columns, row count and first rows) and `rebind_sources` judges columns and types only.
