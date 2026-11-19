@@ -65,7 +65,7 @@ def spec_json(**over):
 def test_agent_tools_are_the_documented_fixed_list(tools):
     names = [f.__name__ for f in tools.agent_tools()]
     assert names[:3] == ["job_summary", "list_files", "workbook_map"]
-    assert len(names) == len(set(names)) == 25
+    assert len(names) == len(set(names)) == 27
     for banned in ("add_file", "answer", "approve", "reload_job", "record_load"):
         assert banned not in names
 
@@ -109,7 +109,7 @@ def test_every_tool_survives_hostile_arguments(tools):
 
 def test_full_path_inspect_save_ask_approve_run(tools, tmp_path):
     assert "files: F1 jan.xlsx" in tools.job_summary()["text"]
-    assert tools.list_files()["text"] == "F1|jan.xlsx|role f"
+    assert tools.list_files()["text"] == "F1|jan.xlsx|role f|excel"
     assert "F1.S1|Sales" in tools.workbook_map("F1")["text"]
     assert "F1.S1.R1" in tools.sheet_regions("F1", "Sales")["text"]
     assert "Qty" in tools.render_range("F1", "F1.S1.R1")["text"]

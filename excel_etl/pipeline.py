@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import json
 import re
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any, Literal, get_args
 
 from pydantic import (
     BaseModel,
@@ -132,11 +132,26 @@ class ColumnExpect(_Model):
         return self
 
 
+SourceKind = Literal["excel"]
+SOURCE_KINDS: tuple[str, ...] = get_args(SourceKind)
+
+
 class Source(_Model):
+    """One table read from a file. `kind` says what the file is (only `excel` today) and is
+    left out of the saved spec while it is the default."""
+
+    kind: SourceKind = "excel"
     file_role: str = Field(min_length=1)
     sheet: SheetRef
     region: RegionRef
     expect_columns: list[ColumnExpect] = []
+
+    @model_serializer(mode="wrap")
+    def _omit_default_kind(self, handler: Any) -> dict[str, Any]:
+        data = handler(self)
+        if data.get("kind") == "excel":
+            data.pop("kind", None)
+        return data
 
 
 class Step(_Model):

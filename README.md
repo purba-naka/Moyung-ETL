@@ -21,11 +21,11 @@ A person stays in the loop: the agent asks questions and waits for approvals it 
 
 | Group | Tools |
 |---|---|
-| Look at a file | `workbook_map`, `sheet_regions`, `render_range`, `profile_region`, `find_text`, `compare_sheets`, `formula_lineage`, `propose_datasets`, `source_for_region` |
+| Look at a file | `workbook_map`, `sheet_regions`, `render_range`, `profile_region`, `sample_data`, `relate_tables`, `find_text`, `compare_sheets`, `formula_lineage`, `propose_datasets`, `source_for_region` |
 | Write a pipeline | `node_catalog`, `save_spec`, `edit_spec`, `get_spec`, `validate_spec`, `spec_history` |
 | Run and recycle | `run_pipeline`, `last_run`, `verify_run`, `rebind_sources`, `plan_load` |
 | People and context | `ask_human`, `pending_questions`, `lookup_knowledge`, `job_summary`, `list_files` |
-| Host only | `add_file`, `answer`, `approve`, `reload_job`, `record_load` |
+| Host only | `add_file`, `answer`, `approve`, `reload_job`, `record_load`, `build_context` |
 
 A result is `{"text": ...}` (with `truncated`/`next_offset` when paged) or `{"error": ...}` saying
 what to change. A store conflict returns `conflict: true`: call `reload_job` and repeat.
@@ -70,7 +70,7 @@ agent = LlmAgent(name="excel_etl", model="gemini-2.5-pro", instruction=INSTRUCTI
                  tools=[FunctionTool(fn) for fn in tools.agent_tools()])
 ```
 
-**Host-only calls** (`add_file`, `answer`, `approve`, `reload_job`, `record_load`) belong to your
+**Host-only calls** (`add_file`, `answer`, `approve`, `reload_job`, `record_load`, `build_context`) belong to your
 UI, never to the model. When the agent calls `ask_human` it gets a `question_id` and stops; show
 the question, call `tools.answer(question_id, reply)`, start the next turn.
 

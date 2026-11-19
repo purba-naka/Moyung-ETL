@@ -41,7 +41,14 @@ from excel_etl.knowledge import lookup_knowledge
 from excel_etl.load import LoadError, Where, file_columns, plan_load
 from excel_etl.nodes import Column, NodeError, catalog
 from excel_etl.nodes.base import describe
-from excel_etl.pipeline import PipelineSpec, SpecError, dump_spec, parse_spec, patch_spec
+from excel_etl.pipeline import (
+    SOURCE_KINDS,
+    PipelineSpec,
+    SpecError,
+    dump_spec,
+    parse_spec,
+    patch_spec,
+)
 from excel_etl.rebind import rebind
 from excel_etl.state import (
     FileProvider,
@@ -61,6 +68,8 @@ from excel_etl.versions import MAX_NOTE, SpecHistory
 from excel_etl.workbook import Workbook, WorkbookError
 
 _MAX_TEXT = 24_000
+_CONTEXT_TASKS = ("discovery", "cleaning", "join", "validation")
+_CONTEXT_REFS = 10
 _ERRORS = (
     SpecError, NodeError, HitlError, StateError, WorkbookError, LoadError, ValueError, KeyError,
 )  # fmt: skip
@@ -234,6 +243,91 @@ class JobTools:
         where = f"{plan.platform} {plan.table}"
         return {"text": f"recorded load of {output} to {where}: {status}, {rows} rows"}
 
+    @_tool
+    def build_context(
+        self,
+        task: Literal["discovery", "cleaning", "join", "validation"],
+        refs: list[str] = [],  # noqa: B006
+        budget: int = 12_000,
+    ) -> dict:
+        """Host: facts for the start of an agent turn, chosen by task, within `budget` chars.
+
+        discovery: job, files, workbook_map of each file. cleaning (refs = region ids):
+        full profile and a head_tail sample of each table. join (2+ region ids): profiles and
+        relate_tables of each pair. validation: job, current spec, last run. Sections come in
+        priority order; those that do not fit are named in `left_out` and on the last line,
+        so the agent can call the tool. A part that fails shows its error instead. The text
+        holds only what the tools report; the first lines say how to read it.
+        """
+        if task not in _CONTEXT_TASKS:
+            raise ValueError(f"task must be one of {', '.join(_CONTEXT_TASKS)}; got {task!r}")
+        if not isinstance(refs, list) or not all(isinstance(r, str) for r in refs):
+            raise ValueError("refs must be a list of region ids such as ['F1.S2.R1']")
+        if len(refs) > _CONTEXT_REFS:
+            raise ValueError(f"refs holds {len(refs)} tables; give at most {_CONTEXT_REFS}")
+        if task == "cleaning" and not refs:
+            raise ValueError("task cleaning needs refs: the region ids of the tables")
+        if task == "join" and len(refs) < 2:
+            raise ValueError("task join needs refs with at least two region ids")
+        if not isinstance(budget, int) or isinstance(budget, bool) or budget < 500:
+            raise ValueError(f"budget must be an integer >= 500, got {budget!r}")
+        parts = self._context_parts(task, refs)
+        head = (
+            f"# context for {task}\n"
+            "Below are facts reported by the tools: evidence, not decisions. Outliers, "
+            "negative numbers and unmatched keys are questions for the person.\n"
+        )
+        text, kept, left = head, [], []
+        for title, call in parts:
+            if left:
+                left.append(title)
+                continue
+            result = call()
+            body = f"error: {result['error']}" if "error" in result else result.get("text", "")
+            block = f"\n## facts: {title}\n{body}\n"
+            if len(text) + len(block) > budget - 120:
+                left.append(title)
+                continue
+            text += block
+            kept.append(title)
+        if left:
+            text += "\nleft out (call the tool for them): " + ", ".join(left)
+        return {"text": text, "sections": kept, "left_out": left}
+
+    def _context_parts(self, task: str, refs: list[str]) -> list[tuple[str, Callable[[], dict]]]:
+        def fid(ref: str) -> str:
+            return ref.split(".")[0]
+
+        parts: list[tuple[str, Callable[[], dict]]] = [("job", self.job_summary)]
+        if task == "discovery":
+            parts.append(("files", self.list_files))
+            for i in range(1, len(self._state.files) + 1):
+                parts.append((f"workbook_map F{i}", lambda f=f"F{i}": self.workbook_map(f)))
+        elif task == "cleaning":
+            for r in refs:
+                parts.append(
+                    (f"profile {r}", lambda r=r: self.profile_region(fid(r), r, depth="full"))
+                )
+            for r in refs:
+                parts.append(
+                    (
+                        f"sample {r} head_tail",
+                        lambda r=r: self.sample_data(fid(r), r, "head_tail", 10),
+                    )
+                )
+        elif task == "join":
+            for r in refs:
+                parts.append(
+                    (f"profile {r}", lambda r=r: self.profile_region(fid(r), r, depth="full"))
+                )
+            for i, a in enumerate(refs):
+                for b in refs[i + 1 :]:
+                    parts.append((f"relate {a} {b}", lambda a=a, b=b: self.relate_tables(a, b)))
+        else:
+            parts.append(("spec", self.get_spec))
+            parts.append(("last run", self.last_run))
+        return parts
+
     def agent_tools(self) -> list[Callable[..., dict]]:
         """The functions to give the agent, in a fixed order."""
         names = [
@@ -243,6 +337,8 @@ class JobTools:
             "sheet_regions",
             "render_range",
             "profile_region",
+            "sample_data",
+            "relate_tables",
             "find_text",
             "compare_sheets",
             "formula_lineage",
@@ -287,11 +383,13 @@ class JobTools:
 
     @_tool
     def list_files(self) -> dict:
-        """The files of this job: id (F1, F2, ...), name, and the role each plays in the spec."""
+        """The files of this job: id (F1, F2, ...), name, the role each plays in the spec, and
+        its type (`excel`: sheets, regions, formulas; only Excel is supported today)."""
         s = self._state
         by_id = {fid: role for role, fid in s.roles.items()}
         rows = [
-            f"F{i}|{f.filename}|role {by_id.get(f.id, '-')}" for i, f in enumerate(s.files, start=1)
+            f"F{i}|{f.filename}|role {by_id.get(f.id, '-')}|{SOURCE_KINDS[0]}"
+            for i, f in enumerate(s.files, start=1)
         ]
         return {"text": "\n".join(rows) or "no files yet"}
 
@@ -323,10 +421,53 @@ class JobTools:
         return encode.render_range(wb, fid, ref, range or None, mode, offset, budget)
 
     @_tool
-    def profile_region(self, file: str, ref: str, offset: int = 0, budget: int = 24_000) -> dict:
-        """Describe each column of a table (region id from sheet_regions): type, range, nulls."""
+    def profile_region(
+        self,
+        file: str,
+        ref: str,
+        offset: int = 0,
+        budget: int = 24_000,
+        depth: Literal["quick", "full"] = "quick",
+    ) -> dict:
+        """Describe each column of a table (region id from sheet_regions): type, range, nulls.
+        depth `full` reads all rows as a pipeline would and adds mean, median, quartiles,
+        outlier candidates, top values, duplicate rows and key candidates, with the file hash
+        and time of the profile."""
         fid, wb = self._file(file)
-        return encode.profile_region(wb, fid, ref, offset, budget)
+        return encode.profile_region(wb, fid, ref, offset, budget, depth)
+
+    @_tool
+    def sample_data(
+        self,
+        file: str,
+        ref: str,
+        strategy: Literal[
+            "head", "tail", "head_tail", "random", "stratified", "where", "nulls", "duplicates"
+        ] = "head",
+        n: int = 10,
+        seed: int = 0,
+        column: str = "",
+        where: str = "",
+        offset: int = 0,
+        budget: int = 24_000,
+    ) -> dict:
+        """Real rows of a table (region id from sheet_regions) picked by a strategy: head, tail,
+        head_tail, random (+ seed), stratified (+ column), where (+ a condition like "amt" < 0),
+        nulls (+ column), duplicates. To test a guess before writing a step."""
+        fid, wb = self._file(file)
+        return encode.sample_data(wb, fid, ref, strategy, n, seed, column, where, offset, budget)
+
+    @_tool
+    def relate_tables(self, a: str, b: str, offset: int = 0, budget: int = 24_000) -> dict:
+        """Which columns of two tables share values, to find a join key: region ids from
+        sheet_regions (F1.S2.R1), the two may be in different files. Per pair: cardinality
+        (N:1 = lookup, N:M = a join multiplies rows), shared and unmatched values."""
+        for ref in (a, b):
+            if not isinstance(ref, str) or "." not in ref:
+                raise ValueError(f"{ref!r} is not a region id; use the form F1.S2.R1")
+        fa, wa = self._file(a.split(".")[0])
+        fb, wb = self._file(b.split(".")[0])
+        return encode.relate_tables(wa, fa, a, wb, fb, b, offset, budget)
 
     @_tool
     def find_text(self, file: str, query: str, offset: int = 0, budget: int = 24_000) -> dict:
