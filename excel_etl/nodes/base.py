@@ -99,6 +99,11 @@ def _say(item: Any) -> str:
     if kind == "string_type":
         return "must be one piece of text (a single name), not a list or a number"
     if kind == "extra_forbidden":
+        if item["loc"][:1] == ("ml",):
+            return (
+                "is not a setting of the ml section; it takes name, input, target, features, "
+                "ids, exclude and split (strategy, by, test_size, validation_size, seed)"
+            )
         if "checks" in item["loc"]:
             return (
                 "is not a setting of this check kind (not_null and unique take `columns`, a list; "

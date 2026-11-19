@@ -40,6 +40,7 @@ from excel_etl.hitl import HitlError, answer, approve, ask_human, gate
 from excel_etl.inspect import encode, tables
 from excel_etl.knowledge import lookup_knowledge
 from excel_etl.load import LoadError, Where, file_columns, plan_load
+from excel_etl.ml import describe as ml_describe
 from excel_etl.nodes import Column, NodeError, catalog, schema_of
 from excel_etl.nodes.base import connect, describe, quote
 from excel_etl.nodes.source import read_table_file
@@ -601,7 +602,12 @@ class JobTools:
         description and config fields (`*` = required)."""
         if not isinstance(node, str):
             raise ValueError("node must be a node name (text), such as 'cast'")
-        return {"text": catalog(node or None)}
+        if node.strip().casefold() == "ml":
+            return {"text": ml_describe()}
+        text = catalog(node or None)
+        if not node.strip(", "):
+            text += "\nml: not a step; a spec section that cuts a table into train/validation/test"
+        return {"text": text}
 
     @_tool
     def lookup_knowledge(self, query: str = "") -> dict:
@@ -649,7 +655,9 @@ class JobTools:
         files first; a spec with problems is not saved. `note` says why (needed from v2).
         Repeated sheets use one source: sheet={"name_regex":"day-[0-9]{2}",
         "sheet_column":"source_sheet"}; full names match and every match must hold the table.
-        outputs: {"name": {"input": "<step or source>", "format": "parquet|csv"}}."""
+        outputs: {"name": {"input": "<step or source>", "format": "parquet|csv"}}.
+        ml (optional): cuts one table into <name>_train/_validation/_test tables for machine
+        learning (target, features, ids, exclude, split); node_catalog("ml") has the fields."""
         spec = parse_spec(spec_json)
         if not spec.sources and not spec.steps:
             raise ValueError("the spec has no sources and no steps; nothing was saved")
@@ -661,7 +669,8 @@ class JobTools:
         like save_spec. patch_json: {"steps": [step, ...] (same id = replace that step, new id
         = added; then each step is ordered after the steps it reads), "remove": ["step_id"],
         "sources": {"name": source or null}, "outputs": {"name": output or null},
-        "excluded": {"source": {"column": "why it is left out"} or null}}.
+        "excluded": {"source": {"column": "why it is left out"} or null},
+        "ml": {the whole ml section} or null}.
         Use it for repairs; use save_spec for a first version or a rewrite."""
         h = self._state.history
         if h is None:

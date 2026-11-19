@@ -21,6 +21,8 @@ from pydantic import BaseModel, ConfigDict
 
 from excel_etl.hitl import HitlState, gate
 from excel_etl.inspect.regions import TOTAL_LABEL
+from excel_etl.ml import ARTIFACT_NOTES, MlResult, artifacts, check_columns, output_columns
+from excel_etl.ml import split as ml_split
 from excel_etl.nodes import Column, NodeError, Schema, build, infer, quote, schema_of
 from excel_etl.nodes.base import check_arity, connect, sql_text
 from excel_etl.nodes.source import (
@@ -67,7 +69,7 @@ class Issue(_Report):
 
 class NodeStat(_Report):
     id: str
-    kind: Literal["source", "step"]
+    kind: Literal["source", "step", "ml"]
     node: str
     rows_in: int
     rows_out: int
@@ -162,6 +164,7 @@ class RunReport(_Report):
     ref: str | None = None
     files: dict[str, str] = {}
     verify: VerifyReport | None = None
+    artifacts: tuple[str, ...] = ()
 
     def summary(self, at: str) -> RunSummary:
         """The run as one history line (`at` is now, UTC, given by the caller)."""
@@ -197,6 +200,9 @@ class RunReport(_Report):
                 f"  check {c.name}|{c.kind}|{mark}" + ("" if c.passed else f": {c.message}")
             )
         lines += [f"  wrote {o.path}|{o.rows} rows|{o.columns} cols" for o in self.outputs]
+        lines += [
+            f"  wrote {a}|artifact: {ARTIFACT_NOTES.get(Path(a).name, '')}" for a in self.artifacts
+        ]
         lines += [f"  {i.where}: {i.message}" for i in self.issues]
         lines += [f"  warning: {w}" for w in self.warnings]
         if self.verify is not None:
@@ -411,6 +417,78 @@ def _load_table(
     )
 
 
+def _plan_ml(spec: PipelineSpec, st: _State) -> bool:
+    """Check the `ml` declaration against its input's columns and register its tables."""
+    ml = spec.ml
+    if ml is None or ml.input not in st.schemas:
+        return False
+    problems = check_columns(ml, st.schemas[ml.input])
+    for problem in problems:
+        st.issue("ml", problem)
+    if problems:
+        return False
+    columns = output_columns(ml, st.schemas[ml.input])
+    for table in ml.tables().values():
+        st.schemas[table] = columns
+    return True
+
+
+def _run_ml(spec: PipelineSpec, con: duckdb.DuckDBPyConnection, st: _State) -> MlResult | None:
+    """Split the `ml` input into its partition tables."""
+    ml = spec.ml
+    if ml is None or not _plan_ml(spec, st):
+        return None
+    t0 = time.perf_counter()
+    try:
+        result, problems = ml_split(con, ml, st.schemas[ml.input])
+    except (NodeError, duckdb.Error) as e:
+        st.issue("ml", str(e).splitlines()[0])
+        return None
+    for problem in problems:
+        st.issue("ml", problem)
+    if result is None:
+        return None
+    seconds = round(time.perf_counter() - t0, 4)
+    st.warnings.extend(f"ml: {w}" for w in result.warnings)
+    for part, table in ml.tables().items():
+        st.stats.append(
+            NodeStat(
+                id=table,
+                kind="ml",
+                node="ml_split",
+                rows_in=result.rows_in,
+                rows_out=result.rows[part],
+                columns=len(result.columns),
+                seconds=seconds,
+                schema_out=_schema_tuple(result.columns),
+            )
+        )
+    return result
+
+
+def _write_artifacts(
+    spec: PipelineSpec,
+    result: MlResult | None,
+    st: _State,
+    out_path: Path,
+    parts: list[tuple[Path, Path]],
+) -> tuple[str, ...]:
+    """The JSON files that describe the prepared dataset, queued like the outputs."""
+    if spec.ml is None or result is None:
+        return ()
+    names = []
+    for name, text in artifacts(spec.ml, st.schemas[spec.ml.input], result).items():
+        tmp, final = out_path / f"{name}.part", out_path / name
+        try:
+            tmp.write_text(text, encoding="utf-8", newline="\n")
+        except OSError as e:
+            st.issue("ml", f"could not write {name}: {e}")
+            return ()
+        parts.append((tmp, final))
+        names.append(str(final))
+    return tuple(names)
+
+
 def _count(con: duckdb.DuckDBPyConnection, table: str) -> int:
     return con.execute(f"SELECT count(*) FROM {quote(table)}").fetchall()[0][0]
 
@@ -484,6 +562,7 @@ def validate(spec: PipelineSpec, files: dict[str, FileInput] | None = None) -> V
     try:
         _load_sources(spec, files, tables, con, st)
         _run_steps(spec, con, st, run_nodes=False)
+        _plan_ml(spec, st)
         for name, why in check_schema(spec.checks, st.schemas).items():
             st.issue(f"checks.{name}", why)
     finally:
@@ -614,13 +693,19 @@ def run(
     outputs: list[OutputStat] = []
     results: list[CheckResult] = []
     checked: VerifyReport | None = None
+    ml_result: MlResult | None = None
+    written: tuple[str, ...] = ()
     try:
         _load_sources(spec, files, tables, con, st)
         _run_steps(spec, con, st, run_nodes=True)
         if not st.issues:
+            ml_result = _run_ml(spec, con, st)
+        if not st.issues:
             results = _run_checks(spec, con, st)
         if not st.issues:
             _write_outputs(spec, con, out_path, st, parts, outputs)
+        if not st.issues:
+            written = _write_artifacts(spec, ml_result, st, out_path, parts)
         if not st.issues:
             _publish(parts, st)
         if not st.issues:
@@ -642,6 +727,7 @@ def run(
         ref=ref,
         files={role: f.sha256 for role, f in files.items() if isinstance(f, Workbook | TableFile)},
         verify=checked,
+        artifacts=() if failed else written,
     )
 
 
