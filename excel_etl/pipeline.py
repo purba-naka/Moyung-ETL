@@ -118,7 +118,7 @@ class RegionRef(_Model):
 class ColumnExpect(_Model):
     match: str | None = None
     match_regex: str | None = None
-    type: Literal["text", "int", "float", "date", "datetime", "bool"] | None = None
+    type: ColumnType | None = None
     required: bool = True
 
     @model_validator(mode="after")
@@ -133,6 +133,8 @@ class ColumnExpect(_Model):
         return self
 
 
+ColumnType = Literal["text", "int", "float", "date", "datetime", "bool"]
+_CSV_ONLY = "delimiter, header, decimal and types are settings of a csv source"
 SourceKind = FileKind
 SOURCE_KINDS: tuple[str, ...] = get_args(SourceKind)
 
@@ -143,8 +145,10 @@ class Source(_Model):
 
     `excel` finds the table in a workbook: `sheet` and `region` are required. `csv` and
     `parquet` files already are a table, so `sheet` and `region` are refused. A `csv` may set
-    `delimiter` (default: detected) and `header` (default true; false names the columns
-    column0, column1, ...). `expect_columns` works for every kind.
+    `delimiter` (default: detected), `header` (default true; false names the columns
+    column0, column1, ...), `decimal` (`","` reads 1,5 as 1.5) and `types` (column name to
+    text/int/float/date/datetime/bool, for a column whose type would otherwise be guessed
+    from its values). `expect_columns` works for every kind.
     """
 
     kind: SourceKind = "excel"
@@ -153,6 +157,8 @@ class Source(_Model):
     region: RegionRef | None = None
     delimiter: str | None = Field(default=None, min_length=1, max_length=1)
     header: bool = True
+    decimal: Literal[".", ","] = "."
+    types: dict[str, ColumnType] = {}
     expect_columns: list[ColumnExpect] = []
 
     @model_validator(mode="after")
@@ -160,17 +166,20 @@ class Source(_Model):
         if self.kind == "excel":
             if self.sheet is None or self.region is None:
                 raise ValueError("an excel source needs sheet and region")
-            if self.delimiter is not None or "header" in self.model_fields_set:
-                raise ValueError("delimiter and header are settings of a csv source")
+            if self._csv_settings():
+                raise ValueError(_CSV_ONLY)
             return self
         if self.sheet is not None or self.region is not None:
             raise ValueError(
                 f"a {self.kind} file is already a table: leave out sheet and region "
                 "(they are for excel)"
             )
-        if self.kind != "csv" and (self.delimiter is not None or "header" in self.model_fields_set):
-            raise ValueError("delimiter and header are settings of a csv source")
+        if self.kind != "csv" and self._csv_settings():
+            raise ValueError(_CSV_ONLY)
         return self
+
+    def _csv_settings(self) -> bool:
+        return bool(self.model_fields_set & {"delimiter", "header", "decimal", "types"})
 
     @model_serializer(mode="wrap")
     def _omit_defaults(self, handler: Any) -> dict[str, Any]:
@@ -180,8 +189,9 @@ class Source(_Model):
         for key in ("sheet", "region", "delimiter"):
             if data.get(key) is None:
                 data.pop(key, None)
-        if "header" in data and data["header"] is True:
-            data.pop("header")
+        for key, default in (("header", True), ("decimal", "."), ("types", {})):
+            if data.get(key) == default:
+                data.pop(key, None)
         return data
 
 
