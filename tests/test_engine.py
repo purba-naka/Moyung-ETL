@@ -254,7 +254,7 @@ def test_run_summary_is_one_history_line(book, tmp_path) -> None:
     rep = run(_pipeline(), {"f": book}, tmp_path)
     s = rep.summary("2026-11-19T08:30:00+00:00")
     assert s.status == "ok" and s.at == "2026-11-19T08:30:00+00:00"
-    assert s.rows == {"detail": 4, "summary": 2} and s.checks_failed == 0
+    assert s.rows == {"detail": 4, "summary": 2} and s.checks_failed == ()
     spec = _spec(
         sources={"orders": _src("Orders", "Order")},
         outputs={},
@@ -269,7 +269,7 @@ def test_run_summary_is_one_history_line(book, tmp_path) -> None:
     blank = _ORDERS[:1] + [["o1", None, 2]] + _ORDERS[2:]
     rep = run(spec, {"f": Workbook.open(make_xlsx({"Orders": blank}))}, tmp_path)
     assert rep.status == "failed"
-    assert rep.summary("x").checks_failed == 1
+    assert rep.summary("x").checks_failed == ("no_blank_items",)
 
 
 def test_run_creates_the_output_directory_and_overwrites(book, tmp_path) -> None:

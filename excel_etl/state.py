@@ -40,6 +40,7 @@ from excel_etl.workbook import Workbook
 _JOB_ID = re.compile(r"[a-z0-9](?:[a-z0-9_.-]{0,98}[a-z0-9_-])?")
 _SHA = re.compile(r"[0-9a-f]{64}")
 _MAX_FILES = 50
+MAX_RUNS = 20
 _LOCK_WAIT = 5.0
 _STALE = 30.0
 
@@ -100,7 +101,7 @@ class JobState(_Model):
     history: SpecHistory | None = None
     binds: dict[str, BindRecord] = {}
     last_run: RunReport | None = None
-    runs: list[RunSummary] = Field(default=[], max_length=20)
+    runs: list[RunSummary] = Field(default=[], max_length=MAX_RUNS)
     loads: list[LoadRecord] = Field(default=[], max_length=200)
     planned: PlannedLoad | None = None
 

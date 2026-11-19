@@ -69,8 +69,12 @@ argument types and a `dict` result, so ADK, LiteLLM and most frameworks take it 
 from google.adk.agents import LlmAgent
 from google.adk.tools import FunctionTool
 
-agent = LlmAgent(name="excel_etl", model="gemini-2.5-pro", instruction=INSTRUCTION,
-                 tools=[FunctionTool(fn) for fn in tools.agent_tools()])
+agent = LlmAgent(
+    name="excel_etl",
+    model="gemini-2.5-pro",
+    instruction=INSTRUCTION,
+    tools=[FunctionTool(fn) for fn in tools.agent_tools()],
+)
 ```
 
 **Host-only calls** (`add_file`, `answer`, `approve`, `reload_job`, `record_load`, `build_context`) belong to your

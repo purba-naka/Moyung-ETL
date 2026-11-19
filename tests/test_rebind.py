@@ -328,7 +328,9 @@ def test_a_column_that_turned_to_text_is_drift_with_advice() -> None:
     text_qty = [["Item", "Qty", "Price"], ["pen", "many", 2.0], ["ink", 2, 3.0]]
     s = _bind(text_qty, spec, prev).sources["s"]
     assert s.status == "drift"
-    assert any("was BIGINT, is now VARCHAR" in d and "then add a cast step" in d for d in s.diff)
+    assert any(
+        "was BIGINT, is now VARCHAR" in d and "ask the person before casting" in d for d in s.diff
+    )
 
 
 def test_a_narrowed_type_is_drift_even_between_numbers() -> None:
@@ -371,6 +373,16 @@ def test_a_renamed_column_reports_names_not_types() -> None:
     assert s.status == "shifted"
     assert any("columns added" in d for d in s.diff)
     assert not any("was" in d and "is now" in d for d in s.diff)
+
+
+def test_an_unreadable_table_keeps_the_types_of_the_last_bind(monkeypatch) -> None:
+    import excel_etl.rebind as rb
+
+    spec = _spec(_src())
+    prev = _bind(_BASE, spec).records()
+    monkeypatch.setattr(rb, "_read_types", lambda *a, **k: {})
+    s = _bind(_BASE, spec, prev).sources["s"]
+    assert s.record is not None and s.record.types == prev["s"].types != {}
 
 
 def test_a_record_without_types_skips_the_type_judgement() -> None:

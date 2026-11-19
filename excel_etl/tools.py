@@ -52,6 +52,7 @@ from excel_etl.pipeline import (
 )
 from excel_etl.rebind import rebind
 from excel_etl.state import (
+    MAX_RUNS,
     FileProvider,
     Job,
     JobState,
@@ -718,7 +719,7 @@ class JobTools:
             lambda st: st.model_copy(
                 update={
                     "last_run": rep,
-                    "runs": [*st.runs, rep.summary(stamp)][-20:],
+                    "runs": [*st.runs, rep.summary(stamp)][-MAX_RUNS:],
                 }
             )
         )
@@ -730,19 +731,23 @@ class JobTools:
     @_tool
     def last_run(self) -> dict:
         """The report of the last run: rows per step, checks, files written, problems. The tail
-        lists this job's earlier runs: when, which spec version, status, rows, failed checks."""
+        lists this job's earlier runs, newest first, as `at|spec ref|status|seconds|output rows|
+        failed checks` (`-` when a run wrote nothing or no check failed)."""
         rep = self._state.last_run
         if rep is None:
             return {"text": "no run yet"}
         lines = [rep.text()]
         past = self._state.runs[:-1]
         if past:
-            lines.append(f"earlier runs of this job (newest first, {len(past)}):")
+            lines.append(
+                f"earlier runs of this job (newest first, {len(past)}): "
+                f"at|spec ref|status|seconds|output rows|failed checks"
+            )
             for r in reversed(past):
-                out = sum(r.rows.values())
+                out = sum(r.rows.values()) if r.rows else "-"
                 lines.append(
-                    f"  {r.at}|{r.ref or '-'}|{r.status}|{r.seconds:.2f}s|"
-                    f"{out} rows|{r.checks_failed} check(s) failed"
+                    f"  {r.at}|{r.ref or '-'}|{r.status}|{r.seconds:.2f}s|{out}|"
+                    f"{','.join(r.checks_failed) or '-'}"
                 )
         return {"text": "\n".join(lines)}
 

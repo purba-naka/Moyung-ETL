@@ -117,6 +117,8 @@ def _judge(
     source: Source, locs: list[Location], old: BindRecord | None, types: dict[str, str]
 ) -> SourceBind:
     rec = _record(locs, types)
+    if not types and old is not None:
+        rec = rec.model_copy(update={"types": old.types})
     loc = locs[0]
     names = rec.columns
     drift: list[str] = []
@@ -160,8 +162,9 @@ def _judge(
             else:
                 drift.append(
                     f"column {col!r} was {was_type}, is now {types[key]}: see the values first "
-                    f"(profile_region, sample_data), then add a cast step, or update "
-                    f"expect_columns and the steps that read it"
+                    f"(profile_region, sample_data). A cast that turns unreadable values into "
+                    f"NULL drops them silently: ask the person before casting. Otherwise "
+                    f"update expect_columns and the steps that read it"
                 )
     status: Status = "drift" if drift else "shifted" if moved else "exact"
     return SourceBind(status=status, record=rec, diff=tuple([*drift, *moved]))

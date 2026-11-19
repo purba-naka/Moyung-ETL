@@ -145,10 +145,11 @@ def test_run_history_grows_one_line_per_run(tools):
     assert tools.run_pipeline()["ok"]
     text = tools.last_run()["text"]
     assert "earlier runs of this job (newest first, 1):" in text
-    assert text.count("|v1|ok|") == 1 and "3 rows|0 check(s) failed" in text
+    assert "at|spec ref|status|seconds|output rows|failed checks" in text
+    assert text.count("|v1|ok|") == 1 and text.rstrip().endswith("|3|-")
     runs = tools._state.runs
     assert len(runs) == 2 and [r.ref for r in runs] == ["v1", "v1"]
-    assert runs[0].rows == {"totals": 3} and runs[0].checks_failed == 0
+    assert runs[0].rows == {"totals": 3} and runs[0].checks_failed == ()
 
 
 def test_run_history_keeps_only_the_last_20(tools):

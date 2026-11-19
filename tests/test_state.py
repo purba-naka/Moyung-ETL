@@ -80,6 +80,13 @@ def test_run_history_round_trips_with_the_last_run(tmp_path):
     assert back.runs == runs and back.runs[0].ref == "v1" and back.runs[0].rows == {"o": 2}
 
 
+def test_state_saved_before_run_history_still_loads():
+    raw = json.loads(_full().model_dump_json())
+    raw.pop("runs")
+    back = JobState.model_validate(raw)
+    assert back.runs == []
+
+
 @pytest.mark.parametrize(
     "bad", ["", "Job1", "a b", "a/b", "a\\b", "..", ".x", "x.", "é", "x" * 101, "a\nb", "-"]
 )

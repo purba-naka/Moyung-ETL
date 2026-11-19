@@ -90,7 +90,7 @@ class RunSummary(_Report):
     status: Literal["ok", "failed"]
     seconds: float
     rows: dict[str, int] = {}
-    checks_failed: int = 0
+    checks_failed: tuple[str, ...] = ()
 
 
 def _columns(cols: tuple[Column, ...], limit: int = 40) -> str:
@@ -168,7 +168,9 @@ class RunReport(_Report):
             status=self.status,
             seconds=self.seconds,
             rows={o.name: o.rows for o in self.outputs},
-            checks_failed=sum(1 for c in self.checks if not c.passed and c.severity == "error"),
+            checks_failed=tuple(
+                c.name for c in self.checks if not c.passed and c.severity == "error"
+            ),
         )
 
     def text(self, full: bool = True) -> str:

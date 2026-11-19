@@ -64,7 +64,8 @@ Add at least one per output. Examples with all kinds are in `references/patterns
 
 - `not_null`, `unique`, `range`, `accepted_values`, `regex`: facts about one table. `regex`
   needs a text column and matches anywhere in the value (anchor with `^...$` for the whole
-  value); NULL does not match, so pair it with `not_null` when NULL is wrong.
+  value); the syntax is RE2 (no lookaround, no backreferences); NULL does not match, so pair
+  it with `not_null` when NULL is wrong.
 - `row_count`, `duplicate_rows`: the shape of one table (how many rows, and no two rows the
   same in every column). Good as `severity: "warn"` on a monthly file.
 - `foreign_key`: every value of a column exists in a column of another table (NULL is

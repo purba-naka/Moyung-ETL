@@ -421,14 +421,58 @@ def test_regex_bad_pattern_is_refused_when_the_spec_is_read():
         chk(kind="regex", table="t", column="x", pattern="[")
 
 
+@pytest.mark.parametrize("pattern", ["^(?=a)", r"(a)\1", "^(?!X)"])
+def test_regex_python_only_syntax_is_refused_when_the_spec_is_read(pattern):
+    with pytest.raises(ValidationError, match="RE2"):
+        chk(kind="regex", table="t", column="x", pattern=pattern)
+
+
+def test_regex_examples_are_sorted_and_capped_in_sql():
+    con, sc = world(
+        t="CREATE TABLE t AS SELECT 'v' || lpad(CAST(i AS VARCHAR), 6, '0') AS x "
+        "FROM range(5000) r(i)"
+    )
+    (r,), _ = one({"c": chk(kind="regex", table="t", column="x", pattern="^zzz")}, con, sc)
+    assert r.bad_rows == 5000
+    assert "v000000, v000001, v000002, v000003, v000004" in r.message
+
+
+def test_duplicate_rows_is_not_fooled_by_a_column_named_like_the_counter():
+    for name in ("cnt", "n", "k", "row"):
+        con, sc = world(
+            t=f"CREATE TABLE t AS SELECT * FROM (VALUES (1, 1), (1, 1), (1, 1), (2, 2)) v({name}, other)"
+        )
+        (r,), broken = one({"c": chk(kind="duplicate_rows", table="t")}, con, sc)
+        assert not broken and not r.passed and r.bad_rows == 2, name
+
+
+def test_foreign_key_accepts_empty_column_and_date_against_timestamp():
+    con, sc = world(
+        a="CREATE TABLE a AS SELECT CAST(NULL AS VARCHAR) AS k",
+        b="CREATE TABLE b AS SELECT * FROM (VALUES ('x')) v(k)",
+        d="CREATE TABLE d AS SELECT DATE '2026-01-02' AS day",
+        ts="CREATE TABLE ts AS SELECT TIMESTAMP '2026-01-02 00:00:00' AS day",
+    )
+    fk = {"kind": "foreign_key", "column": "k", "ref_column": "k"}
+    (empty,), broken = one({"c": chk(table="a", ref_table="b", **fk)}, con, sc)
+    assert not broken and empty.passed
+    day = {"kind": "foreign_key", "column": "day", "ref_column": "day"}
+    (dates,), broken = one({"c": chk(table="d", ref_table="ts", **day)}, con, sc)
+    assert not broken and dates.passed
+
+
 def test_row_count_between_and_outside_bounds():
     con, sc = world(t="CREATE TABLE t AS SELECT * FROM (VALUES (1), (2), (3)) v(n)")
     (ok,), broken = one({"c": chk(kind="row_count", table="t", min=2, max=5)}, con, sc)
     assert ok.passed and not broken
     (short,), _ = one({"c": chk(kind="row_count", table="t", min=5)}, con, sc)
     assert not short.passed and short.bad_rows == 2 and "short by 2" in short.message
+    assert "expected at least 5" in short.message
     (over,), _ = one({"c": chk(kind="row_count", table="t", max=2)}, con, sc)
     assert not over.passed and over.bad_rows == 1 and "over by 1" in over.message
+    assert "expected at most 2" in over.message
+    (both,), _ = one({"c": chk(kind="row_count", table="t", min=4, max=9)}, con, sc)
+    assert "expected between 4 and 9" in both.message
 
 
 def test_row_count_needs_a_bound_and_min_not_above_max():
@@ -469,7 +513,7 @@ def test_foreign_key_finds_orphans_and_skips_null():
         sc,
     )
     assert not broken and not r.passed and r.bad_rows == 1
-    assert "1 value(s) of orders.customer_id missing from customers.id: 3" in r.message
+    assert "1 row(s) with a value of orders.customer_id missing from customers.id: 3" in r.message
 
 
 def test_foreign_key_accepts_numeric_families_but_not_text_against_numbers():
