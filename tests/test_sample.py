@@ -6,7 +6,7 @@ from datetime import date
 import pytest
 from conftest import make_xlsx
 
-from excel_etl.inspect.encode import sample_data
+from excel_etl.inspect.tables import sample_data
 from excel_etl.nodes.base import NodeError, connect
 from excel_etl.sample import MAX_ROWS, STRATEGIES, sample_table
 from excel_etl.workbook import Workbook, WorkbookError
@@ -263,3 +263,59 @@ def test_random_gives_the_same_rows_in_another_process():
     finally:
         con.close()
     assert runs == {here}
+
+
+def _clash_table(con, name: str, rows: str) -> None:
+    con.execute(f'CREATE TABLE t AS SELECT * FROM (VALUES {rows}) v("{name}", v)')
+
+
+@pytest.mark.parametrize("name", ["__pos", "__dups", "profiled", "__a", "__b", "__e", "r"])
+def test_user_columns_named_like_internal_ones_are_not_shadowed(name):
+    con = connect()
+    try:
+        _clash_table(con, name, "(1,'a'),(1,'a'),(2,'b'),(3,'c')")
+        dup = sample_table(con, "t", "duplicates", n=10)
+        assert dup["positions"] == [1, 2] and dup["matched"] == 2
+        sel = sample_table(con, "t", "where", where=f'"{name}" >= 2', n=10)
+        assert sel["positions"] == [3, 4] and sel["matched"] == 2
+        assert sample_table(con, "t", "nulls", column=name, n=3)["rows"] == []
+        strat = sample_table(con, "t", "stratified", column=name, n=1, seed=1)
+        assert len(strat["rows"]) == 3
+        assert sample_table(con, "t", "head", n=2)["rows"] == [[1, "a"], [1, "a"]]
+    finally:
+        con.close()
+
+
+def test_text_column_named_dups_does_not_break_duplicates():
+    con = connect()
+    try:
+        con.execute(
+            "CREATE TABLE t AS SELECT * FROM (VALUES ('a',1),('a',1),('b',2)) v(\"__dups\", v)"
+        )
+        assert sample_table(con, "t", "duplicates", n=5)["positions"] == [1, 2]
+    finally:
+        con.close()
+
+
+@pytest.mark.parametrize(
+    "where",
+    ["\"v\" > 'abc'", 'CAST("v" AS DATE) IS NULL', '"v" // 0 > 1'],
+)
+def test_runtime_errors_in_where_are_plain_node_errors(where):
+    con = _con()
+    try:
+        con.execute("CREATE TABLE w AS SELECT * FROM (VALUES (1),(2)) x(v)")
+        with pytest.raises(NodeError, match="sample where"):
+            sample_table(con, "w", "where", where=where, n=3)
+    finally:
+        con.close()
+
+
+def test_literal_null_text_group_is_kept_apart_from_real_nulls():
+    con = connect()
+    try:
+        con.execute("CREATE TABLE t AS SELECT * FROM (VALUES ('<null>'),(NULL),(NULL),('z')) v(g)")
+        res = sample_table(con, "t", "stratified", column="g", n=1, seed=1)
+        assert sum(res["groups"].values()) == 4 and len(res["groups"]) == 3
+    finally:
+        con.close()

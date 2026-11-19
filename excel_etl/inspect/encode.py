@@ -10,7 +10,7 @@ import contextlib
 import re
 import unicodedata
 from dataclasses import dataclass
-from datetime import UTC, date, datetime, time, timedelta
+from datetime import date, datetime, time, timedelta
 from typing import Literal
 
 from excel_etl.inspect.lineage import lineage, region_role, sheet_role
@@ -685,7 +685,9 @@ def profile_region(
     if depth not in ("quick", "full"):
         raise WorkbookError(f"depth must be 'quick' or 'full', got {depth!r}")
     if depth == "full":
-        return _profile_full(wb, file_id, ref, offset, budget)
+        from excel_etl.inspect.tables import profile_full
+
+        return profile_full(wb, file_id, ref, offset, budget)
     label, _, region, g = _region(wb, file_id, ref)
     top, left, bottom, right = region.box
     totals = set(region.total_rows)
@@ -695,7 +697,7 @@ def profile_region(
         f"{label} {_box(region.box)}: {len(rows)} data rows"
         + (f" from r{rows[0] + 1}" if rows else "")
         + (f", header r{hdr[0] + 1}-r{hdr[-1] + 1}" if hdr else ", no header")
-        + (f", totals left out: {_rows(sorted(totals), 6)}" if totals else "")
+        + (f", total rows {_rows(sorted(totals), 6)} excluded from these numbers" if totals else "")
         + ". col name: type range|e.g. distinct null =? odd"
     )
     names = column_names(g, region)
@@ -704,174 +706,6 @@ def profile_region(
         for i, c in enumerate(range(left, right + 1))
     ]
     return _fit(head, body, offset, budget)
-
-
-def _profile_full(wb: Workbook, file_id: str, ref: str, offset: int, budget: int) -> dict:
-    from excel_etl.nodes.base import connect
-    from excel_etl.profile import column_line, load_region, profile_table
-
-    label, _, region, _ = _region(wb, file_id, ref)
-    con = connect()
-    try:
-        table = load_region(wb, file_id, ref, con)
-        prof = profile_table(con, table)
-    finally:
-        con.close()
-    when = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
-    head = (
-        f"{label} {_box(region.box)}: {prof['rows']} data rows, {len(prof['columns'])} columns, "
-        f"duplicate rows {prof['duplicate_rows']}, basis all rows, sha {wb.sha256[:12]}, at {when}"
-        + (
-            f"; totals read as data: {_rows(sorted(region.total_rows), 6)} "
-            "(a pipeline reads them too; drop_rows removes them)"
-            if region.total_rows
-            else ""
-        )
-    )
-    keys = prof["key_candidates"]
-    if prof["rows"]:
-        head += "; key candidates: " + (
-            ", ".join("+".join(_name(n) for n in k) for k in keys[:5]) if keys else "none"
-        )
-    body = [_clip(f"{c['name']}: {column_line(c, prof['rows'])}") for c in prof["columns"]]
-    if not prof["rows"]:
-        body = [f"{c['name']}: no data" for c in prof["columns"]]
-    return _fit(head, body, offset, budget)
-
-
-def _quote_ident(name: str) -> str:
-    from excel_etl.nodes.base import quote
-
-    return quote(name)
-
-
-def _cell(v: object) -> str:
-    if v is None:
-        return ""
-    if isinstance(v, str):
-        return _name(v)
-    return _fmt(v)
-
-
-def sample_data(
-    wb: Workbook,
-    file_id: str,
-    ref: str,
-    strategy: str = "head",
-    n: int = 10,
-    seed: int = 0,
-    column: str = "",
-    where: str = "",
-    offset: int = 0,
-    budget: int = 24_000,
-) -> dict:
-    """Show real rows of one table (region id from sheet_regions), picked by a strategy, to
-    check a guess before writing a step. Use after profile_region.
-
-    strategy: head, tail, head_tail (half each), random (same rows for the same `seed`),
-    stratified (up to n rows per value of `column`; the first line lists group sizes),
-    where (rows where the condition `where` is true, such as `"amount" < 0`; same rules as the
-    filter step), nulls (rows where `column` is empty), duplicates (rows that occur more than
-    once). `n` is rows (1-1000; per group for stratified). A strategy the table cannot serve
-    is an error. Rows are read as a pipeline reads them; lines are `a|b|c` under the column
-    names. The first line says what was picked, how many rows matched, the file hash and time.
-    `budget` caps the text in chars; `offset` continues a page of rows.
-    """
-    from excel_etl.nodes.base import NodeError, connect
-    from excel_etl.profile import load_region
-    from excel_etl.sample import sample_table
-
-    _paging(offset)
-    _check_budget(budget)
-    label, _, region, _ = _region(wb, file_id, ref)
-    con = connect()
-    try:
-        table = load_region(wb, file_id, ref, con)
-        got = sample_table(con, table, strategy, n, seed, column or None, where or None)
-    except NodeError as e:
-        raise WorkbookError(str(e)) from None
-    finally:
-        con.close()
-    when = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
-    head = f"{label} {_box(region.box)}: {got['basis']}, sha {wb.sha256[:12]}, at {when}"
-    if "groups" in got:
-        sizes = ",".join(f"{_name(k)}:{v}" for k, v in got["groups"].items())
-        head += f"; group sizes {few(sizes.split(','), 12)}"
-    body = ["|".join(_name(c) for c in got["columns"])]
-    body += [_clip("|".join(_cell(v) for v in row)) for row in got["rows"]]
-    return _fit(head, body, offset, budget)
-
-
-def relate_tables(
-    wb_a: Workbook,
-    file_a: str,
-    ref_a: str,
-    wb_b: Workbook,
-    file_b: str,
-    ref_b: str,
-    offset: int = 0,
-    budget: int = 24_000,
-) -> dict:
-    """Which columns of two tables share values: candidates for a join. Read both the way a
-    pipeline reads them; columns are paired only within a type family (numbers, text, dates).
-
-    One line per pair, best first: `cust_id -> id: N:1, shared 2 values; 1 of 3 cust_id values
-    not in id, 2 of 4 id values not in cust_id`. Cardinality N:1 = many rows of the first
-    table per row of the second (a lookup); N:M means both sides repeat and a join multiplies
-    rows. `+n after trim/case` = more values match when spaces and letter case are ignored.
-    Evidence only: confirm a join with the person before writing it.
-    """
-    from excel_etl.nodes.base import connect
-    from excel_etl.profile import load_region
-    from excel_etl.relate import relate
-
-    _paging(offset)
-    _check_budget(budget)
-    label_a, _, _, _ = _region(wb_a, file_a, ref_a)
-    label_b, _, _, _ = _region(wb_b, file_b, ref_b)
-    if (wb_a.sha256, ref_a) == (wb_b.sha256, ref_b):
-        raise WorkbookError("relate_tables needs two different tables")
-    con = connect()
-    try:
-        con.execute(
-            f"ALTER TABLE {_quote_ident(load_region(wb_a, file_a, ref_a, con))} RENAME TO __a"
-        )
-        con.execute(
-            f"ALTER TABLE {_quote_ident(load_region(wb_b, file_b, ref_b, con))} RENAME TO __b"
-        )
-        rows_a = con.execute("SELECT count(*) FROM __a").fetchall()[0][0]
-        rows_b = con.execute("SELECT count(*) FROM __b").fetchall()[0][0]
-        got = relate(con, "__a", "__b")
-    finally:
-        con.close()
-    when = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
-    shas = sorted({wb_a.sha256[:12], wb_b.sha256[:12]})
-    head = (
-        f"{label_a} ({rows_a} rows) vs {label_b} ({rows_b} rows): {len(got['pairs'])} column "
-        f"pair(s) share values"
-        + (
-            f" (compared {got['checked']} of {got['pairs_total']} pairs)"
-            if got["checked"] < got["pairs_total"]
-            else ""
-        )
-        + f", sha {','.join(shas)}, at {when}"
-    )
-    body = [_pair_line(p) for p in got["pairs"]]
-    if not body:
-        body = ["no column pair shares a value (exact or ignoring spaces and letter case)"]
-    return _fit(head, body, offset, budget)
-
-
-def _pair_line(p: dict) -> str:
-    a, b = _name(p["a"]), _name(p["b"])
-    line = (
-        f"{a} -> {b}: {p['cardinality']}, shared {p['overlap']} values; "
-        f"{p['a_missing']} of {p['a_distinct']} {a} values not in {b}, "
-        f"{p['b_missing']} of {p['b_distinct']} {b} values not in {a}"
-    )
-    if (more := p["overlap_folded"] - p["overlap"]) > 0:
-        line += f"; +{more} after trim/case"
-    return _clip(line)
 
 
 _WS = re.compile(r"\s+")

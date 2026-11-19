@@ -5,7 +5,7 @@ import json
 import pytest
 from conftest import make_xlsx
 
-from excel_etl.inspect.encode import relate_tables
+from excel_etl.inspect.tables import relate_tables
 from excel_etl.nodes.base import NodeError, connect
 from excel_etl.profile import profile_table
 from excel_etl.relate import relate
@@ -173,3 +173,49 @@ def test_relate_with_unknown_table_is_a_node_error():
             relate(con, "orders", "nope")
     finally:
         con.close()
+
+
+def test_date_and_timestamp_columns_are_paired_by_day():
+    con = connect()
+    try:
+        con.execute("CREATE TABLE a AS SELECT TIMESTAMP '2020-01-01 10:00' AS d")
+        con.execute("CREATE TABLE b AS SELECT DATE '2020-01-01' AS d")
+        pair = relate(con, "a", "b")["pairs"][0]
+    finally:
+        con.close()
+    assert (pair["a"], pair["b"], pair["overlap"]) == ("d", "d", 1)
+
+
+def test_unmatched_examples_are_listed_for_text_keys():
+    con = connect()
+    try:
+        con.execute(
+            "CREATE TABLE a AS SELECT * FROM (VALUES ('JKT'),(' jkt '),('XXX'),('BDG')) v(k)"
+        )
+        con.execute("CREATE TABLE b AS SELECT * FROM (VALUES ('JKT'),('BDG'),('SBY')) v(k)")
+        pair = relate(con, "a", "b")["pairs"][0]
+    finally:
+        con.close()
+    assert pair["a_unmatched"] == [" jkt ", "XXX"]
+    assert pair["b_unmatched"] == ["SBY"]
+    assert pair["overlap_folded"] == 2
+
+
+def test_pairs_with_the_same_column_name_are_compared_first_when_there_are_too_many():
+    from excel_etl import relate as mod
+
+    con = connect()
+    try:
+        cols = ", ".join(f"{i} AS c{i}" for i in range(30))
+        con.execute(f"CREATE TABLE a AS SELECT {cols}")
+        con.execute(f"CREATE TABLE b AS SELECT {cols}")
+        old = mod.MAX_PAIRS
+        mod.MAX_PAIRS = 30
+        try:
+            got = relate(con, "a", "b")
+        finally:
+            mod.MAX_PAIRS = old
+    finally:
+        con.close()
+    assert got["checked"] == 30 and got["pairs_total"] == 900
+    assert {(p["a"], p["b"]) for p in got["pairs"]} == {(f"c{i}", f"c{i}") for i in range(30)}

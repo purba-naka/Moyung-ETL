@@ -6,12 +6,19 @@
 
 from __future__ import annotations
 
+import math
+
 import duckdb
 
-from excel_etl.nodes.base import NodeError, quote
-from excel_etl.workbook import Workbook, WorkbookError
+from excel_etl.nodes.base import quote
 
-NUMERIC = ("TINYINT", "SMALLINT", "INTEGER", "BIGINT", "HUGEINT", "FLOAT", "DOUBLE", "DECIMAL")
+NUMERIC = frozenset(
+    {
+        "TINYINT", "SMALLINT", "INTEGER", "BIGINT", "HUGEINT",
+        "UTINYINT", "USMALLINT", "UINTEGER", "UBIGINT", "UHUGEINT",
+        "FLOAT", "DOUBLE", "DECIMAL",
+    }
+)  # fmt: skip
 TOP_VALUES = 3
 KEY_COLUMNS = 30
 
@@ -21,39 +28,60 @@ def is_numeric(kind: str) -> bool:
 
 
 def _num(v: object) -> float | int | None:
+    """A statistic as a JSON number; None for no value, NaN or infinity."""
     if v is None:
         return None
-    return round(float(v), 4) if not isinstance(v, int) else v
+    if isinstance(v, int):
+        return v
+    f = float(v)
+    return round(f, 4) if math.isfinite(f) else None
 
 
-def _numeric_stats(con: duckdb.DuckDBPyConnection, table: str, col: str) -> dict:
+def _numeric_stats(con: duckdb.DuckDBPyConnection, table: str, col: str, kind: str) -> dict:
+    """Statistics over the finite values only; NaN and infinity are counted as `non_finite`."""
     q = quote(col)
+    floating = kind in ("FLOAT", "DOUBLE")
+    finite = f"{quote(table)} WHERE NOT (isnan({q}) OR isinf({q}))" if floating else quote(table)
+    non_finite = 0
+    if floating:
+        non_finite = con.execute(
+            f"SELECT count(*) FROM {quote(table)} WHERE isnan({q}) OR isinf({q})"
+        ).fetchall()[0][0]
     row = con.execute(
         f"SELECT min({q}), max({q}), avg({q}), median({q}), stddev_pop({q}), "
-        f"quantile_cont({q}, 0.25), quantile_cont({q}, 0.75) FROM {quote(table)}"
+        f"quantile_cont({q}, 0.25), quantile_cont({q}, 0.75) FROM {finite}"
     ).fetchall()[0]
     lo, hi, mean, median, std, q25, q75 = (_num(v) for v in row)
     out: dict = {"min": lo, "max": hi, "mean": mean, "median": median, "std": std}
     out["q25"], out["q75"] = q25, q75
+    if non_finite:
+        out["non_finite"] = non_finite
     if q25 is not None and q75 is not None:
         iqr = q75 - q25
         low, high = q25 - 1.5 * iqr, q75 + 1.5 * iqr
+        sep = " AND " if "WHERE" in finite else " WHERE "
         out["outliers"] = con.execute(
-            f"SELECT count(*) FROM {quote(table)} WHERE {q} < ? OR {q} > ?", [low, high]
+            f"SELECT count(*) FROM {finite}{sep}({q} < ? OR {q} > ?)", [low, high]
         ).fetchall()[0][0]
     return out
 
 
 def _text_stats(con: duckdb.DuckDBPyConnection, table: str, col: str) -> dict:
     q = quote(col)
-    lo, hi = con.execute(
-        f"SELECT min(length({q})), max(length({q})) FROM {quote(table)}"
+    lo, hi, folded = con.execute(
+        f"SELECT min(length({q})), max(length({q})), count(DISTINCT lower(trim({q}))) "
+        f"FROM {quote(table)}"
     ).fetchall()[0]
     top = con.execute(
         f"SELECT {q}, count(*) AS n FROM {quote(table)} WHERE {q} IS NOT NULL "
         f"GROUP BY {q} ORDER BY n DESC, {q} LIMIT {TOP_VALUES}"
     ).fetchall()
-    return {"len_min": lo, "len_max": hi, "top": [[str(v), n] for v, n in top]}
+    return {
+        "len_min": lo,
+        "len_max": hi,
+        "distinct_folded": folded,
+        "top": [[str(v), n] for v, n in top],
+    }
 
 
 def _range_stats(con: duckdb.DuckDBPyConnection, table: str, col: str) -> dict:
@@ -83,7 +111,7 @@ def profile_table(con: duckdb.DuckDBPyConnection, table: str) -> dict:
         col: dict = {"name": name, "type": str(kind), "null": nulls, "distinct": distinct}
         if nulls < rows:
             if is_numeric(str(kind)):
-                col |= _numeric_stats(con, table, name)
+                col |= _numeric_stats(con, table, name, str(kind))
             elif str(kind) == "VARCHAR":
                 col |= _text_stats(con, table, name)
             elif str(kind) != "BOOLEAN":
@@ -122,24 +150,6 @@ def _keys(
     return [[a, b] for (a, b), n in zip(pairs, counts, strict=True) if n == rows]
 
 
-def load_region(wb: Workbook, file_id: str, ref: str, con: duckdb.DuckDBPyConnection) -> str:
-    """Read one detected table into `con` as it is when a pipeline reads it (same column names
-    and types), and return the table name. Raises WorkbookError for a note or KPI block."""
-    from excel_etl.inspect.encode import _region
-    from excel_etl.nodes.source import locate_all, read_locations
-    from excel_etl.pipeline import Source
-    from excel_etl.synth import source_from_region
-
-    label, *_ = _region(wb, file_id, ref)
-    entry = source_from_region(wb, file_id, ref, "profile")
-    source = Source.model_validate(entry)
-    try:
-        read_locations(locate_all(wb, source), source, con, "profiled")
-    except NodeError as e:
-        raise WorkbookError(f"{label}: {e}") from None
-    return "profiled"
-
-
 def column_line(col: dict, rows: int) -> str:
     """One text line for a column of a `profile_table` result."""
     if col["null"] == rows:
@@ -154,17 +164,29 @@ def column_line(col: dict, rows: int) -> str:
         if col.get("outliers"):
             parts.append(f"outliers {col['outliers']} (IQR 1.5, candidates only)")
     if "top" in col:
-        parts.append("top " + ",".join(f"{v}:{n}" for v, n in col["top"]))
+        parts.append("top " + ",".join(f"{_one_line(v)}:{n}" for v, n in col["top"]))
         parts.append(f"len {col['len_min']}..{col['len_max']}")
-    parts.append(f"distinct {col['distinct']}")
+    distinct = f"distinct {col['distinct']}"
+    if col.get("distinct_folded", col["distinct"]) < col["distinct"]:
+        distinct += f" ({col['distinct_folded']} after trim+lower)"
+    parts.append(distinct)
+    if col.get("non_finite"):
+        parts.append(f"nan/inf {col['non_finite']} (left out of the numbers)")
     if col["null"]:
-        parts.append(f"null {round(100 * col['null'] / rows)}%")
+        parts.append(f"null {col['null']} ({round(100 * col['null'] / rows)}%)")
     if col["unique"]:
         parts.append("unique key candidate")
     return " ".join(parts)
 
 
+def _one_line(text: str, limit: int = 40) -> str:
+    flat = " ".join(text.replace("|", "/").split())
+    return flat if len(flat) <= limit else flat[: limit - 1] + "..."
+
+
 def _f(v: float | int | None) -> str:
     if v is None:
         return "-"
+    if abs(v) >= 1e15 or (v != 0 and abs(v) < 1e-4):
+        return f"{v:.4g}"
     return str(int(v)) if float(v).is_integer() else str(round(v, 4))

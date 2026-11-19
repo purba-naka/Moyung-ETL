@@ -29,7 +29,7 @@ def _lines(**kw) -> list[str]:
 def test_profile_columns() -> None:
     lines = _lines()
     assert lines[0].startswith("F1.S1.R1 S A2:E13: 9 data rows from r4, header r2-r3")
-    assert "totals left out: r13" in lines[0]
+    assert "total rows r13 excluded from these numbers" in lines[0]
     assert lines[1:] == [
         "A TANGGAL: date 2026-01-01..2026-02-03 distinct 8 odd text 1 at r9 (JAN)",
         "B JANUARI|PKG: num 1..15 distinct 6",

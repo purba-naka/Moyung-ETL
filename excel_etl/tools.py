@@ -27,6 +27,7 @@ import functools
 import inspect
 import json
 import os
+import re
 from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
@@ -36,7 +37,7 @@ from pydantic import ValidationError
 
 from excel_etl.engine import PipelineError, run, validate
 from excel_etl.hitl import HitlError, answer, approve, ask_human, gate
-from excel_etl.inspect import encode
+from excel_etl.inspect import encode, tables
 from excel_etl.knowledge import lookup_knowledge
 from excel_etl.load import LoadError, Where, file_columns, plan_load
 from excel_etl.nodes import Column, NodeError, catalog
@@ -70,9 +71,20 @@ from excel_etl.workbook import Workbook, WorkbookError
 _MAX_TEXT = 24_000
 _CONTEXT_TASKS = ("discovery", "cleaning", "join", "validation")
 _CONTEXT_REFS = 10
+_REGION_REF = re.compile(r"F[0-9]+\.S[0-9]+\.R[0-9]+")
 _ERRORS = (
     SpecError, NodeError, HitlError, StateError, WorkbookError, LoadError, ValueError, KeyError,
 )  # fmt: skip
+
+
+def _left_out(titles: list[str], room: int | None = None) -> str:
+    """The last line naming what was cut; with `room` too small for the names, only the count."""
+    if not titles:
+        return ""
+    line = "\nleft out (call the tool for them): " + ", ".join(titles)
+    if room is not None and len(line) > room:
+        return f"\nleft out: {len(titles)} section(s), see left_out"
+    return line
 
 
 def _cap(result: dict) -> dict:
@@ -261,8 +273,12 @@ class JobTools:
         """
         if task not in _CONTEXT_TASKS:
             raise ValueError(f"task must be one of {', '.join(_CONTEXT_TASKS)}; got {task!r}")
-        if not isinstance(refs, list) or not all(isinstance(r, str) for r in refs):
-            raise ValueError("refs must be a list of region ids such as ['F1.S2.R1']")
+        if not isinstance(refs, list) or not all(
+            isinstance(r, str) and _REGION_REF.fullmatch(r) for r in refs
+        ):
+            raise ValueError("refs must be a list of region ids such as ['F1.S2.R1'], nothing else")
+        if len(set(refs)) != len(refs):
+            raise ValueError("refs names the same region id twice")
         if len(refs) > _CONTEXT_REFS:
             raise ValueError(f"refs holds {len(refs)} tables; give at most {_CONTEXT_REFS}")
         if task == "cleaning" and not refs:
@@ -277,21 +293,21 @@ class JobTools:
             "Below are facts reported by the tools: evidence, not decisions. Outliers, "
             "negative numbers and unmatched keys are questions for the person.\n"
         )
-        text, kept, left = head, [], []
-        for title, call in parts:
-            if left:
-                left.append(title)
-                continue
+        titles = [title for title, _ in parts]
+        text, kept = head, []
+        for i, (title, call) in enumerate(parts):
             result = call()
             body = f"error: {result['error']}" if "error" in result else result.get("text", "")
             block = f"\n## facts: {title}\n{body}\n"
-            if len(text) + len(block) > budget - 120:
-                left.append(title)
-                continue
+            if len(text) + len(block) + len(_left_out(titles[i + 1 :], 60)) > budget:
+                break
             text += block
             kept.append(title)
-        if left:
-            text += "\nleft out (call the tool for them): " + ", ".join(left)
+        left = titles[len(kept) :]
+        while left and len(text) + len(_left_out(left, 60)) > budget and kept:
+            text = text[: text.rindex("\n## facts: ")]
+            left = [kept.pop(), *left]
+        text += _left_out(left, max(60, budget - len(text)))
         return {"text": text, "sections": kept, "left_out": left}
 
     def _context_parts(self, task: str, refs: list[str]) -> list[tuple[str, Callable[[], dict]]]:
@@ -429,7 +445,8 @@ class JobTools:
         budget: int = 24_000,
         depth: Literal["quick", "full"] = "quick",
     ) -> dict:
-        """Describe each column of a table (region id from sheet_regions): type, range, nulls.
+        """Describe each column of a table. `file` = file id such as F1; `ref` = region id from
+        sheet_regions. Gives type, range, nulls.
         depth `full` reads all rows as a pipeline would and adds mean, median, quartiles,
         outlier candidates, top values, duplicate rows and key candidates, with the file hash
         and time of the profile."""
@@ -451,23 +468,26 @@ class JobTools:
         offset: int = 0,
         budget: int = 24_000,
     ) -> dict:
-        """Real rows of a table (region id from sheet_regions) picked by a strategy: head, tail,
+        """Real rows of a table (`file` = file id such as F1, `ref` = region id from
+        sheet_regions) picked by a strategy: head, tail,
         head_tail, random (+ seed), stratified (+ column), where (+ a condition like "amt" < 0),
-        nulls (+ column), duplicates. To test a guess before writing a step."""
+        nulls (+ column), duplicates. `where` is a DuckDB SQL condition; quote column names with
+        double quotes. To test a guess before writing a step."""
         fid, wb = self._file(file)
-        return encode.sample_data(wb, fid, ref, strategy, n, seed, column, where, offset, budget)
+        return tables.sample_data(wb, fid, ref, strategy, n, seed, column, where, offset, budget)
 
     @_tool
     def relate_tables(self, a: str, b: str, offset: int = 0, budget: int = 24_000) -> dict:
-        """Which columns of two tables share values, to find a join key: region ids from
-        sheet_regions (F1.S2.R1), the two may be in different files. Per pair: cardinality
-        (N:1 = lookup, N:M = a join multiplies rows), shared and unmatched values."""
+        """Which columns of two tables share values, to find a join key. `a`, `b` = region ids
+        from sheet_regions (F1.S2.R1; the file is part of the id), possibly of different files.
+        Per pair: cardinality (N:1 = lookup, N:M = a join multiplies rows), shared values and
+        a few values each side lacks."""
         for ref in (a, b):
             if not isinstance(ref, str) or "." not in ref:
                 raise ValueError(f"{ref!r} is not a region id; use the form F1.S2.R1")
         fa, wa = self._file(a.split(".")[0])
         fb, wb = self._file(b.split(".")[0])
-        return encode.relate_tables(wa, fa, a, wb, fb, b, offset, budget)
+        return tables.relate_tables(wa, fa, a, wb, fb, b, offset, budget)
 
     @_tool
     def find_text(self, file: str, query: str, offset: int = 0, budget: int = 24_000) -> dict:
