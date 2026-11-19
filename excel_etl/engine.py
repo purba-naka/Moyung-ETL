@@ -21,7 +21,7 @@ from pydantic import BaseModel, ConfigDict
 
 from excel_etl.hitl import HitlState, gate
 from excel_etl.inspect.regions import TOTAL_LABEL
-from excel_etl.ml import ARTIFACT_NOTES, MlResult, artifacts, check_columns, output_columns
+from excel_etl.ml import ARTIFACT_NOTES, MlResult, artifacts, check_columns
 from excel_etl.ml import split as ml_split
 from excel_etl.nodes import Column, NodeError, Schema, build, infer, quote, schema_of
 from excel_etl.nodes.base import check_arity, connect, sql_text
@@ -37,6 +37,7 @@ from excel_etl.nodes.source import (
     type_fits,
 )
 from excel_etl.pipeline import PipelineSpec, Source, Step
+from excel_etl.prep import planned_columns
 from excel_etl.quality import CheckResult, check_schema, run_checks
 from excel_etl.tablefile import TableFile, TableFileError, as_table_file
 from excel_etl.verify import VerifyReport, verify
@@ -417,6 +418,19 @@ def _load_table(
     )
 
 
+def _encoded_hint(spec: PipelineSpec, why: str) -> str:
+    """Say why a check cannot name a one_hot column: it exists only after the run."""
+    ml = spec.ml
+    if ml is None or not any(r.strategy == "one_hot" for r in ml.categorical.values()):
+        return ""
+    if "has no column" not in why or not any(t in why for t in ml.tables().values()):
+        return ""
+    return (
+        " (a one_hot column is replaced by <column>_<value> columns that exist only after the "
+        "run: check the other columns, or the row counts)"
+    )
+
+
 def _plan_ml(spec: PipelineSpec, st: _State) -> bool:
     """Check the `ml` declaration against its input's columns and register its tables."""
     ml = spec.ml
@@ -427,7 +441,7 @@ def _plan_ml(spec: PipelineSpec, st: _State) -> bool:
         st.issue("ml", problem)
     if problems:
         return False
-    columns = output_columns(ml, st.schemas[ml.input])
+    columns = planned_columns(ml, st.schemas[ml.input])
     for table in ml.tables().values():
         st.schemas[table] = columns
     return True
@@ -450,6 +464,14 @@ def _run_ml(spec: PipelineSpec, con: duckdb.DuckDBPyConnection, st: _State) -> M
         return None
     seconds = round(time.perf_counter() - t0, 4)
     st.warnings.extend(f"ml: {w}" for w in result.warnings)
+    if result.cut:
+        cut = ", ".join(f"{part} {n}" for part, n in result.cut.items())
+        st.warnings.append(
+            f"ml: rows with an empty value were dropped ({cut}); the partitions are smaller "
+            "than the sizes asked for"
+        )
+    for table in ml.tables().values():
+        st.schemas[table] = result.columns
     for part, table in ml.tables().items():
         st.stats.append(
             NodeStat(
@@ -564,7 +586,7 @@ def validate(spec: PipelineSpec, files: dict[str, FileInput] | None = None) -> V
         _run_steps(spec, con, st, run_nodes=False)
         _plan_ml(spec, st)
         for name, why in check_schema(spec.checks, st.schemas).items():
-            st.issue(f"checks.{name}", why)
+            st.issue(f"checks.{name}", why + _encoded_hint(spec, why))
     finally:
         con.close()
     if files is None:

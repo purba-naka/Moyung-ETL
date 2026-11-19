@@ -173,9 +173,9 @@ Nothing lost between input and output:
 ## A dataset for machine learning (train, validation, test)
 
 The `ml` section cuts one table into partitions and writes what describes them. It only
-prepares data: nothing here trains or scores a model, and it does not yet fill, encode or
-scale values (`fill_missing` before `ml` can fill a fixed value; tell the person that the
-rest is left to the model code). Every column of `input` must be placed
+prepares data: nothing here trains or scores a model. Preprocessing (below) is optional
+and is learned from the train rows only, then applied to train, validation and test alike.
+Every column of `input` must be placed
 under `features`, `ids` (kept, not a feature), `exclude` (dropped on purpose) or be the
 `target`; a column left out is an error. The partitions are tables named `<name>_train`,
 `<name>_validation` (when `validation_size` is set) and `<name>_test`: write them with
@@ -185,8 +185,29 @@ under `features`, `ids` (kept, not a feature), `exclude` (dropped on purpose) or
 ```json
 {"name": "churn", "input": "clean", "target": "churn",
  "features": ["age", "spend", "segment"], "ids": ["customer_id"], "exclude": ["note"],
- "split": {"strategy": "stratified", "test_size": 0.2, "validation_size": 0.1, "seed": 42}}
+ "split": {"strategy": "stratified", "test_size": 0.2, "validation_size": 0.1, "seed": 42},
+ "missing": {"age": {"strategy": "median"}},
+ "numerical": {"spend": {"strategy": "standard_scale"}},
+ "categorical": {"segment": {"strategy": "one_hot", "unknown": "ignore"}}}
 ```
+
+Preprocessing rules (only for `features`; the target and the ids are never changed). Per
+column the order is: drop rows with an empty value, fill empty values, then scale or encode.
+`missing`: `drop` (the row is removed from every partition), `constant` (with `"value"`),
+`mean` or `median` (numbers), `mode` (text, boolean, whole numbers). `numerical`:
+`standard_scale`, `minmax` (0 at the train minimum, 1 at the train maximum; test values can
+fall outside), `log1p` (values must be above -1). `categorical`: `one_hot` (columns named
+`<column>_<value>`, which exist only after the run, so a check cannot name them) or
+`ordinal` (position, from 0, in the train categories sorted by value: numbers by size, text
+alphabetically; it is not a ranking such as low/mid/high, use `one_hot` then); `unknown` says
+what a value not seen in train becomes: `ignore` (all zeros, or empty) or `error`. A column is either `numerical` or
+`categorical`, not both. An empty value that is not filled stays empty (`ordinal`) or gives
+all zeros (`one_hot`); a `constant` fill that equals a category is that category. The mean and
+standard deviation include outliers: clean them with a `filter` step before `ml`. A date
+feature is not preprocessed: derive a number from it (`derive`) before `ml`. `drop` also
+removes the rows of new data: `apply_preprocessing` says how many. The numbers learned (fill values, mean, std, min, max, categories)
+are in `preprocessing_metadata.json`: the same file prepares new data later
+(`apply_preprocessing`), so a model sees new rows exactly as it saw the training rows.
 
 Choosing roles: `ids` are keys kept for tracing (an id left among the features leaks);
 `exclude` is for personal data, free-text notes and columns that would give the answer away;
