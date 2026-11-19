@@ -71,6 +71,7 @@ class NodeStat(_Report):
     columns: int
     seconds: float
     note: str = ""
+    schema_out: tuple[str, ...] = ()
 
 
 class OutputStat(_Report):
@@ -81,9 +82,25 @@ class OutputStat(_Report):
     columns: int
 
 
+class RunSummary(_Report):
+    """One line of a job's run history: when it ran, on which spec version, how it went."""
+
+    at: str
+    ref: str | None = None
+    status: Literal["ok", "failed"]
+    seconds: float
+    rows: dict[str, int] = {}
+    checks_failed: int = 0
+
+
 def _columns(cols: tuple[Column, ...], limit: int = 40) -> str:
     shown = ", ".join(c.name for c in cols[:limit])
     return shown + (f", ... ({len(cols)} columns)" if len(cols) > limit else "")
+
+
+def _schema_tuple(cols: tuple[Column, ...], limit: int = 40) -> tuple[str, ...]:
+    """A node's output schema as `name TYPE` lines (first 40): what a run actually produced."""
+    return tuple(f"{c.name} {c.type}" for c in cols[:limit])
 
 
 def _explain(e: Exception, step: Step, schemas: dict[str, Schema]) -> str:
@@ -142,7 +159,17 @@ class RunReport(_Report):
     ref: str | None = None
     files: dict[str, str] = {}
     verify: VerifyReport | None = None
-    files: dict[str, str] = {}
+
+    def summary(self, at: str) -> RunSummary:
+        """The run as one history line (`at` is now, UTC, given by the caller)."""
+        return RunSummary(
+            at=at,
+            ref=self.ref,
+            status=self.status,
+            seconds=self.seconds,
+            rows={o.name: o.rows for o in self.outputs},
+            checks_failed=sum(1 for c in self.checks if not c.passed and c.severity == "error"),
+        )
 
     def text(self, full: bool = True) -> str:
         """`full=False` is for an agent that only needs to act: on success the outputs, on
@@ -299,6 +326,7 @@ def _load_sources(
                 rows_out=_count(con, name),
                 columns=len(schema),
                 seconds=round(time.perf_counter() - t0, 4),
+                schema_out=_schema_tuple(schema),
                 note=(
                     f"{len(locs)} sheets: {locs[0].sheet}..{locs[-1].sheet}"
                     if source.sheet.name_regex is not None
@@ -361,6 +389,7 @@ def _run_steps(
                 rows_out=rows,
                 columns=len(actual),
                 seconds=round(time.perf_counter() - t0, 4),
+                schema_out=_schema_tuple(actual),
                 note=n.why_rows_change() if rows != rows_in else "",
             )
         )

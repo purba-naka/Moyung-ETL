@@ -29,7 +29,7 @@ from typing import Literal, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
-from excel_etl.engine import RunReport
+from excel_etl.engine import RunReport, RunSummary
 from excel_etl.hitl import HitlState
 from excel_etl.knowledge import Knowledge
 from excel_etl.nodes.base import describe
@@ -100,6 +100,7 @@ class JobState(_Model):
     history: SpecHistory | None = None
     binds: dict[str, BindRecord] = {}
     last_run: RunReport | None = None
+    runs: list[RunSummary] = Field(default=[], max_length=20)
     loads: list[LoadRecord] = Field(default=[], max_length=200)
     planned: PlannedLoad | None = None
 

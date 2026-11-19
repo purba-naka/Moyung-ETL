@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from datetime import date, datetime
 
 import pytest
 from conftest import make_xlsx
@@ -39,7 +40,11 @@ def test_a_matching_file_is_exact_and_gives_a_record() -> None:
     s = rep.sources["s"]
     assert s.status == "exact" and rep.ok and s.diff == ()
     assert s.record == BindRecord(
-        sheet="Data", header_row=0, first_col=0, columns=("Item", "Qty", "Price")
+        sheet="Data",
+        header_row=0,
+        first_col=0,
+        columns=("Item", "Qty", "Price"),
+        types={"item": "VARCHAR", "qty": "BIGINT", "price": "BIGINT"},
     )
     assert rep.records() == {"s": s.record}
     assert "s|exact at Data!A1" in rep.text()
@@ -216,7 +221,12 @@ def test_multi_sheet_rebind_ignores_new_sheet_names_and_counts() -> None:
     first = rebind(spec, _multi_book())
     assert first.sources["s"].status == "exact"
     assert first.sources["s"].record == BindRecord(
-        sheet="d1", header_row=0, first_col=0, columns=_BASE[0], sheets=2
+        sheet="d1",
+        header_row=0,
+        first_col=0,
+        columns=_BASE[0],
+        types={"item": "VARCHAR", "qty": "BIGINT", "price": "BIGINT"},
+        sheets=2,
     )
     again = rebind(spec, _multi_book(), first.records())
     grown = rebind(spec, _multi_book(("d0", "d1", "d2", "d3")), first.records())
@@ -310,3 +320,61 @@ def test_every_drift_message_ends_with_what_to_do_next() -> None:
     assert s.status == "drift" and any(
         "compare_sheets" in d and "set sheet.name" in d for d in s.diff
     )
+
+
+def test_a_column_that_turned_to_text_is_drift_with_advice() -> None:
+    spec = _spec(_src())
+    prev = _bind(_BASE, spec).records()
+    text_qty = [["Item", "Qty", "Price"], ["pen", "many", 2.0], ["ink", 2, 3.0]]
+    s = _bind(text_qty, spec, prev).sources["s"]
+    assert s.status == "drift"
+    assert any("was BIGINT, is now VARCHAR" in d and "then add a cast step" in d for d in s.diff)
+
+
+def test_a_narrowed_type_is_drift_even_between_numbers() -> None:
+    spec = _spec(_src())
+    fractions = [["Item", "Price"], ["pen", 2.5], ["ink", 3.5]]
+    prev = _bind(fractions, spec).records()
+    whole = [["Item", "Price"], ["pen", 2], ["ink", 3]]
+    s = _bind(whole, spec, prev).sources["s"]
+    assert s.status == "drift"
+    assert any("was DOUBLE, is now BIGINT" in d for d in s.diff)
+
+
+def test_a_widened_type_is_only_shifted() -> None:
+    spec = _spec(_src())
+    ints = [["Item", "Qty", "Price"], ["pen", 1, 2.0], ["ink", 2, 3.0]]
+    prev = _bind(ints, spec).records()
+    mixed = [["Item", "Qty", "Price"], ["pen", 1, 2.0], ["ink", 2.5, 3.0]]
+    s = _bind(mixed, spec, prev).sources["s"]
+    assert s.status == "shifted" and s.diff
+    assert any("type BIGINT -> DOUBLE (safe widening)" in d for d in s.diff)
+
+
+def test_a_date_that_gained_a_time_is_only_shifted() -> None:
+    spec = _spec(_src(anchor=("Day",)))
+    days = [["Day", "Qty"], [date(2026, 1, 1), 1], [date(2026, 1, 2), 2]]
+    prev = _bind(days, spec).records()
+    stamps = [["Day", "Qty"], [datetime(2026, 1, 1, 8, 0), 1], [datetime(2026, 1, 2, 9, 0), 2]]
+    s = _bind(stamps, spec, prev).sources["s"]
+    assert s.status == "shifted"
+    assert any("type DATE -> TIMESTAMP (safe widening)" in d for d in s.diff)
+
+
+def test_a_renamed_column_reports_names_not_types() -> None:
+    spec = _spec(
+        _src(expect=[{"match": "Qty", "required": False}, {"match": "Amount", "required": False}])
+    )
+    prev = _bind(_BASE, spec).records()
+    renamed = [["Item", "Amount", "Price"], ["pen", 1, 2.0], ["ink", 2, 3.0]]
+    s = _bind(renamed, spec, prev).sources["s"]
+    assert s.status == "shifted"
+    assert any("columns added" in d for d in s.diff)
+    assert not any("was" in d and "is now" in d for d in s.diff)
+
+
+def test_a_record_without_types_skips_the_type_judgement() -> None:
+    spec = _spec(_src())
+    old = {"s": BindRecord(sheet="Data", header_row=0, first_col=0, columns=tuple(_BASE[0]))}
+    s = _bind(_BASE, spec, old).sources["s"]
+    assert s.status == "exact" and s.diff == ()

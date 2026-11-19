@@ -10,8 +10,11 @@ kept inside, no agent framework imported. Repository `Moyung-ETL`, package `exce
 1. **Understand**: map sheets, find tables, show a compressed view of a range, profile columns.
 2. **Build**: the agent writes a spec (sources, steps, outputs, checks); `save_spec` validates it.
 3. **Run and check**: duckdb runs the spec to parquet/csv; checks (`not_null`, `unique`, `range`,
-   `accepted_values`, `reconcile`) prove the output.
-4. **Recycle**: a new file for the same job is bound to the saved spec; only drift needs a fix.
+   `accepted_values`, `regex`, `row_count`, `duplicate_rows`, `foreign_key`, `reconcile`) prove
+   the output.
+4. **Recycle**: a new file for the same job is bound to the saved spec; only drift needs a fix
+   (a changed column type is drift; a safe widening, such as a whole number read as a double,
+   is only reported).
 5. **Load** (plan only): SQL steps to load an output into Snowflake, Databricks or BigQuery.
    The host runs them with its own login.
 

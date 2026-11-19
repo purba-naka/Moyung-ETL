@@ -713,7 +713,15 @@ class JobTools:
         if self.per_version:
             target = target / f"v{self._version()}"
         rep = run(spec, files, target, hitl=s.hitl, ref=f"v{self._version()}")
-        self.job.update(lambda st: st.model_copy(update={"last_run": rep}))
+        stamp = datetime.now(UTC).isoformat(timespec="seconds")
+        self.job.update(
+            lambda st: st.model_copy(
+                update={
+                    "last_run": rep,
+                    "runs": [*st.runs, rep.summary(stamp)][-20:],
+                }
+            )
+        )
         text = rep.text(full=False)
         if why := gate(self._state.hitl, "after_run", failed=rep.status != "ok"):
             text += f"\nask the person before going on: {why}"
@@ -721,9 +729,22 @@ class JobTools:
 
     @_tool
     def last_run(self) -> dict:
-        """The report of the last run: rows per step, checks, files written, problems."""
+        """The report of the last run: rows per step, checks, files written, problems. The tail
+        lists this job's earlier runs: when, which spec version, status, rows, failed checks."""
         rep = self._state.last_run
-        return {"text": rep.text() if rep else "no run yet"}
+        if rep is None:
+            return {"text": "no run yet"}
+        lines = [rep.text()]
+        past = self._state.runs[:-1]
+        if past:
+            lines.append(f"earlier runs of this job (newest first, {len(past)}):")
+            for r in reversed(past):
+                out = sum(r.rows.values())
+                lines.append(
+                    f"  {r.at}|{r.ref or '-'}|{r.status}|{r.seconds:.2f}s|"
+                    f"{out} rows|{r.checks_failed} check(s) failed"
+                )
+        return {"text": "\n".join(lines)}
 
     @_tool
     def verify_run(self) -> dict:

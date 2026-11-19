@@ -155,7 +155,17 @@ def test_the_patterns_file_has_snippets_of_every_kind() -> None:
     used = {s["node"] for _, s in _snippets() if "node" in s}
     assert {"unpivot", "unpivot_groups", "fill_down", "drop_rows", "window", "group_by"} <= used
     checks = {s["kind"] for _, s in _snippets() if "kind" in s}
-    assert checks == {"reconcile", "not_null", "unique", "range", "accepted_values"}
+    assert checks == {
+        "reconcile",
+        "not_null",
+        "unique",
+        "range",
+        "accepted_values",
+        "regex",
+        "row_count",
+        "duplicate_rows",
+        "foreign_key",
+    }
 
 
 @pytest.mark.parametrize(

@@ -370,6 +370,145 @@ def test_spec_rejects_check_on_unknown_table():
                 }
             }
         )
+    with pytest.raises(SpecError, match="reads 'ghost'"):
+        _spec(
+            {
+                "fk": {
+                    "kind": "foreign_key",
+                    "table": "daily",
+                    "column": "Month",
+                    "ref_table": "ghost",
+                    "ref_column": "x",
+                }
+            }
+        )
+
+
+def test_regex_counts_null_and_non_matching_values_with_examples():
+    con, sc = world(
+        t="CREATE TABLE t AS SELECT * FROM (VALUES ('PKT-1'), ('pkt-2'), ('X'), (NULL)) v(code)"
+    )
+    (r,), broken = one(
+        {"c": chk(kind="regex", table="t", column="code", pattern=r"^PKT-\d+$")}, con, sc
+    )
+    assert not broken and not r.passed and r.bad_rows == 3
+    assert "3 value(s) of 'code' do not match /^PKT-" in r.message
+    assert "None" in r.message and "X" in r.message and "pkt-2" in r.message
+
+
+def test_regex_matches_anywhere_and_the_whole_value_needs_anchors():
+    con, sc = world(
+        t="CREATE TABLE t AS SELECT * FROM (VALUES ('a-pen-x'), ('pen'), ('other')) v(t)"
+    )
+    (part,), _ = one({"c": chk(kind="regex", table="t", column="t", pattern="pen")}, con, sc)
+    assert part.bad_rows == 1 and "other" in part.message
+    (whole,), _ = one({"c": chk(kind="regex", table="t", column="t", pattern="^pen$")}, con, sc)
+    assert whole.bad_rows == 2
+
+
+def test_regex_passes_on_clean_and_rejects_non_text_columns():
+    con, sc = world(t="CREATE TABLE t AS SELECT * FROM (VALUES ('a'), ('b')) v(x)")
+    (r,), broken = one({"c": chk(kind="regex", table="t", column="x", pattern=".")}, con, sc)
+    assert r.passed and r.message == "" and not broken
+    _, broken = one({"c": chk(kind="regex", table="t", column="x", pattern=".")}, con, sc)
+    con, sc = world(n="CREATE TABLE n AS SELECT 1 AS n")
+    _, broken = one({"c": chk(kind="regex", table="n", column="n", pattern=".")}, con, sc)
+    assert broken == {"c": "regex needs a text column; 'n' is INTEGER"}
+
+
+def test_regex_bad_pattern_is_refused_when_the_spec_is_read():
+    with pytest.raises(ValidationError):
+        chk(kind="regex", table="t", column="x", pattern="[")
+
+
+def test_row_count_between_and_outside_bounds():
+    con, sc = world(t="CREATE TABLE t AS SELECT * FROM (VALUES (1), (2), (3)) v(n)")
+    (ok,), broken = one({"c": chk(kind="row_count", table="t", min=2, max=5)}, con, sc)
+    assert ok.passed and not broken
+    (short,), _ = one({"c": chk(kind="row_count", table="t", min=5)}, con, sc)
+    assert not short.passed and short.bad_rows == 2 and "short by 2" in short.message
+    (over,), _ = one({"c": chk(kind="row_count", table="t", max=2)}, con, sc)
+    assert not over.passed and over.bad_rows == 1 and "over by 1" in over.message
+
+
+def test_row_count_needs_a_bound_and_min_not_above_max():
+    with pytest.raises(ValidationError):
+        chk(kind="row_count", table="t")
+    with pytest.raises(ValidationError):
+        chk(kind="row_count", table="t", min=5, max=2)
+
+
+def test_duplicate_rows_counts_redundant_rows_and_passes_when_distinct():
+    con, sc = world(
+        t="CREATE TABLE t AS SELECT * FROM (VALUES ('a',1),('a',1),('b',2),('c',3),('c',3),('c',3)) v(k,n)"
+    )
+    (r,), broken = one({"c": chk(kind="duplicate_rows", table="t")}, con, sc)
+    assert not broken and not r.passed and r.bad_rows == 3
+    assert "3 duplicate row(s) in 't' (2 group(s) of them)" in r.message
+    con, sc = world(d="CREATE TABLE d AS SELECT * FROM (VALUES (1),(2)) v(n)")
+    (ok,), _ = one({"c": chk(kind="duplicate_rows", table="d")}, con, sc)
+    assert ok.passed and ok.message == ""
+
+
+def test_foreign_key_finds_orphans_and_skips_null():
+    con, sc = world(
+        orders="CREATE TABLE orders AS SELECT * FROM (VALUES (1), (2), (3), (NULL)) v(customer_id)",
+        customers="CREATE TABLE customers AS SELECT * FROM (VALUES (1), (2)) v(id)",
+    )
+    (r,), broken = one(
+        {
+            "c": chk(
+                kind="foreign_key",
+                table="orders",
+                column="customer_id",
+                ref_table="customers",
+                ref_column="id",
+            )
+        },
+        con,
+        sc,
+    )
+    assert not broken and not r.passed and r.bad_rows == 1
+    assert "1 value(s) of orders.customer_id missing from customers.id: 3" in r.message
+
+
+def test_foreign_key_accepts_numeric_families_but_not_text_against_numbers():
+    con, sc = world(
+        orders="CREATE TABLE orders AS SELECT * FROM (VALUES (1), (2)) v(customer_id)",
+        customers="CREATE TABLE customers AS SELECT * FROM (VALUES (1.0), (2.0)) v(id)",
+    )
+    (r,), broken = one(
+        {
+            "c": chk(
+                kind="foreign_key",
+                table="orders",
+                column="customer_id",
+                ref_table="customers",
+                ref_column="id",
+            )
+        },
+        con,
+        sc,
+    )
+    assert not broken and r.passed
+    con, sc = world(
+        orders="CREATE TABLE orders AS SELECT '1' AS customer_id",
+        customers="CREATE TABLE customers AS SELECT 1 AS id",
+    )
+    _, broken = one(
+        {
+            "c": chk(
+                kind="foreign_key",
+                table="orders",
+                column="customer_id",
+                ref_table="customers",
+                ref_column="id",
+            )
+        },
+        con,
+        sc,
+    )
+    assert "VARCHAR" in broken["c"] and "INTEGER" in broken["c"]
 
 
 def test_spec_round_trip_keeps_checks():

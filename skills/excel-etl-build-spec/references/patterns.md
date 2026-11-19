@@ -120,6 +120,22 @@ Nothing lost between input and output:
 {"kind": "accepted_values", "table": "sales", "column": "Unit", "values": ["KG", "TON"]}
 ```
 
+```json
+{"kind": "regex", "table": "sales", "column": "Ref", "pattern": "^SO-[0-9]+$"}
+```
+
+```json
+{"kind": "row_count", "table": "sales", "min": 1, "max": 100000, "severity": "warn"}
+```
+
+```json
+{"kind": "duplicate_rows", "table": "sales", "severity": "warn"}
+```
+
+```json
+{"kind": "foreign_key", "table": "lines", "column": "Ref", "ref_table": "sales", "ref_column": "Ref"}
+```
+
 ## Where an output goes in a database
 
 Only when the person wants the result in a warehouse; the `excel-etl-load` skill covers the
