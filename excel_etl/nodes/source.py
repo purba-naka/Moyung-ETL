@@ -231,6 +231,11 @@ _FITS: dict[str, tuple[str, ...]] = {
 }
 
 
+def accepted_types(want: str) -> tuple[str, ...]:
+    """The duckdb types an `expect_columns` type accepts, for messages."""
+    return _FITS[want]
+
+
 def type_fits(want: str, actual: str) -> bool:
     """Whether a column read as duckdb type `actual` satisfies an `expect_columns` type."""
     return actual in _FITS[want]

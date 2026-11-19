@@ -99,6 +99,11 @@ def _say(item: Any) -> str:
     if kind == "string_type":
         return "must be one piece of text (a single name), not a list or a number"
     if kind == "extra_forbidden":
+        if "checks" in item["loc"]:
+            return (
+                "is not a setting of this check kind (not_null and unique take `columns`, a list; "
+                "the other kinds take `column`, one name; see the skill's check list)"
+            )
         return "is not a setting here (check the spelling; node_catalog lists the valid ones)"
     return msg.removeprefix("Value error, ")
 
