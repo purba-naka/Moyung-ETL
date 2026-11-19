@@ -143,6 +143,13 @@ Never guess a column name; copy it from a tool result. An error says what to cha
 Same table across many sheets: `"sheet": {"name_regex": "day-[0-9]{2}", "sheet_column": "source_sheet"}`.
 Two-row header: `"header_rows": 2` gives columns like `Sales|Qty`.
 
+CSV and Parquet: `{"kind": "csv", "file_role": "f"}` (or `"parquet"`), no `sheet` or `region`;
+a csv also takes `delimiter` and `header`. The kind of a registered file comes from its
+extension (`.csv`, `.tsv`, `.txt`, `.parquet`; anything else is a workbook). Differences from
+Excel: no sheets, regions or formulas, so `workbook_map` is the only discovery tool (it lists
+columns, row count and first rows) and `rebind_sources` judges columns and types only.
+Integer types narrower than 64 bits read as BIGINT and FLOAT as DOUBLE. UTF-8 text only.
+
 | Group | Steps |
 |---|---|
 | Tidy Excel shapes | `drop_rows`, `fill_down`, `unpivot`, `unpivot_groups`, `split_header_token`, `parse_hierarchy` |

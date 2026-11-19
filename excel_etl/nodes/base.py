@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 import math
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, ClassVar
@@ -282,8 +282,13 @@ def infer(n: Node, inputs: list[Schema]) -> Schema:
     return out
 
 
-def connect(write_dir: Path | None = None) -> duckdb.DuckDBPyConnection:
+def connect(
+    write_dir: Path | None = None, read_paths: Sequence[Path] = ()
+) -> duckdb.DuckDBPyConnection:
     """A fresh in-memory duckdb that cannot touch files or the network.
+
+    `read_paths` are the individual files it may read (the CSV and Parquet sources of a run),
+    allowed before the lock like `write_dir` and for the same reason.
 
     `write_dir` is the one directory it may read and write in (outputs of a run); the
     permission is set before access is locked, after which it cannot be widened (measured:
@@ -294,5 +299,8 @@ def connect(write_dir: Path | None = None) -> duckdb.DuckDBPyConnection:
     if write_dir is not None:
         path = write_dir.resolve().as_posix().replace("'", "''")
         con.execute(f"SET allowed_directories=['{path}']")
+    if read_paths:
+        listed = ", ".join(sql_text(p.resolve().as_posix()) for p in read_paths)
+        con.execute(f"SET allowed_paths=[{listed}]")
     con.execute("SET enable_external_access=false")
     return con

@@ -16,7 +16,8 @@ import duckdb
 
 from excel_etl.inspect.encode import column_names, few, text_key
 from excel_etl.inspect.regions import Region, SheetGrid, detect_regions
-from excel_etl.nodes.base import NodeError, Relation, quote
+from excel_etl.nodes.base import NodeError, Relation, quote, sql_text
+from excel_etl.tablefile import TableFile
 from excel_etl.workbook import Workbook
 
 if TYPE_CHECKING:
@@ -237,8 +238,13 @@ def accepted_types(want: str) -> tuple[str, ...]:
 
 
 def type_fits(want: str, actual: str) -> bool:
-    """Whether a column read as duckdb type `actual` satisfies an `expect_columns` type."""
-    return actual in _FITS[want]
+    """Whether a column read as duckdb type `actual` satisfies an `expect_columns` type.
+    Parquet also brings DECIMAL(p,s) (a `float`) and TIMESTAMP variants (a `datetime`)."""
+    if actual in _FITS[want]:
+        return True
+    return (want == "float" and actual.startswith("DECIMAL")) or (
+        want == "datetime" and actual.startswith("TIMESTAMP")
+    )
 
 
 def missing_required(source: Source, names: Sequence[str]) -> list[ColumnExpect]:
@@ -364,4 +370,34 @@ def read_location(
             f"INSERT INTO {quote(name)} SELECT " + ", ".join(f"unnest(?::{t}[])" for t in types),
             cols,
         )
+    return con.table(name)
+
+
+_WIDEN_TO_BIGINT = {"TINYINT", "SMALLINT", "INTEGER", "UTINYINT", "USMALLINT", "UINTEGER"}
+_WIDEN_TO_DOUBLE = {"FLOAT"}
+
+
+def read_table_file(
+    tf: TableFile, source: Source, con: duckdb.DuckDBPyConnection, name: str
+) -> Relation:
+    """Load a CSV or Parquet file as table `name`. Column types are the engine's: narrow
+    integers read as BIGINT and FLOAT as DOUBLE, so a check or `expect_columns` means the
+    same for every kind of source."""
+    path = sql_text(tf.path.as_posix())
+    if tf.format == "parquet":
+        reader = f"read_parquet({path})"
+    else:
+        options = f", delim = {sql_text(source.delimiter)}" if source.delimiter else ""
+        reader = f"read_csv({path}, header = {'true' if source.header else 'false'}{options})"
+    described = con.execute(f"DESCRIBE SELECT * FROM {reader}").fetchall()
+    columns = []
+    for column, kind in ((row[0], row[1]) for row in described):
+        target = (
+            "BIGINT" if kind in _WIDEN_TO_BIGINT else "DOUBLE" if kind in _WIDEN_TO_DOUBLE else None
+        )
+        columns.append(
+            f"CAST({quote(column)} AS {target}) AS {quote(column)}" if target else quote(column)
+        )
+    con.execute(f"DROP TABLE IF EXISTS {quote(name)}")
+    con.execute(f"CREATE TABLE {quote(name)} AS SELECT {', '.join(columns)} FROM {reader}")
     return con.table(name)

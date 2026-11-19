@@ -31,14 +31,16 @@ from excel_etl.nodes.source import (
     locate_all,
     missing_required,
     read_locations,
+    read_table_file,
     type_fits,
 )
 from excel_etl.pipeline import PipelineSpec, Source, Step
 from excel_etl.quality import CheckResult, check_schema, run_checks
+from excel_etl.tablefile import TableFile, TableFileError, as_table_file
 from excel_etl.verify import VerifyReport, verify
 from excel_etl.workbook import Workbook, WorkbookError
 
-type FileInput = Workbook | str | os.PathLike[str] | bytes
+type FileInput = Workbook | TableFile | str | os.PathLike[str] | bytes
 
 _MAX_MESSAGE = 400
 _MAX_ISSUES = 50
@@ -234,7 +236,39 @@ class _State:
 def open_file(ref: FileInput) -> Workbook:
     if isinstance(ref, Workbook):
         return ref
+    if isinstance(ref, TableFile):
+        raise WorkbookError(f"the file is a {ref.format} file, but this source reads Excel")
     return Workbook.open(ref)
+
+
+def _open_tables(
+    spec: PipelineSpec, files: dict[str, FileInput] | None, st: _State
+) -> dict[str, TableFile]:
+    """The CSV and Parquet files the spec reads, one per `file_role`. A missing, unreadable or
+    mismatched file is an issue on its source, not an exception."""
+    tables: dict[str, TableFile] = {}
+    if files is None:
+        return tables
+    for name, source in spec.sources.items():
+        if source.kind == "excel":
+            continue
+        role, where = source.file_role, f"sources.{name}"
+        if role in tables:
+            if tables[role].format != source.kind:
+                st.issue(
+                    where,
+                    f"file {role!r} is {tables[role].format}, but this source is {source.kind}",
+                )
+            continue
+        if role not in files:
+            known = ", ".join(sorted(files)) or "none"
+            st.issue(where, f"no file for file_role {role!r}; files given: {known}")
+            continue
+        try:
+            tables[role] = as_table_file(files[role], source.kind)
+        except TableFileError as e:
+            st.issue(where, f"file {role!r}: {e}")
+    return tables
 
 
 def _check_columns(source: Source, schema: Schema, st: _State, where: str) -> None:
@@ -296,6 +330,7 @@ def _read_warnings(source: Source, locs: list[Location], where: str) -> list[str
 def _load_sources(
     spec: PipelineSpec,
     files: dict[str, FileInput] | None,
+    tables: dict[str, TableFile],
     con: duckdb.DuckDBPyConnection,
     st: _State,
 ) -> None:
@@ -305,6 +340,10 @@ def _load_sources(
     for name, source in spec.sources.items():
         where = f"sources.{name}"
         role = source.file_role
+        if source.kind != "excel":
+            if role in tables:
+                _load_table(name, source, tables[role], con, st)
+            continue
         if role not in books:
             books[role] = _open_role(role, files, st, where)
         wb = books[role]
@@ -338,6 +377,38 @@ def _load_sources(
                 ),
             )
         )
+
+
+def _load_table(
+    name: str, source: Source, tf: TableFile, con: duckdb.DuckDBPyConnection, st: _State
+) -> None:
+    t0 = time.perf_counter()
+    try:
+        rel = read_table_file(tf, source, con, name)
+    except (NodeError, duckdb.Error) as e:
+        st.issue(f"sources.{name}", str(e))
+        return
+    schema = schema_of(rel)
+    st.schemas[name] = schema
+    _check_columns(source, schema, st, f"sources.{name}")
+    one = schema[0].name if len(schema) == 1 else ""
+    if tf.format == "csv" and source.delimiter is None and any(d in one for d in ",;\t|"):
+        st.warnings.append(
+            f"sources.{name}: the file reads as one column {one!r}; the delimiter was not "
+            "detected, set `delimiter` on the source"
+        )
+    st.stats.append(
+        NodeStat(
+            id=name,
+            kind="source",
+            node=f"read_{tf.format}",
+            rows_in=0,
+            rows_out=_count(con, name),
+            columns=len(schema),
+            seconds=round(time.perf_counter() - t0, 4),
+            schema_out=_schema_tuple(schema),
+        )
+    )
 
 
 def _count(con: duckdb.DuckDBPyConnection, table: str) -> int:
@@ -408,9 +479,10 @@ def validate(spec: PipelineSpec, files: dict[str, FileInput] | None = None) -> V
     if files is not None and not isinstance(files, dict):
         st.issue("files", "files must be a dict of file_role -> file")
         files = None
-    con = connect()
+    tables = _open_tables(spec, files, st)
+    con = connect(read_paths=[t.path for t in tables.values()])
     try:
-        _load_sources(spec, files, con, st)
+        _load_sources(spec, files, tables, con, st)
         _run_steps(spec, con, st, run_nodes=False)
         for name, why in check_schema(spec.checks, st.schemas).items():
             st.issue(f"checks.{name}", why)
@@ -536,13 +608,14 @@ def run(
         ) from None
     t0 = time.perf_counter()
     st = _State()
-    con = connect(out_path)
+    tables = _open_tables(spec, files, st)
+    con = connect(out_path, [t.path for t in tables.values()])
     parts: list[tuple[Path, Path]] = []
     outputs: list[OutputStat] = []
     results: list[CheckResult] = []
     checked: VerifyReport | None = None
     try:
-        _load_sources(spec, files, con, st)
+        _load_sources(spec, files, tables, con, st)
         _run_steps(spec, con, st, run_nodes=True)
         if not st.issues:
             results = _run_checks(spec, con, st)
@@ -567,7 +640,7 @@ def run(
         checks=tuple(results),
         seconds=round(time.perf_counter() - t0, 3),
         ref=ref,
-        files={role: f.sha256 for role, f in files.items() if isinstance(f, Workbook)},
+        files={role: f.sha256 for role, f in files.items() if isinstance(f, Workbook | TableFile)},
         verify=checked,
     )
 
