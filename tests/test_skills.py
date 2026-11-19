@@ -154,7 +154,7 @@ def test_the_patterns_file_has_snippets_of_every_kind() -> None:
     assert {_kind(s) for _, s in _snippets()} == {"step", "check", "source", "output"}
     used = {s["node"] for _, s in _snippets() if "node" in s}
     assert {"unpivot", "unpivot_groups", "fill_down", "drop_rows", "window", "group_by"} <= used
-    checks = {s["kind"] for _, s in _snippets() if "kind" in s}
+    checks = {s["kind"] for _, s in _snippets() if _kind(s) == "check"}
     assert checks == {
         "reconcile",
         "not_null",

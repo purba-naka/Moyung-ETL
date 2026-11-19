@@ -20,6 +20,9 @@ Tool names may carry a prefix in your host.
    `sheet_regions` with its header texts and sheet name read from the file; paste it into the
    spec instead of typing them (9 of 15 refused saves in real jobs were header texts that were
    not on the sheet). Then adjust (see "Sources").
+   A CSV or Parquet file is already a table: use `{"kind": "csv", "file_role": "..."}` (or
+   `"parquet"`) with no `sheet` or `region`; `workbook_map` of such a file lists its columns
+   and gives the source to paste. A csv takes `delimiter` and `header` (see patterns.md).
 4. Add steps one concern at a time, in this order: tidy the shape, fix types, derive, combine,
    summarise. `references/patterns.md` maps an Excel shape to the nodes that fix it.
 5. `save_spec(spec_json, note)`. It validates against the files and does not save a spec

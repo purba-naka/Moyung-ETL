@@ -85,6 +85,23 @@ previous period is `lag` then `derive`.
  "config": {"by": ["Group"], "aggs": [{"name": "Total", "fn": "sum", "column": "Qty"}]}}
 ```
 
+## CSV and Parquet files
+
+A file that already is a table needs no `sheet` or `region`. Column types are read the same
+way as for Excel (whole numbers BIGINT, decimals DOUBLE), so steps and checks work the same.
+
+```json
+{"kind": "csv", "file_role": "orders", "delimiter": ";", "header": true}
+```
+
+```json
+{"kind": "parquet", "file_role": "prices"}
+```
+
+A csv without a header row: `"header": false` names the columns `column0`, `column1`, ...
+`sheet_regions`, `render_range` and the other sheet tools refuse such a file; `workbook_map`
+shows its columns, row count and first rows.
+
 ## Checks
 
 The total row of a sheet against the rows above it (each side picks its rows with `where`):

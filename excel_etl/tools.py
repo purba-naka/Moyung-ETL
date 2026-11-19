@@ -40,11 +40,12 @@ from excel_etl.hitl import HitlError, answer, approve, ask_human, gate
 from excel_etl.inspect import encode, tables
 from excel_etl.knowledge import lookup_knowledge
 from excel_etl.load import LoadError, Where, file_columns, plan_load
-from excel_etl.nodes import Column, NodeError, catalog
-from excel_etl.nodes.base import describe
+from excel_etl.nodes import Column, NodeError, catalog, schema_of
+from excel_etl.nodes.base import connect, describe, quote
+from excel_etl.nodes.source import read_table_file
 from excel_etl.pipeline import (
-    SOURCE_KINDS,
     PipelineSpec,
+    Source,
     SpecError,
     dump_spec,
     parse_spec,
@@ -54,6 +55,7 @@ from excel_etl.rebind import rebind
 from excel_etl.state import (
     MAX_RUNS,
     FileProvider,
+    FileRef,
     Job,
     JobState,
     LoadRecord,
@@ -66,6 +68,7 @@ from excel_etl.state import (
     read_file,
 )
 from excel_etl.synth import source_from_region
+from excel_etl.tablefile import TableFile, kind_of_filename
 from excel_etl.versions import MAX_NOTE, SpecHistory
 from excel_etl.workbook import Workbook, WorkbookError
 
@@ -177,8 +180,8 @@ class JobTools:
     def _state(self) -> JobState:
         return self.job.state
 
-    def _file(self, file: str) -> tuple[str, Workbook]:
-        """`F1` (or the file name, or the host's id) -> (`F1`, workbook)."""
+    def _file(self, file: str) -> tuple[str, Workbook | TableFile]:
+        """`F1` (or the file name, or the host's id) -> (`F1`, workbook or table file)."""
         files = self._state.files
         for i, f in enumerate(files, start=1):
             if file in (f"F{i}", f.id, f.filename) or (
@@ -188,6 +191,16 @@ class JobTools:
         known = ", ".join(f"F{i} ({f.filename})" for i, f in enumerate(files, start=1)) or "none"
         raise StateError(f"no file {file!r}; files: {known}")
 
+    def _book(self, file: str) -> tuple[str, Workbook]:
+        """Like `_file` for tools that read sheets and regions: a CSV or Parquet file has none."""
+        fid, f = self._file(file)
+        if isinstance(f, TableFile):
+            raise StateError(
+                f"{fid} is a {f.format} file: it has no sheets or regions. workbook_map shows "
+                f"its columns; read it with a source of kind {f.format!r}"
+            )
+        return fid, f
+
     def _version(self) -> int:
         h = self._state.history
         return h.current.number if h else 0
@@ -195,9 +208,12 @@ class JobTools:
     @_tool
     def add_file(self, file_id: str, filename: str, role: str = "") -> dict:
         """Host: register a file the provider can open under `file_id`; `role` is the
-        `file_role` the spec uses for it. Re-registering an id replaces it (a new upload)."""
-        wb = read_file(file_id, self.provider, f"file {file_id!r}")
-        self.job.update(lambda s: add_file(s, file_id, filename, wb.sha256, role or None))
+        `file_role` the spec uses for it. The extension decides the kind: `.csv` `.tsv` `.txt`
+        = csv, `.parquet` `.pq` = parquet, anything else = Excel. Re-registering an id replaces
+        it (a new upload)."""
+        kind = kind_of_filename(filename)
+        wb = read_file(file_id, self.provider, f"file {file_id!r}", kind)
+        self.job.update(lambda s: add_file(s, file_id, filename, wb.sha256, role or None, kind))
         return {
             "text": f"registered {filename!r} as {file_id!r} sha {wb.sha256[:12]}"
             + (f" for role {role!r}" if role else "")
@@ -401,25 +417,69 @@ class JobTools:
     @_tool
     def list_files(self) -> dict:
         """The files of this job: id (F1, F2, ...), name, the role each plays in the spec, and
-        its type (`excel`: sheets, regions, formulas; only Excel is supported today)."""
+        its kind (`excel`: sheets, regions, formulas; `csv` and `parquet`: one table, no sheets
+        or regions, so only workbook_map and the pipeline tools apply)."""
         s = self._state
         by_id = {fid: role for role, fid in s.roles.items()}
         rows = [
-            f"F{i}|{f.filename}|role {by_id.get(f.id, '-')}|{SOURCE_KINDS[0]}"
+            f"F{i}|{f.filename}|role {by_id.get(f.id, '-')}|{f.kind}"
             for i, f in enumerate(s.files, start=1)
         ]
         return {"text": "\n".join(rows) or "no files yet"}
 
     @_tool
     def workbook_map(self, file: str, offset: int = 0, limit: int = 200) -> dict:
-        """Every sheet of a file: id, size, how many tables, share of formulas, guessed role."""
+        """Every sheet of a file: id, size, how many tables, share of formulas, guessed role.
+        For a CSV or Parquet file (no sheets): its columns, row count, first rows and the
+        source to read it with."""
         fid, wb = self._file(file)
+        if isinstance(wb, TableFile):
+            return {"text": self._table_map(fid, wb)}
         return encode.workbook_map(wb, fid, offset, limit)
+
+    def _table_map(self, fid: str, tf: TableFile) -> str:
+        role = next((r for r, f in self._state.roles.items() if f == self._ref(fid).id), "<role>")
+        con = connect(read_paths=[tf.path])
+        try:
+            delimiter = None
+            if tf.format == "csv":
+                found = con.execute(
+                    "SELECT Delimiter FROM sniff_csv(?)", [tf.path.as_posix()]
+                ).fetchall()
+                delimiter = found[0][0] if found else None
+            source = Source(kind=tf.format, file_role=role, delimiter=delimiter)
+            rel = read_table_file(tf, source, con, "t")
+            cols = schema_of(rel)
+            shown = cols[:60]
+            total = con.execute("SELECT count(*) FROM t").fetchall()[0][0]
+            pick = ", ".join(quote(c.name) for c in shown)
+            head = con.execute(f"SELECT {pick} FROM t LIMIT 5").fetchall()
+            tail = con.execute(f"SELECT {pick} FROM t OFFSET {max(total - 3, 5)}").fetchall()
+        finally:
+            con.close()
+        lines = [f"{fid}|{self._ref(fid).filename}|{tf.format}|{total} rows|{len(cols)} columns"]
+        if delimiter:
+            lines.append(f"delimiter {delimiter!r} (detected; header row assumed)")
+        lines += [f"  {c.name} {c.type}" for c in shown]
+        if len(cols) > len(shown):
+            lines.append(f"  ... {len(cols) - len(shown)} more columns")
+
+        def cells(row: tuple) -> str:
+            return "  " + "|".join("" if v is None else str(v)[:30] for v in row)
+
+        lines += ["first rows:", *map(cells, head)]
+        if tail:
+            lines += ["last rows (look here for a total row):", *map(cells, tail)]
+        lines.append(f"source: {source.model_dump_json()}")
+        return chr(10).join(lines)
+
+    def _ref(self, fid: str) -> FileRef:
+        return self._state.files[int(fid[1:]) - 1]
 
     @_tool
     def sheet_regions(self, file: str, sheet: str, offset: int = 0, limit: int = 50) -> dict:
         """The tables on one sheet (name or id like F1.S2): range, header rows, total rows."""
-        fid, wb = self._file(file)
+        fid, wb = self._book(file)
         return encode.sheet_regions(wb, fid, sheet, offset, limit)
 
     @_tool
@@ -434,7 +494,7 @@ class JobTools:
     ) -> dict:
         """Show cells as text. ref = sheet name, sheet id (F1.S2) or region id (F1.S2.R1);
         range = A1 range such as 'B4:N40' (not with a region id)."""
-        fid, wb = self._file(file)
+        fid, wb = self._book(file)
         return encode.render_range(wb, fid, ref, range or None, mode, offset, budget)
 
     @_tool
@@ -451,7 +511,7 @@ class JobTools:
         depth `full` reads all rows as a pipeline would and adds mean, median, quartiles,
         outlier candidates, top values, duplicate rows and key candidates, with the file hash
         and time of the profile."""
-        fid, wb = self._file(file)
+        fid, wb = self._book(file)
         return encode.profile_region(wb, fid, ref, offset, budget, depth)
 
     @_tool
@@ -474,7 +534,7 @@ class JobTools:
         head_tail, random (+ seed), stratified (+ column), where (+ a condition like "amt" < 0),
         nulls (+ column), duplicates. `where` is a DuckDB SQL condition; quote column names with
         double quotes. To test a guess before writing a step."""
-        fid, wb = self._file(file)
+        fid, wb = self._book(file)
         return tables.sample_data(wb, fid, ref, strategy, n, seed, column, where, offset, budget)
 
     @_tool
@@ -486,32 +546,32 @@ class JobTools:
         for ref in (a, b):
             if not isinstance(ref, str) or "." not in ref:
                 raise ValueError(f"{ref!r} is not a region id; use the form F1.S2.R1")
-        fa, wa = self._file(a.split(".")[0])
-        fb, wb = self._file(b.split(".")[0])
+        fa, wa = self._book(a.split(".")[0])
+        fb, wb = self._book(b.split(".")[0])
         return tables.relate_tables(wa, fa, a, wb, fb, b, offset, budget)
 
     @_tool
     def find_text(self, file: str, query: str, offset: int = 0, budget: int = 24_000) -> dict:
         """Find text cells containing `query`, to locate a label or term."""
-        fid, wb = self._file(file)
+        fid, wb = self._book(file)
         return encode.find_text(wb, fid, query, offset, budget)
 
     @_tool
     def compare_sheets(self, file: str, a: str, b: str, budget: int = 24_000) -> dict:
         """How alike two sheets are in structure and values (copies, versions)."""
-        fid, wb = self._file(file)
+        fid, wb = self._book(file)
         return encode.compare_sheets(wb, fid, a, b, budget)
 
     @_tool
     def formula_lineage(self, file: str, offset: int = 0, limit: int = 100) -> dict:
         """Which sheets read which: tells typed source sheets from derived ones."""
-        fid, wb = self._file(file)
+        fid, wb = self._book(file)
         return encode.formula_lineage(wb, fid, offset, limit)
 
     @_tool
     def propose_datasets(self, file: str, offset: int = 0, limit: int = 50) -> dict:
         """Tables worth loading as datasets (typed sources), for a person to choose from."""
-        fid, wb = self._file(file)
+        fid, wb = self._book(file)
         return encode.propose_datasets(wb, fid, offset, limit)
 
     @_tool
@@ -523,7 +583,7 @@ class JobTools:
         job_summary); empty means the only role there is."""
         if not isinstance(region_id, str) or "." not in region_id:
             raise ValueError(f"{region_id!r} is not a region id; use the form F1.S2.R1")
-        fid, wb = self._file(region_id.split(".")[0])
+        fid, wb = self._book(region_id.split(".")[0])
         ref = self._state.files[int(fid[1:]) - 1]
         roles = [r for r, f in self._state.roles.items() if f == ref.id]
         role = file_role or (roles[0] if len(roles) == 1 else "")
@@ -629,7 +689,7 @@ class JobTools:
         warn = "" if files else "\nno files registered: only node names and settings were checked"
         shapes: dict[tuple[str, tuple[str, ...]], int] = {}
         for source in spec.sources.values():
-            if source.sheet.name_regex is None:
+            if source.region is not None and source.sheet.name_regex is None:
                 anchors = tuple(a.casefold() for a in source.region.header_anchor)
                 key = (source.file_role, anchors)
                 shapes[key] = shapes.get(key, 0) + 1
@@ -699,7 +759,8 @@ class JobTools:
     @_tool
     def run_pipeline(self) -> dict:
         """Run the saved spec and write its outputs. Refused until the checkpoints that
-        need a person's approval are approved. Approval is per spec version: every
+        need a person's approval are approved (`after_propose_datasets`, `after_spec`; a failed
+        run or a drift may ask again, see the text it returns). Approval is per spec version: every
         save_spec/edit_spec needs a new approval. The result is kept as the last run."""
         s = self._state
         if s.history is None:

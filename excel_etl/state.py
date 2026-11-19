@@ -25,15 +25,23 @@ import re
 import time
 from collections.abc import Callable, Iterable, Iterator
 from pathlib import Path
-from typing import Literal, Protocol
+from typing import Any, Literal, Protocol
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    ValidationError,
+    model_serializer,
+    model_validator,
+)
 
 from excel_etl.engine import RunReport, RunSummary
 from excel_etl.hitl import HitlState
 from excel_etl.knowledge import Knowledge
 from excel_etl.nodes.base import describe
 from excel_etl.rebind import BindRecord
+from excel_etl.tablefile import FileKind, TableFile
 from excel_etl.versions import SpecHistory
 from excel_etl.workbook import Workbook
 
@@ -61,6 +69,14 @@ class FileRef(_Model):
     id: str = Field(min_length=1, max_length=200)
     filename: str = Field(min_length=1, max_length=300)
     sha256: str
+    kind: FileKind = "excel"
+
+    @model_serializer(mode="wrap")
+    def _omit_default_kind(self, handler: Any) -> dict[str, Any]:
+        data = handler(self)
+        if data.get("kind") == "excel":
+            data.pop("kind", None)
+        return data
 
     @model_validator(mode="after")
     def _hash(self) -> FileRef:
@@ -129,7 +145,12 @@ def new_state(job_id: str) -> JobState:
 
 
 def add_file(
-    state: JobState, file_id: str, filename: str, sha256: str, role: str | None = None
+    state: JobState,
+    file_id: str,
+    filename: str,
+    sha256: str,
+    role: str | None = None,
+    kind: FileKind = "excel",
 ) -> JobState:
     """Register a file, or replace the one with this id (a new month's upload keeps its id
     and gets a new hash). `role` maps the spec's `file_role` to it.
@@ -137,7 +158,7 @@ def add_file(
     if role is not None and not isinstance(role, str):
         raise StateError(f"role must be text, got {type(role).__name__}")
     try:
-        ref = FileRef(id=file_id, filename=filename, sha256=sha256)
+        ref = FileRef(id=file_id, filename=filename, sha256=sha256, kind=kind)
     except ValidationError as e:
         raise StateError(describe(e, "file")) from None
     files = [ref if f.id == file_id else f for f in state.files]
@@ -334,20 +355,24 @@ class FileProvider(Protocol):
         """The file as a path or its bytes."""
 
 
-def read_file(file_id: str, provider: FileProvider, label: str = "") -> Workbook:
-    """Ask the host's provider for a file and open it. Whatever the provider raises (a disk
-    error, a missing id) is the host's problem and comes back as a StateError, not a bug."""
+def read_file(
+    file_id: str, provider: FileProvider, label: str = "", kind: FileKind = "excel"
+) -> Workbook | TableFile:
+    """Ask the host's provider for a file and open it as `kind`. Whatever the provider raises
+    (a disk error, a missing id) is the host's problem and comes back as a StateError, not a
+    bug."""
     try:
-        return Workbook.open(provider.open(file_id))
+        raw = provider.open(file_id)
+        return Workbook.open(raw) if kind == "excel" else TableFile.open(raw, kind)
     except Exception as e:
         raise StateError(f"{label or repr(file_id)} cannot be opened: {e}") from None
 
 
-def open_ref(ref: FileRef, provider: FileProvider, role: str | None = None) -> Workbook:
+def open_ref(ref: FileRef, provider: FileProvider, role: str | None = None) -> Workbook | TableFile:
     """Open one registered file. Refused when its hash differs from the registered one: the
     spec and the checks were made for the other file."""
     label = f"file {ref.filename!r}" + (f" (role {role!r})" if role else "")
-    wb = read_file(ref.id, provider, label)
+    wb = read_file(ref.id, provider, label, ref.kind)
     if wb.sha256 != ref.sha256:
         raise StateError(
             f"{label} is not the one registered: "
@@ -358,9 +383,10 @@ def open_ref(ref: FileRef, provider: FileProvider, role: str | None = None) -> W
 
 def open_files(
     state: JobState, provider: FileProvider, roles: Iterable[str] | None = None
-) -> dict[str, Workbook]:
-    """`file_role -> Workbook` for `run` / `validate` / `rebind`. With `roles` only those are
-    opened (a spec that uses one role of a job with many files does not pay for the rest)."""
+) -> dict[str, Workbook | TableFile]:
+    """`file_role -> Workbook or TableFile` for `run` / `validate` / `rebind`. With `roles` only
+    those are opened (a spec that uses one role of a job with many files does not pay for the
+    rest)."""
     by_id = {f.id: f for f in state.files}
     want = state.roles if roles is None else {r: state.roles[r] for r in roles if r in state.roles}
     return {role: open_ref(by_id[fid], provider, role) for role, fid in want.items()}

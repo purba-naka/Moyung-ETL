@@ -316,7 +316,7 @@ def test_unknown_source_kind_names_the_supported_ones():
     from excel_etl.pipeline import SOURCE_KINDS
 
     bad = copy.deepcopy(_SPEC)
-    bad["sources"]["produksi_npk_pkg"]["kind"] = "csv"
+    bad["sources"]["produksi_npk_pkg"]["kind"] = "xml"
     with pytest.raises(SpecError, match="excel"):
         parse_spec(json.dumps(bad))
-    assert SOURCE_KINDS == ("excel",)
+    assert SOURCE_KINDS == ("excel", "csv", "parquet")

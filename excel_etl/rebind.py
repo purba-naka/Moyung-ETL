@@ -32,8 +32,10 @@ from excel_etl.nodes.source import (
     matching_sheets,
     missing_required,
     read_locations,
+    read_table_file,
 )
 from excel_etl.pipeline import PipelineSpec, Source
+from excel_etl.tablefile import TableFileError, as_table_file
 from excel_etl.workbook import Workbook, WorkbookError
 
 type Status = Literal["exact", "shifted", "drift", "missing"]
@@ -83,7 +85,7 @@ class BindReport(_Model):
         lines = [f"rebind: {'ok' if self.ok else 'needs repair'}"]
         for name, s in self.sources.items():
             rec = s.record
-            at = f" at {rec.sheet}!{a1(rec.header_row, rec.first_col)}" if rec else ""
+            at = f" at {rec.sheet}!{a1(rec.header_row, rec.first_col)}" if rec and rec.sheet else ""
             lines.append(f"  {name}|{s.status}{at}")
             lines += [f"    {d}" for d in (*s.diff, *([s.message] if s.message else []))]
         return "\n".join(lines)
@@ -113,6 +115,43 @@ def _covered(source: Source, name: str) -> bool:
 _WIDENS = {("BIGINT", "DOUBLE"), ("DATE", "TIMESTAMP")}
 
 
+def _compare(
+    source: Source,
+    old: BindRecord,
+    names: tuple[str, ...],
+    types: dict[str, str],
+    drift: list[str],
+    moved: list[str],
+) -> None:
+    """What changed in the columns since the last bind: names that came or went, and types."""
+    was, now = set(old.columns), set(names)
+    added = [n for n in names if n not in was]
+    gone = [n for n in old.columns if n not in now]
+    for label, cols in (("added", added), ("removed", gone)):
+        if cols:
+            moved.append(f"columns {label}: {few(cols, 6)}")
+            loose = [n for n in cols if not _covered(source, n)]
+            if loose:
+                drift.append(
+                    f"columns {label} that no expect_columns entry covers: {few(loose, 6)}; "
+                    f"decide for each: add it to the steps that need it (a group_by agg, a "
+                    f"select), or add an expect_columns entry to accept it as it is"
+                )
+    for key, was_type in old.types.items():
+        if key not in types or was_type == types[key]:
+            continue
+        col = next((n for n in names if n.casefold() == key), key)
+        if (was_type, types[key]) in _WIDENS:
+            moved.append(f"column {col!r} type {was_type} -> {types[key]} (safe widening)")
+        else:
+            drift.append(
+                f"column {col!r} was {was_type}, is now {types[key]}: see the values first "
+                f"(profile_region, sample_data). A cast that turns unreadable values into "
+                f"NULL drops them silently: ask the person before casting. Otherwise "
+                f"update expect_columns and the steps that read it"
+            )
+
+
 def _judge(
     source: Source, locs: list[Location], old: BindRecord | None, types: dict[str, str]
 ) -> SourceBind:
@@ -140,32 +179,53 @@ def _judge(
             moved.append(
                 f"header {a1(old.header_row, old.first_col)} -> {a1(loc.header, loc.left)}"
             )
-        was, now = set(old.columns), set(names)
-        added = [n for n in names if n not in was]
-        gone = [n for n in old.columns if n not in now]
-        for label, cols in (("added", added), ("removed", gone)):
-            if cols:
-                moved.append(f"columns {label}: {few(cols, 6)}")
-                loose = [n for n in cols if not _covered(source, n)]
-                if loose:
-                    drift.append(
-                        f"columns {label} that no expect_columns entry covers: {few(loose, 6)}; "
-                        f"decide for each: add it to the steps that need it (a group_by agg, a "
-                        f"select), or add an expect_columns entry to accept it as it is"
-                    )
-        for key, was_type in old.types.items():
-            if key not in types or was_type == types[key]:
-                continue
-            col = next((n for n in names if n.casefold() == key), key)
-            if (was_type, types[key]) in _WIDENS:
-                moved.append(f"column {col!r} type {was_type} -> {types[key]} (safe widening)")
-            else:
-                drift.append(
-                    f"column {col!r} was {was_type}, is now {types[key]}: see the values first "
-                    f"(profile_region, sample_data). A cast that turns unreadable values into "
-                    f"NULL drops them silently: ask the person before casting. Otherwise "
-                    f"update expect_columns and the steps that read it"
-                )
+        _compare(source, old, names, types, drift, moved)
+    status: Status = "drift" if drift else "shifted" if moved else "exact"
+    return SourceBind(status=status, record=rec, diff=tuple([*drift, *moved]))
+
+
+def _bind_table(
+    con: duckdb.DuckDBPyConnection,
+    name: str,
+    source: Source,
+    files: dict[str, FileInput],
+    old: BindRecord | None,
+) -> SourceBind:
+    """Bind a CSV or Parquet source: there is no place to find, so only the columns and their
+    types are judged against the last bind."""
+    role = source.file_role
+    if role not in files:
+        known = ", ".join(sorted(files)) or "none"
+        return SourceBind(
+            status="missing",
+            record=None,
+            diff=(),
+            message=f"no file for file_role {role!r}; files given: {known}",
+        )
+    try:
+        tf = as_table_file(files[role], source.kind)
+        rel = read_table_file(tf, source, con, name)
+        schema = schema_of(rel)
+    except (TableFileError, NodeError, duckdb.Error, TypeError) as e:
+        return SourceBind(
+            status="missing",
+            record=None,
+            diff=(),
+            message=f"file {role!r}: {e}",
+        )
+    finally:
+        con.execute(f"DROP TABLE IF EXISTS {quote(name)}")
+    names = tuple(c.name for c in schema)
+    types = {c.name.casefold(): c.type for c in schema}
+    rec = BindRecord(sheet="", header_row=0, first_col=0, columns=names, types=types)
+    drift: list[str] = [
+        f"required column {expect_label(want)} not found: check the file's header, then change "
+        f"expect_columns and the steps that use it"
+        for want in missing_required(source, names)
+    ]
+    moved: list[str] = []
+    if old is not None:
+        _compare(source, old, names, types, drift, moved)
     status: Status = "drift" if drift else "shifted" if moved else "exact"
     return SourceBind(status=status, record=rec, diff=tuple([*drift, *moved]))
 
@@ -206,6 +266,9 @@ def rebind(
     try:
         for name, source in spec.sources.items():
             role = source.file_role
+            if source.kind != "excel":
+                out[name] = _bind_table(con, name, source, files, previous.get(name))
+                continue
             if role not in books:
                 if role not in files:
                     known = ", ".join(sorted(files)) or "none"

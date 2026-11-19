@@ -23,6 +23,7 @@ from pydantic import (
 
 from excel_etl.nodes.base import _NAME_PATTERN, describe
 from excel_etl.quality import Check, tables_of
+from excel_etl.tablefile import FileKind
 
 _IDENT = _NAME_PATTERN
 _END = re.compile(r"until_blank_rows\(([0-9]+)\)")
@@ -132,25 +133,55 @@ class ColumnExpect(_Model):
         return self
 
 
-SourceKind = Literal["excel"]
+SourceKind = FileKind
 SOURCE_KINDS: tuple[str, ...] = get_args(SourceKind)
 
 
 class Source(_Model):
-    """One table read from a file. `kind` says what the file is (only `excel` today) and is
-    left out of the saved spec while it is the default."""
+    """One table read from a file. `kind` says what the file is and is left out of the saved
+    spec while it is `excel`.
+
+    `excel` finds the table in a workbook: `sheet` and `region` are required. `csv` and
+    `parquet` files already are a table, so `sheet` and `region` are refused. A `csv` may set
+    `delimiter` (default: detected) and `header` (default true; false names the columns
+    column0, column1, ...). `expect_columns` works for every kind.
+    """
 
     kind: SourceKind = "excel"
     file_role: str = Field(min_length=1)
-    sheet: SheetRef
-    region: RegionRef
+    sheet: SheetRef | None = None
+    region: RegionRef | None = None
+    delimiter: str | None = Field(default=None, min_length=1, max_length=1)
+    header: bool = True
     expect_columns: list[ColumnExpect] = []
 
+    @model_validator(mode="after")
+    def _fits_kind(self) -> Source:
+        if self.kind == "excel":
+            if self.sheet is None or self.region is None:
+                raise ValueError("an excel source needs sheet and region")
+            if self.delimiter is not None or "header" in self.model_fields_set:
+                raise ValueError("delimiter and header are settings of a csv source")
+            return self
+        if self.sheet is not None or self.region is not None:
+            raise ValueError(
+                f"a {self.kind} file is already a table: leave out sheet and region "
+                "(they are for excel)"
+            )
+        if self.kind != "csv" and (self.delimiter is not None or "header" in self.model_fields_set):
+            raise ValueError("delimiter and header are settings of a csv source")
+        return self
+
     @model_serializer(mode="wrap")
-    def _omit_default_kind(self, handler: Any) -> dict[str, Any]:
+    def _omit_defaults(self, handler: Any) -> dict[str, Any]:
         data = handler(self)
         if data.get("kind") == "excel":
             data.pop("kind", None)
+        for key in ("sheet", "region", "delimiter"):
+            if data.get(key) is None:
+                data.pop(key, None)
+        if "header" in data and data["header"] is True:
+            data.pop("header")
         return data
 
 
