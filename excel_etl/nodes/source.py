@@ -383,17 +383,22 @@ _CSV_TYPES = {
 }
 _WIDEN_TO_BIGINT = {"TINYINT", "SMALLINT", "INTEGER", "UTINYINT", "USMALLINT", "UINTEGER"}
 _WIDEN_TO_DOUBLE = {"FLOAT"}
+_TO_TEXT = {"JSON"}
 
 
 def read_table_file(
     tf: TableFile, source: Source, con: duckdb.DuckDBPyConnection, name: str
 ) -> Relation:
-    """Load a CSV or Parquet file as table `name`. Column types are the engine's: narrow
-    integers read as BIGINT and FLOAT as DOUBLE, so a check or `expect_columns` means the
-    same for every kind of source."""
+    """Load a CSV, Parquet, JSON (an array of objects) or JSONL file as table `name`. Column
+    types are the engine's: narrow integers read as BIGINT and FLOAT as DOUBLE, so a check or
+    `expect_columns` means the same for every kind of source."""
     path = sql_text(tf.path.as_posix())
     if tf.format == "parquet":
         reader = f"read_parquet({path})"
+    elif tf.format == "json":
+        reader = f"read_json({path}, format = 'array')"
+    elif tf.format == "jsonl":
+        reader = f"read_json({path}, format = 'newline_delimited')"
     else:
         options = f", delim = {sql_text(source.delimiter)}" if source.delimiter else ""
         if source.decimal != ".":
@@ -405,11 +410,24 @@ def read_table_file(
             )
             options += f", types = {{{pairs}}}"
         reader = f"read_csv({path}, header = {'true' if source.header else 'false'}{options})"
+    try:
+        return _create_table(con, name, reader)
+    except duckdb.Error as e:
+        raise NodeError(str(e).replace(tf.path.as_posix(), "<file>")) from None
+
+
+def _create_table(con: duckdb.DuckDBPyConnection, name: str, reader: str) -> Relation:
     described = con.execute(f"DESCRIBE SELECT * FROM {reader}").fetchall()
     columns = []
     for column, kind in ((row[0], row[1]) for row in described):
         target = (
-            "BIGINT" if kind in _WIDEN_TO_BIGINT else "DOUBLE" if kind in _WIDEN_TO_DOUBLE else None
+            "BIGINT"
+            if kind in _WIDEN_TO_BIGINT
+            else "DOUBLE"
+            if kind in _WIDEN_TO_DOUBLE
+            else "VARCHAR"
+            if kind in _TO_TEXT
+            else None
         )
         columns.append(
             f"CAST({quote(column)} AS {target}) AS {quote(column)}" if target else quote(column)

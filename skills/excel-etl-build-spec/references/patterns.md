@@ -85,7 +85,7 @@ previous period is `lag` then `derive`.
  "config": {"by": ["Group"], "aggs": [{"name": "Total", "fn": "sum", "column": "Qty"}]}}
 ```
 
-## CSV and Parquet files
+## CSV, Parquet, JSON and JSONL files
 
 A file that already is a table needs no `sheet` or `region`. Column types are read the same
 way as for Excel (whole numbers BIGINT, decimals DOUBLE), so steps and checks work the same.
@@ -96,6 +96,14 @@ way as for Excel (whole numbers BIGINT, decimals DOUBLE), so steps and checks wo
 
 ```json
 {"kind": "parquet", "file_role": "prices"}
+```
+
+A `json` file is one array of objects, a `jsonl` file has one object per line. Keys become
+columns (a key missing from some objects is NULL there); nested objects and lists stay as
+STRUCT and LIST columns.
+
+```json
+{"kind": "jsonl", "file_role": "events"}
 ```
 
 A csv without a header row: `"header": false` names the columns `column0`, `column1`, ...

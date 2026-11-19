@@ -209,7 +209,8 @@ class JobTools:
     def add_file(self, file_id: str, filename: str, role: str = "") -> dict:
         """Host: register a file the provider can open under `file_id`; `role` is the
         `file_role` the spec uses for it. The extension decides the kind: `.csv` `.tsv` `.txt`
-        = csv, `.parquet` `.pq` = parquet, anything else = Excel. Re-registering an id replaces
+        = csv, `.parquet` `.pq` = parquet, `.json` = json (an array of objects), `.jsonl`
+        `.ndjson` = jsonl, anything else = Excel. Re-registering an id replaces
         it (a new upload)."""
         kind = kind_of_filename(filename)
         wb = read_file(file_id, self.provider, f"file {file_id!r}", kind)
@@ -417,8 +418,8 @@ class JobTools:
     @_tool
     def list_files(self) -> dict:
         """The files of this job: id (F1, F2, ...), name, the role each plays in the spec, and
-        its kind (`excel`: sheets, regions, formulas; `csv` and `parquet`: one table, no sheets
-        or regions, so only workbook_map and the pipeline tools apply)."""
+        its kind (`excel`: sheets, regions, formulas; `csv` `parquet` `json` `jsonl`: one table,
+        no sheets or regions, so only workbook_map and the pipeline tools apply)."""
         s = self._state
         by_id = {fid: role for role, fid in s.roles.items()}
         rows = [
@@ -447,7 +448,8 @@ class JobTools:
                     "SELECT Delimiter FROM sniff_csv(?)", [tf.path.as_posix()]
                 ).fetchall()
                 delimiter = found[0][0] if found else None
-            source = Source(kind=tf.format, file_role=role, delimiter=delimiter)
+            settings = {"delimiter": delimiter} if delimiter else {}
+            source = Source(kind=tf.format, file_role=role, **settings)
             rel = read_table_file(tf, source, con, "t")
             cols = schema_of(rel)
             shown = cols[:60]
