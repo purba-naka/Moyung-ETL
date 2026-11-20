@@ -579,16 +579,27 @@ def _count(con: duckdb.DuckDBPyConnection, table: str) -> int:
 def _run_steps(
     spec: PipelineSpec, con: duckdb.DuckDBPyConnection, st: _State, run_nodes: bool
 ) -> None:
+    earlier = set(spec.sources)
     for step in spec.steps:
         where = f"steps.{step.id}"
+        known, earlier = earlier, earlier | {step.id}
         try:
             n = build(step.node, step.config)
             check_arity(n, len(step.inputs))
         except NodeError as e:
             st.issue(where, str(e))
             continue
+        if unknown := [i for i in step.inputs if i not in known]:
+            st.issue(
+                where,
+                f"reads {unknown[0]!r}, which is not a source or an earlier step",
+            )
+            continue
         inputs = [st.schemas.get(i) for i in step.inputs]
         if any(s is None for s in inputs):
+            lost = next(i for i, s in zip(step.inputs, inputs, strict=True) if s is None)
+            if st.issues:
+                st.warnings.append(f"{where}: skipped because {lost!r} did not come out")
             continue
         t0 = time.perf_counter()
         try:
@@ -770,6 +781,8 @@ def run(
         ) from None
     t0 = time.perf_counter()
     st = _State()
+    if not spec.outputs:
+        st.warnings.append("the spec has no outputs: nothing is written")
     tables = _open_tables(spec, files, st)
     con = connect(out_path, [t.path for t in tables.values()])
     parts: list[tuple[Path, Path]] = []

@@ -705,19 +705,6 @@ def test_a_failed_run_says_the_run_happened_and_where_to_look(tools):
     assert "listed above" in res["text"] and "check too_few|row_count|FAIL" in res["text"]
 
 
-def test_a_run_warns_when_the_sources_drifted_since_the_last_rebind(tools, blobs):
-    tools.save_spec(spec_json(), "")
-    tools.approve("after_propose_datasets", "dina", "v1")
-    assert tools.rebind_sources()["ok"]
-    assert "warning: the sources changed" not in tools.run_pipeline()["text"]
-    text_qty = [["Item", "Qty"], ["pen", "many"], ["ink", 1]]
-    blobs["b"] = make_xlsx({"Sales": text_qty})
-    tools.add_file("b", "feb.xlsx", "f")
-    res = tools.run_pipeline()
-    assert "warning: the sources changed since the last rebind_sources" in res["text"]
-    assert "rebind: needs repair" in res["text"]
-
-
 def test_a_wrong_check_field_names_the_right_one_not_node_catalog(tools):
     bad = {"c": {"kind": "foreign_key", "table": "sales", "columns": ["Item"]}}
     err = tools.save_spec(spec_json(checks=bad), "")["error"]

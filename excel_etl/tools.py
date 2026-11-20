@@ -24,6 +24,7 @@ the inspect tools page themselves, the others are short. Upgrade: `offset` on ev
 from __future__ import annotations
 
 import functools
+import hashlib
 import inspect
 import json
 import os
@@ -155,6 +156,14 @@ def _changed_tables(old: PipelineSpec | None, new: PipelineSpec) -> set[str] | N
         if before.get(step.id) != step.model_dump() or changed & set(step.inputs):
             changed.add(step.id)
     return changed
+
+
+def _drift_ref(drifted: dict[str, Any]) -> str | None:
+    """A short name for one particular drift, so an approval covers it and no other."""
+    if not drifted:
+        return None
+    body = json.dumps({n: [b.status, list(b.diff)] for n, b in sorted(drifted.items())})
+    return "drift:" + hashlib.sha256(body.encode()).hexdigest()[:12]
 
 
 def _split_column(text: str) -> Column:
@@ -915,20 +924,25 @@ class JobTools:
         if files is None:
             raise StateError("no files registered with a role; the host must add_file first")
         report = rebind(spec, files, s.binds)
+        drift_ref = _drift_ref({n: b for n, b in report.sources.items() if b.status == "drift"})
         self.job.update(
             lambda st: st.model_copy(update={"binds": {**st.binds, **report.records()}})
         )
         text = report.text()
-        if not report.ok and (why := gate(self._state.hitl, "on_rebind_drift")):
+        if not report.ok and (why := gate(self._state.hitl, "on_rebind_drift", ref=drift_ref)):
             text += f"\nask the person before repairing: {why}"
+            if drift_ref:
+                text += f" (the approval ref is '{drift_ref}')"
         return {"ok": report.ok, "text": text}
 
     @_tool
     def run_pipeline(self) -> dict:
         """Run the saved spec and write its outputs. Refused until the checkpoints that
         need a person's approval are approved (`after_propose_datasets`, `after_spec`; a failed
-        run or a drift may ask again, see the text it returns). Approval is per spec version: every
-        save_spec/edit_spec needs a new approval. The result is kept as the last run."""
+        run may ask again, see the text it returns). Approval is per spec version: every
+        save_spec/edit_spec needs a new approval. A source that drifted since the last bind is
+        not run: the answer names the drift and its ref for the person to approve. The result
+        is kept as the last run."""
         s = self._state
         if s.history is None:
             raise StateError("no spec saved yet; use save_spec")
@@ -938,11 +952,22 @@ class JobTools:
         files = self._open_all(spec)
         if files is None:
             raise StateError("no files registered with a role; the host must add_file first")
+        bound = rebind(spec, files, s.binds or None)
+        drifted = {n: b for n, b in bound.sources.items() if b.status == "drift"}
+        drift_ref = _drift_ref(drifted)
+        if drifted and (why := gate(s.hitl, "on_rebind_drift", ref=drift_ref)):
+            raise StateError(
+                f"{bound.text()}\nthe sources drifted, so nothing was run: {why}. After the person "
+                f"agrees, the host calls approve('on_rebind_drift', by, ref='{drift_ref}'); that "
+                "approval covers exactly this drift and makes it the new normal"
+            )
         target = Path(self.out_dir)
         if self.per_version:
             target = target / f"v{self._version()}"
         rep = self._portable(run(spec, files, target, hitl=s.hitl, ref=f"v{self._version()}"))
         stamp = datetime.now(UTC).isoformat(timespec="seconds")
+
+        baseline = bound.accepted_records() if rep.status == "ok" else {}
 
         def record() -> None:
             self.job.update(
@@ -950,6 +975,7 @@ class JobTools:
                     update={
                         "last_run": rep,
                         "runs": [*st.runs, rep.summary(stamp)][-MAX_RUNS:],
+                        "binds": {**st.binds, **baseline},
                     }
                 )
             )
@@ -960,10 +986,11 @@ class JobTools:
             self.job.reload()
             record()
         text = rep.text(full=False)
-        if self._state.binds and not (bound := rebind(spec, files, self._state.binds)).ok:
+        if drifted:
+            lines = [f"{n}: {b.diff[0]}" for n, b in drifted.items() if b.diff]
             text += (
-                "\nwarning: the sources changed since the last rebind_sources "
-                f"({bound.text().splitlines()[0]}); read its report before trusting the numbers"
+                f"\nwarning: ran on drifted sources (approved as {drift_ref}); they are now the "
+                "normal. " + " | ".join(lines)[:600]
             )
         if why := gate(self._state.hitl, "after_run", failed=rep.status != "ok"):
             text += (
