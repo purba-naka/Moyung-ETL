@@ -10,9 +10,11 @@ be large). Upgrade: a row cap per step, a `memory_limit` argument on `run`.
 
 from __future__ import annotations
 
+import hashlib
 import os
 import time
 from dataclasses import dataclass, field
+from importlib import metadata
 from pathlib import Path
 from typing import Literal
 
@@ -36,7 +38,7 @@ from excel_etl.nodes.source import (
     read_table_file,
     type_fits,
 )
-from excel_etl.pipeline import PipelineSpec, Source, Step
+from excel_etl.pipeline import PipelineSpec, Source, Step, dump_spec
 from excel_etl.prep import planned_columns
 from excel_etl.quality import CheckResult, check_schema, run_checks
 from excel_etl.tablefile import TableFile, TableFileError, as_table_file
@@ -86,10 +88,19 @@ class OutputStat(_Report):
     format: Literal["parquet", "csv"]
     rows: int
     columns: int
+    sha256: str = ""
+
+
+class NodeRows(_Report):
+    id: str
+    rows_in: int
+    rows_out: int
 
 
 class RunSummary(_Report):
-    """One line of a job's run history: when it ran, on which spec version, how it went."""
+    """One line of a job's run history: when it ran (`at`, the end), on which spec version and
+    content (`spec_sha256`), from which input files (`files`: role -> sha256), through which
+    steps, and which output files it made (`outputs` with their sha256)."""
 
     at: str
     ref: str | None = None
@@ -97,6 +108,46 @@ class RunSummary(_Report):
     seconds: float
     rows: dict[str, int] = {}
     checks_failed: tuple[str, ...] = ()
+    spec_sha256: str = ""
+    engine_version: str = ""
+    files: dict[str, str] = {}
+    nodes: tuple[NodeRows, ...] = ()
+    outputs: tuple[OutputStat, ...] = ()
+
+
+_SUMMARY_NODES = 100
+_CHUNK = 1 << 20
+
+
+def _engine_version() -> str:
+    try:
+        return metadata.version("excel-etl")
+    except metadata.PackageNotFoundError:
+        return "unknown"
+
+
+ENGINE_VERSION = _engine_version()
+
+
+def sha256_file(path: str | os.PathLike[str]) -> str:
+    """The sha256 of a file's bytes, read in chunks."""
+    digest = hashlib.sha256()
+    with open(path, "rb") as f:
+        while chunk := f.read(_CHUNK):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _input_sha256(ref: FileInput) -> str:
+    """The sha256 of an input file whatever form the host gave it; empty when unreadable."""
+    if isinstance(ref, Workbook | TableFile):
+        return ref.sha256
+    if isinstance(ref, bytes):
+        return hashlib.sha256(ref).hexdigest()
+    try:
+        return sha256_file(ref)
+    except OSError:
+        return ""
 
 
 def _columns(cols: tuple[Column, ...], limit: int = 40) -> str:
@@ -166,6 +217,8 @@ class RunReport(_Report):
     files: dict[str, str] = {}
     verify: VerifyReport | None = None
     artifacts: tuple[str, ...] = ()
+    spec_sha256: str = ""
+    engine_version: str = ""
 
     def summary(self, at: str) -> RunSummary:
         """The run as one history line (`at` is now, UTC, given by the caller)."""
@@ -178,6 +231,14 @@ class RunReport(_Report):
             checks_failed=tuple(
                 c.name for c in self.checks if not c.passed and c.severity == "error"
             ),
+            spec_sha256=self.spec_sha256,
+            engine_version=self.engine_version,
+            files=dict(self.files),
+            nodes=tuple(
+                NodeRows(id=n.id, rows_in=n.rows_in, rows_out=n.rows_out)
+                for n in self.nodes[:_SUMMARY_NODES]
+            ),
+            outputs=self.outputs,
         )
 
     def text(self, full: bool = True) -> str:
@@ -747,7 +808,9 @@ def run(
         checks=tuple(results),
         seconds=round(time.perf_counter() - t0, 3),
         ref=ref,
-        files={role: f.sha256 for role, f in files.items() if isinstance(f, Workbook | TableFile)},
+        files={role: sha for role, f in files.items() if (sha := _input_sha256(f))},
+        spec_sha256=hashlib.sha256(dump_spec(spec).encode()).hexdigest(),
+        engine_version=ENGINE_VERSION,
         verify=checked,
         artifacts=() if failed else written,
     )
@@ -792,5 +855,6 @@ def _write_outputs(
                 format=out.format,
                 rows=st.rows(out.input),
                 columns=len(schema or ()),
+                sha256=sha256_file(tmp),
             )
         )

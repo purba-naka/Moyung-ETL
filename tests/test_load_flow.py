@@ -139,7 +139,9 @@ def test_a_wide_column_name_survives_and_bigquery_says_why_it_cannot(tmp_path) -
 
 def test_columns_and_rows_come_from_the_file(tmp_path) -> None:
     t = _tools(tmp_path, {"table": "sales"})
-    path = t.job.state.last_run.outputs[0].path
+    stored = t.job.state.last_run.outputs[0].path
+    assert stored == "clean.parquet"
+    path = str(Path(t.out_dir) / stored)
     cols, n = file_columns(path)
     assert [c.name for c in cols] == ["Plant", "Product", "Ton"]
     assert cols[0].type == "VARCHAR" and n == 3
@@ -196,9 +198,10 @@ class LocalWarehouse:
 
 def _plan(t: JobTools, mode: str, keys=()):
     stat = t.job.state.last_run.outputs[0]
-    cols, _ = file_columns(stat.path)
+    path = str(Path(t.out_dir) / stat.path)
+    cols, _ = file_columns(path)
     where = Where(database="DB", schema_name="SC", stage="@DB.SC.STG")
-    return plan_load("snowflake", "clean", stat.path, "sales", mode, list(keys), cols, where)
+    return plan_load("snowflake", "clean", path, "sales", mode, list(keys), cols, where)
 
 
 def test_replace_twice_keeps_one_copy_of_the_rows(tmp_path) -> None:
