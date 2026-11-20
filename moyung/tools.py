@@ -59,6 +59,8 @@ from moyung.prep import apply_preprocessing
 from moyung.rebind import rebind
 from moyung.state import (
     MAX_RUNS,
+    ConnectionProvider,
+    ConnRef,
     FileProvider,
     FileRef,
     Job,
@@ -67,9 +69,11 @@ from moyung.state import (
     PlannedLoad,
     StateConflict,
     StateError,
+    add_connection,
     add_file,
     open_files,
     open_ref,
+    probe_connection,
     read_file,
 )
 from moyung.synth import source_from_region
@@ -206,11 +210,21 @@ class JobTools:
         provider: FileProvider,
         out_dir: str | os.PathLike[str] | None = None,
         per_version: bool = False,
+        connections: ConnectionProvider | None = None,
     ) -> None:
         self.job = job
         self.provider = provider
         self.out_dir = out_dir
         self.per_version = per_version
+        self.connections = connections
+
+    def _connections(self) -> ConnectionProvider:
+        if self.connections is None:
+            raise StateError(
+                "the host gave no connection provider, so this job cannot read a database; "
+                "pass connections= to JobTools"
+            )
+        return self.connections
 
     @property
     def _state(self) -> JobState:
@@ -257,6 +271,32 @@ class JobTools:
         self.job.update(lambda s: add_file(s, file_id, filename, wb.sha256, role or None, kind))
         return {
             "text": f"registered {filename!r} as {file_id!r} sha {wb.sha256[:12]}"
+            + (f" for role {role!r}" if role else "")
+        }
+
+    @_tool
+    def add_connection(
+        self,
+        conn_id: str,
+        label: str,
+        dialect: str = "postgres",
+        role: str = "",
+        allow_sql: bool = False,
+    ) -> dict:
+        """Host: register a database the connection provider can open under `conn_id`; `role` is
+        the `connection_role` the spec uses for it. `allow_sql` lets a source carry its own
+        SELECT; left off, a source may only name a schema and table. This is the host's call, not
+        the agent's, because the agent writes the spec. The database must answer `SELECT 1` now,
+        so a broken connection is found here. Re-registering an id replaces it."""
+        ref = ConnRef(id=conn_id, label=label, dialect=dialect, allow_sql=allow_sql)
+        probe_connection(ref, self._connections())
+        self.job.update(
+            lambda s: add_connection(s, conn_id, label, ref.dialect, role or None, allow_sql)
+        )
+        return {
+            "text": f"registered {label!r} as {conn_id!r} ({ref.dialect}"
+            + (", own SQL allowed" if allow_sql else ", table and filter only")
+            + ")"
             + (f" for role {role!r}" if role else "")
         }
 
@@ -439,8 +479,8 @@ class JobTools:
 
     @_tool
     def job_summary(self) -> dict:
-        """Where the job stands: files, spec version, waiting questions, approvals, last run.
-        Call this first in a new conversation."""
+        """Where the job stands: files, databases, spec version, waiting questions, approvals,
+        last run. Call this first in a new conversation."""
         s = self._state
         files = [f"F{i} {f.filename}" for i, f in enumerate(s.files, start=1)]
         roles = ", ".join(f"{r}={f}" for r, f in s.roles.items()) or "none"
@@ -449,6 +489,14 @@ class JobTools:
         lines = [
             f"job {s.job_id} (saved {s.version} times)",
             f"files: {', '.join(files) or 'none'}; roles: {roles}",
+        ]
+        if s.connections:
+            conns = ", ".join(
+                f"D{i} {c.label} ({c.dialect})" for i, c in enumerate(s.connections, start=1)
+            )
+            croles = ", ".join(f"{r}={c}" for r, c in s.conn_roles.items()) or "none"
+            lines.append(f"databases: {conns}; connection_roles: {croles}")
+        lines += [
             f"spec: {'v' + str(self._version()) if s.history else 'none yet'}",
             f"waiting questions: {len(s.hitl.pending)}",
             f"approvals: {approved or 'none'}",
