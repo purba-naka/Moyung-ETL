@@ -7,10 +7,10 @@ from pathlib import Path
 import pytest
 from conftest import make_xlsx
 
-from excel_etl.engine import run, sha256_file
-from excel_etl.pipeline import parse_spec
-from excel_etl.state import Job, new_state
-from excel_etl.tools import JobTools
+from moyung.engine import run, sha256_file
+from moyung.pipeline import parse_spec
+from moyung.state import Job, new_state
+from moyung.tools import JobTools
 
 CSV_A = b"item,qty\npen,1\nink,2\n"
 CSV_B = b"item,qty\npen,1\nink,2\ncap,3\n"

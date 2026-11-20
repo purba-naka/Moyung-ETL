@@ -57,8 +57,8 @@ tidak dipakai. Yang berlaku di kode adalah nama di kolom kanan.
 
 | Di dokumen ini | Di kode |
 |---|---|
-| package `moyung/`, class `Moyung` | package `excel_etl/`, class `JobTools` di `excel_etl/tools.py` |
-| protocol `DataAsset` + adapter per sumber (§6, §16) | `Source` di `excel_etl/pipeline.py`; Excel di `workbook.py`, csv/parquet/json di `tablefile.py`. Tidak ada protocol terpisah |
+| package `moyung/`, class `Moyung` | package `moyung/` (sama sejak rename 2026-11-20), class `JobTools` di `moyung/tools.py` |
+| protocol `DataAsset` + adapter per sumber (§6, §16) | `Source` di `moyung/pipeline.py`; Excel di `workbook.py`, csv/parquet/json di `tablefile.py`. Tidak ada protocol terpisah |
 | tool `create_spec`, `get_lineage` (§17) | `save_spec`/`edit_spec`; lineage dibaca dari `last_run` dan `verify_run` |
 
 Status per fase §18. "sebagian" berarti inti jalan, sisanya ada di
@@ -79,9 +79,10 @@ Yang belum, dan sengaja ditunda:
     sudah dicatat untuk penelusuran, tetapi hasil node belum dipakai ulang.
 -   Pada sumber non-Excel, `sample_data`, `profile_region`, dan
     `find_text` belum tersedia; `workbook_map` satu-satunya alat
-    discovery. `excel_etl/auto.py` juga masih Excel saja.
--   Nama `excel-etl` akan janggal setelah multi-source matang. Ganti nama
-    = perubahan nama paket publik, jadi butuh keputusan terpisah.
+    discovery. `moyung/auto.py` juga masih Excel saja.
+-   ~~Nama paket akan janggal setelah multi-source matang.~~ Selesai
+    2026-11-20: paket `excel_etl` di-rename menjadi `moyung`, sekalian
+    sebelum nama lama menyebar ke host lain.
 
 ------------------------------------------------------------------------
 
@@ -343,7 +344,7 @@ satu-satunya sumber kebenaran pipeline.
 ## 6. DataAsset Abstraction
 
 > **Tidak diikuti.** Multi-source dikerjakan tanpa protocol ini: `Source`
-> di `excel_etl/pipeline.py` menyatakan sumber, pembacanya `workbook.py`
+> di `moyung/pipeline.py` menyatakan sumber, pembacanya `workbook.py`
 > (Excel) dan `tablefile.py` (csv, parquet, json, jsonl). Bagian ini
 > disimpan sebagai alasan di balik pilihan itu, bukan sebagai rencana.
 
@@ -1128,9 +1129,9 @@ konfirmasi.
 
 ## 16. Usulan Struktur Package
 
-> **Tidak diikuti.** Paket nyata bernama `excel_etl/` dan lebih datar
+> **Tidak diikuti.** Paket nyata bernama `moyung/` dan lebih datar
 > daripada susunan di bawah ini: tanpa folder `assets/`, dan tanpa class
-> `Moyung`. Permukaan publiknya `excel_etl/tools.py`.
+> `Moyung`. Permukaan publiknya `moyung/tools.py`.
 
 Contoh struktur target yang modular, tetapi tetap sederhana:
 
@@ -1233,7 +1234,7 @@ tanggung jawab yang mulai membesar.
 
 > **Nama usulan, bukan nama final.** Daftar tool yang benar-benar ada
 > beserta kelompoknya ada di `README.md`; sumbernya `JobTools` di
-> `excel_etl/tools.py`.
+> `moyung/tools.py`.
 
 Pertahankan tool yang sudah ada bila fungsinya masih relevan.
 Pengembangan berikut dapat memperjelas urutan kerja agent.

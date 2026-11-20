@@ -6,8 +6,8 @@ import pytest
 from conftest import make_xlsx
 from test_hardening import _zip_replace
 
-from excel_etl.inspect.encode import compare_sheets
-from excel_etl.workbook import Workbook, WorkbookError
+from moyung.inspect.encode import compare_sheets
+from moyung.workbook import Workbook, WorkbookError
 
 
 def _cached(data: bytes) -> bytes:

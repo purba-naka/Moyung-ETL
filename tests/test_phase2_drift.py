@@ -6,12 +6,12 @@ import re
 import pytest
 from conftest import make_xlsx
 
-from excel_etl.engine import run, validate
-from excel_etl.load import LoadError, Where, _stage_path
-from excel_etl.pipeline import parse_spec
-from excel_etl.rebind import rebind
-from excel_etl.state import Job, new_state
-from excel_etl.tools import JobTools
+from moyung.engine import run, validate
+from moyung.load import LoadError, Where, _stage_path
+from moyung.pipeline import parse_spec
+from moyung.rebind import rebind
+from moyung.state import Job, new_state
+from moyung.tools import JobTools
 
 GOOD = [["Item", "Qty"], ["pen", 1], ["ink", 2]]
 SPEC = {

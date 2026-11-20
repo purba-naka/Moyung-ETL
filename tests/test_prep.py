@@ -7,10 +7,10 @@ import re
 import duckdb
 import pytest
 
-from excel_etl.engine import run, validate
-from excel_etl.nodes.base import connect
-from excel_etl.pipeline import SpecError, parse_spec
-from excel_etl.prep import apply_preprocessing as _apply_full
+from moyung.engine import run, validate
+from moyung.nodes.base import connect
+from moyung.pipeline import SpecError, parse_spec
+from moyung.prep import apply_preprocessing as _apply_full
 
 N = 200
 
@@ -525,7 +525,7 @@ def test_a_check_on_a_one_hot_column_explains_why_it_is_not_there(data):
 
 
 def test_a_spec_without_rules_dumps_without_empty_rule_sections():
-    from excel_etl.pipeline import dump_spec
+    from moyung.pipeline import dump_spec
 
     plain = {k: v for k, v in _ml().items() if k not in ("missing", "numerical", "categorical")}
     text = dump_spec(_spec(plain))
@@ -539,7 +539,7 @@ def test_rows_cut_by_drop_are_said_in_the_run_warnings(data, tmp_path):
 
 
 def test_every_artifact_carries_the_same_version(data, tmp_path):
-    from excel_etl.prep import METADATA_VERSION
+    from moyung.prep import METADATA_VERSION
 
     _, out = _go(data, tmp_path)
     for name in ("preprocessing_metadata.json", "feature_schema.json", "preparation_report.json"):
@@ -547,7 +547,7 @@ def test_every_artifact_carries_the_same_version(data, tmp_path):
 
 
 def test_the_ml_catalog_text_names_the_strategies_from_the_models():
-    from excel_etl.ml import describe
+    from moyung.ml import describe
 
     text = describe()
     for word in ("median", "standard_scale", "log1p", "one_hot", "ordinal", "max_categories: 50"):

@@ -7,7 +7,7 @@ from pathlib import Path
 
 from conftest import make_xlsx
 
-from excel_etl.state import Job, new_state
+from moyung.state import Job, new_state
 
 README = (Path(__file__).parent.parent / "README.md").read_text(encoding="utf-8")
 
@@ -47,7 +47,7 @@ def test_stateless_snippet_round_trips(tmp_path):
 
 
 def test_tools_table_matches_the_code():
-    from excel_etl.tools import JobTools
+    from moyung.tools import JobTools
 
     t = JobTools(Job(new_state("j")), object())
     table = README.split("## Tools")[1].split("\n\nA result")[0]
@@ -66,8 +66,8 @@ def test_tools_table_matches_the_code():
 def test_the_complete_spec_in_the_readme_parses_and_runs(tmp_path):
     import json
 
-    from excel_etl.engine import run
-    from excel_etl.pipeline import parse_spec
+    from moyung.engine import run
+    from moyung.pipeline import parse_spec
 
     blocks = re.findall(r"```json\n(.*?)```", README, re.S)
     block = next(b for b in blocks if '"sources"' in b)
@@ -85,7 +85,7 @@ def test_the_complete_spec_in_the_readme_parses_and_runs(tmp_path):
 
 
 def test_steps_table_in_the_readme_lists_every_registered_node():
-    from excel_etl.nodes import names
+    from moyung.nodes import names
 
     table = README.split("| Group | Steps |")[1].split("`filter` and `derive`")[0]
     named = set(re.findall(r"`([a-z_]+)`", table))
@@ -118,7 +118,7 @@ def test_readme_names_where_the_ideas_come_from_with_working_links():
 def test_the_load_example_in_the_readme_is_a_valid_output():
     import json
 
-    from excel_etl.pipeline import Output
+    from moyung.pipeline import Output
 
     blocks = re.findall(r"```json\n(.*?)```", README, re.S)
     block = next(b for b in blocks if '"load"' in b)

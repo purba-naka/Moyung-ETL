@@ -7,10 +7,10 @@ import io
 import openpyxl
 import pytest
 
-from excel_etl.knowledge import Knowledge
-from excel_etl.pipeline import parse_spec
-from excel_etl.synth import Target, TargetColumn, match_columns, synthesize
-from excel_etl.workbook import Workbook
+from moyung.knowledge import Knowledge
+from moyung.pipeline import parse_spec
+from moyung.synth import Target, TargetColumn, match_columns, synthesize
+from moyung.workbook import Workbook
 
 
 def book(rows: list[list[object]], merges: list[str] | None = None) -> Workbook:
@@ -353,7 +353,7 @@ def test_sheets_named_without_a_common_pattern_are_still_all_read(names):
 
     import duckdb
 
-    from excel_etl.engine import run
+    from moyung.engine import run
 
     with tempfile.TemporaryDirectory() as tmp:
         run(parse_spec(report.best.spec), {"main": wb}, tmp)
@@ -408,7 +408,7 @@ def _sum_run(report, wb, col):
 
     import duckdb
 
-    from excel_etl.engine import run
+    from moyung.engine import run
 
     with tempfile.TemporaryDirectory() as tmp:
         rep = run(parse_spec(report.best.spec), {"main": wb}, tmp)
@@ -492,7 +492,7 @@ def test_a_total_label_in_a_second_key_column_is_dropped_too():
 
 
 def test_a_drafted_target_builds_without_edits():
-    from excel_etl.synth import draft_targets
+    from moyung.synth import draft_targets
 
     wb = book([["Region", "Item", "Qty"], ["North", "pen", 10], ["South", "ink", 5]])
     [table] = draft_targets(wb)
@@ -542,7 +542,7 @@ def _item_qty() -> Target:
 
 
 def test_draft_lists_groups_with_size_range_and_left_out_sheets():
-    from excel_etl.synth import draft_targets
+    from moyung.synth import draft_targets
 
     tables = draft_targets(_two_groups())
     daily = next(t for t in tables if t["sheets"] == 60)
@@ -551,7 +551,7 @@ def test_draft_lists_groups_with_size_range_and_left_out_sheets():
 
 
 def test_several_ticked_groups_are_stacked_into_one_output():
-    from excel_etl.synth import draft_targets
+    from moyung.synth import draft_targets
 
     wb = _two_groups()
     ids = [t["region"] for t in draft_targets(wb) if t["sheets"] > 1]
@@ -564,8 +564,8 @@ def test_several_ticked_groups_are_stacked_into_one_output():
 
 
 def test_draft_detects_each_sheet_at_most_once(monkeypatch):
-    from excel_etl.inspect import regions
-    from excel_etl.synth import draft_targets
+    from moyung.inspect import regions
+    from moyung.synth import draft_targets
 
     wb = _two_groups()
     wb.memo.clear()

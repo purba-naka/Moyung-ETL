@@ -7,11 +7,11 @@ import duckdb
 import pytest
 from conftest import make_xlsx
 
-from excel_etl.engine import run, validate
-from excel_etl.nodes.base import connect
-from excel_etl.nodes.source import read_region
-from excel_etl.pipeline import SpecError, parse_spec
-from excel_etl.workbook import Workbook
+from moyung.engine import run, validate
+from moyung.nodes.base import connect
+from moyung.nodes.source import read_region
+from moyung.pipeline import SpecError, parse_spec
+from moyung.workbook import Workbook
 
 
 def _spec(pattern: str = "d[0-9]", column: str = "origin") -> object:

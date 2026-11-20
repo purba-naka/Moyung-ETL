@@ -1,4 +1,4 @@
-"""Optional MCP integration: serve the excel-etl agent tools over stdio, for any MCP client.
+"""Optional MCP integration: serve the moyung agent tools over stdio, for any MCP client.
 
 The library itself knows nothing about MCP; this file is a thin host around `JobTools`.
 
@@ -21,8 +21,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from excel_etl.state import FileStore, Job  # noqa: E402
-from excel_etl.tools import JobTools  # noqa: E402
+from moyung.state import FileStore, Job  # noqa: E402
+from moyung.tools import JobTools  # noqa: E402
 
 
 class DiskFiles:
@@ -49,7 +49,7 @@ def build_server(fresh: Callable[[], JobTools]):
     from mcp.server.mcpserver import MCPServer
 
     server = MCPServer(
-        "excel-etl",
+        "moyung",
         instructions="Read raw Excel, write a pipeline spec, run it. Register a file with "
         "add_file(path, filename) first. Approvals come from the human, never from you.",
     )

@@ -8,8 +8,8 @@ import typing
 import pytest
 from conftest import make_xlsx
 
-from excel_etl.state import FileStore, Job, new_state
-from excel_etl.tools import JobTools
+from moyung.state import FileStore, Job, new_state
+from moyung.tools import JobTools
 
 SALES = [["Item", "Qty"], ["pen", 2], ["ink", 1], ["pen", 5], ["pad", 3]]
 SPEC = {
@@ -343,7 +343,7 @@ def test_add_file_errors(blobs, tmp_path):
 
 
 def test_text_is_capped_with_truncated_flag(tools, monkeypatch):
-    import excel_etl.tools as mod
+    import moyung.tools as mod
 
     monkeypatch.setattr(mod, "_MAX_TEXT", 50)
     r = tools.node_catalog()
@@ -351,7 +351,7 @@ def test_text_is_capped_with_truncated_flag(tools, monkeypatch):
 
 
 def test_internal_bug_becomes_an_error_dict(tools, monkeypatch):
-    import excel_etl.tools as mod
+    import moyung.tools as mod
 
     def boom(*a, **k):
         raise RuntimeError("kaput")
@@ -405,7 +405,7 @@ def test_spec_note_is_capped_with_a_clean_message(tools):
 def test_a_pydantic_error_is_described_not_dumped(tools, monkeypatch):
     from pydantic import BaseModel
 
-    import excel_etl.tools as mod
+    import moyung.tools as mod
 
     class M(BaseModel):
         n: int
@@ -498,7 +498,7 @@ def test_reload_job_after_a_conflict_lets_the_retry_work(blobs, tmp_path):
 
 
 def test_cut_text_says_truncated_and_has_a_next_offset_key(tools, monkeypatch):
-    import excel_etl.tools as mod
+    import moyung.tools as mod
 
     monkeypatch.setattr(mod, "_MAX_TEXT", 50)
     r = tools.node_catalog()
@@ -531,7 +531,7 @@ def test_a_missing_ref_in_an_old_approval_is_named_plainly(tools):
     tools.job.update(
         lambda s: s.model_copy(
             update={
-                "hitl": __import__("excel_etl.hitl", fromlist=["approve"]).approve(
+                "hitl": __import__("moyung.hitl", fromlist=["approve"]).approve(
                     s.hitl, "after_propose_datasets", "dina"
                 )
             }
@@ -542,7 +542,7 @@ def test_a_missing_ref_in_an_old_approval_is_named_plainly(tools):
 
 
 def test_catalog_lists_config_fields_and_takes_several_names():
-    from excel_etl.nodes import catalog
+    from moyung.nodes import catalog
 
     short = catalog()
     assert "| types*" in short and len(short) // 4 < 1_300
@@ -587,8 +587,8 @@ def test_run_pipeline_leaves_out_quiet_steps_but_last_run_keeps_them(tools):
 def test_a_text_cell_in_a_number_column_says_what_to_try():
     import duckdb
 
-    from excel_etl.engine import _explain, run, validate  # noqa: F401
-    from excel_etl.pipeline import (
+    from moyung.engine import _explain, run, validate  # noqa: F401
+    from moyung.pipeline import (
         Step,
         parse_spec,  # noqa: F401
     )

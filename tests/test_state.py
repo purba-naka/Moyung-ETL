@@ -6,11 +6,11 @@ import json
 import pytest
 from conftest import make_xlsx
 
-from excel_etl.engine import run
-from excel_etl.hitl import HitlState, answer, approve, ask_human
-from excel_etl.pipeline import parse_spec
-from excel_etl.rebind import BindRecord
-from excel_etl.state import (
+from moyung.engine import run
+from moyung.hitl import HitlState, answer, approve, ask_human
+from moyung.pipeline import parse_spec
+from moyung.rebind import BindRecord
+from moyung.state import (
     FileStore,
     Job,
     JobState,
@@ -20,7 +20,7 @@ from excel_etl.state import (
     new_state,
     open_files,
 )
-from excel_etl.versions import SpecHistory
+from moyung.versions import SpecHistory
 
 SHA = "a" * 64
 
@@ -411,7 +411,7 @@ def test_a_lock_left_by_a_dead_writer_is_taken_over_and_a_live_one_is_waited_for
     import os
     import time
 
-    import excel_etl.state as mod
+    import moyung.state as mod
 
     store = FileStore(tmp_path)
     lock = tmp_path / "job-j.json.lock"
@@ -436,7 +436,7 @@ def test_open_files_opens_only_the_roles_asked_for():
             opened.append(file_id)
             return data
 
-    from excel_etl.workbook import Workbook
+    from moyung.workbook import Workbook
 
     sha = Workbook.open(data).sha256
     s = new_state("j")

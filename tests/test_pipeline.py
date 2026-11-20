@@ -5,7 +5,7 @@ import json
 
 import pytest
 
-from excel_etl.pipeline import PipelineSpec, SpecError, dump_spec, parse_spec
+from moyung.pipeline import PipelineSpec, SpecError, dump_spec, parse_spec
 
 _SPEC: dict = {
     "sources": {
@@ -178,7 +178,7 @@ def test_config_stays_free_form_until_the_node_registry_exists() -> None:
 def test_end_must_be_exactly_until_blank_rows_with_ascii_digits():
     import json
 
-    from excel_etl.pipeline import SpecError, parse_spec
+    from moyung.pipeline import SpecError, parse_spec
 
     def spec(end):
         src = {
@@ -202,7 +202,7 @@ def test_end_must_be_exactly_until_blank_rows_with_ascii_digits():
 def _spec_error(**parts) -> str:
     import json
 
-    from excel_etl.pipeline import SpecError, parse_spec
+    from moyung.pipeline import SpecError, parse_spec
 
     try:
         parse_spec(json.dumps(parts))
@@ -284,7 +284,7 @@ def test_only_parquet_can_be_loaded_and_two_outputs_cannot_share_a_table() -> No
 
 
 def test_patch_orders_a_replaced_step_after_a_step_added_with_it() -> None:
-    from excel_etl.pipeline import patch_spec
+    from moyung.pipeline import patch_spec
 
     spec = parse_spec(
         _text(steps=[{"id": "b", "node": "cast", "inputs": ["produksi_npk_pkg"]}], outputs={})
@@ -313,7 +313,7 @@ def test_source_kind_defaults_to_excel_and_is_left_out_of_the_dump():
 
 
 def test_unknown_source_kind_names_the_supported_ones():
-    from excel_etl.pipeline import SOURCE_KINDS
+    from moyung.pipeline import SOURCE_KINDS
 
     bad = copy.deepcopy(_SPEC)
     bad["sources"]["produksi_npk_pkg"]["kind"] = "xml"

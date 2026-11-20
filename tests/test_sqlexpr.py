@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import pytest
 
-from excel_etl.nodes import NodeError
-from excel_etl.nodes.base import connect
-from excel_etl.nodes.sqlexpr import check_expression
+from moyung.nodes import NodeError
+from moyung.nodes.base import connect
+from moyung.nodes.sqlexpr import check_expression
 
 
 @pytest.mark.parametrize(
@@ -228,7 +228,7 @@ def test_parser_behaviour_the_shape_check_leans_on() -> None:
 def test_a_sleep_cannot_hold_a_run_even_when_it_reaches_the_engine() -> None:
     import time
 
-    from excel_etl.nodes import build
+    from moyung.nodes import build
 
     start = time.perf_counter()
     with pytest.raises(NodeError, match="not allowed"):

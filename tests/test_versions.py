@@ -4,8 +4,8 @@ import json
 
 import pytest
 
-from excel_etl.pipeline import PipelineSpec, parse_spec
-from excel_etl.versions import SpecHistory, diff_specs
+from moyung.pipeline import PipelineSpec, parse_spec
+from moyung.versions import SpecHistory, diff_specs
 
 
 def _spec(**over) -> PipelineSpec:
@@ -144,7 +144,7 @@ def test_history_refuses_a_note_over_the_cap_however_it_is_built():
     import pytest as _pytest
     from pydantic import ValidationError
 
-    from excel_etl.versions import MAX_NOTE
+    from moyung.versions import MAX_NOTE
 
     with _pytest.raises(ValidationError):
         SpecHistory.start(_spec(), "x" * (MAX_NOTE + 1))

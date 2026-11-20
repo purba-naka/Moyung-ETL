@@ -10,7 +10,7 @@ import re
 
 import pytest
 
-from excel_etl.load import (
+from moyung.load import (
     PROFILES,
     LoadError,
     Where,
@@ -18,7 +18,7 @@ from excel_etl.load import (
     plan_load,
     profile,
 )
-from excel_etl.nodes import Column
+from moyung.nodes import Column
 
 try:
     import sqlglot as _sqlglot

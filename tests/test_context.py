@@ -5,9 +5,9 @@ import json
 import pytest
 from conftest import make_xlsx
 
-from excel_etl.state import Job, add_file, new_state
-from excel_etl.tools import JobTools
-from excel_etl.workbook import Workbook
+from moyung.state import Job, add_file, new_state
+from moyung.tools import JobTools
+from moyung.workbook import Workbook
 
 FILES = {
     "a": make_xlsx(

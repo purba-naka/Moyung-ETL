@@ -18,9 +18,9 @@ import duckdb
 import pytest
 from conftest import make_xlsx
 
-from excel_etl.load import LoadError, Where, file_columns, plan_load
-from excel_etl.state import Job, new_state
-from excel_etl.tools import JobTools
+from moyung.load import LoadError, Where, file_columns, plan_load
+from moyung.state import Job, new_state
+from moyung.tools import JobTools
 
 ROWS = [["Plant", "Product", "Ton"], ["A", "urea", 10], ["A", "npk", 5], ["B", "urea", 7]]
 KEYS = {"table": "sales", "mode": "merge", "keys": ["Plant", "Product"]}

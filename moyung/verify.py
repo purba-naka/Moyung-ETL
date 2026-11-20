@@ -1,0 +1,217 @@
+"""Check that a run kept the source's numbers: an independent look, not one the agent wrote.
+
+Checks in the spec test what the agent thought of. This looks at every number column of every
+source and asks where it went. A column with non-zero numbers is `used` when an output has it
+(same name, its last header level, its name as a value after an unpivot, or the same sum after a
+rename), `excluded` when the spec says why it was dropped, else `lost`. A run with a lost column
+is `unexplained`, and `plan_load` refuses it.
+
+For columns an output keeps under the same name, a sample of output values must be found in the
+source column. A miss is only reported: a unit conversion is a fair reason for one.
+
+ponytail: matching is by name and sum, not by following each step; a column renamed AND
+filtered reads as lost (blocks; never lets a loss through). Upgrade: each node reports its
+column map in `infer_schema`.
+"""
+
+from __future__ import annotations
+
+from typing import Literal
+
+import duckdb
+from pydantic import BaseModel, ConfigDict
+
+from moyung.nodes.base import quote
+from moyung.pipeline import PipelineSpec
+
+_SAMPLE = 20
+_SHOW = 30
+_SKIP_SHOW = 5
+
+
+class VerifyReport(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    status: Literal["ok", "explained", "unexplained"]
+    checked: int
+    lost: tuple[str, ...] = ()
+    excluded: tuple[str, ...] = ()
+    values: tuple[str, ...] = ()
+    skipped: tuple[str, ...] = ()
+
+    def text(self) -> str:
+        lines = [f"verify: {self.status}, {self.checked} number columns of the sources checked"]
+        for title, items in (("LOST (no output has it)", self.lost), ("excluded", self.excluded)):
+            if items:
+                lines.append(f"  {title}: {len(items)}")
+                lines += [f"    {x}" for x in items[:_SHOW]]
+                if len(items) > _SHOW:
+                    lines.append(f"    ... {len(items) - _SHOW} more")
+        if self.skipped:
+            shown = ", ".join(self.skipped[:_SKIP_SHOW])
+            more = (
+                f" +{len(self.skipped) - _SKIP_SHOW} more" if len(self.skipped) > _SKIP_SHOW else ""
+            )
+            lines.append(
+                f"  skipped {len(self.skipped)} text columns with numbers: {shown}{more} "
+                "(cast them to DOUBLE to check)"
+            )
+        lines += [f"  values: {v}" for v in self.values]
+        if self.lost:
+            lines.append(
+                "  keep the lost columns in an output, or list them in the spec's `excluded` "
+                "(source -> {column: reason}) for a person to accept"
+            )
+        return "\n".join(lines)
+
+
+def _numeric(typ: str) -> bool:
+    return typ in ("BIGINT", "INTEGER", "SMALLINT", "TINYINT", "HUGEINT", "DOUBLE", "FLOAT") or (
+        typ.startswith("DECIMAL")
+    )
+
+
+def _columns(con: duckdb.DuckDBPyConnection, table: str) -> list[tuple[str, str]]:
+    return [(r[0], r[1]) for r in con.execute(f"DESCRIBE {quote(table)}").fetchall()]
+
+
+def _sums(con: duckdb.DuckDBPyConnection, table: str, cols: list[str]) -> dict[str, tuple]:
+    """column -> (sum, non-zero count), one query for the whole table."""
+    if not cols:
+        return {}
+    parts = ", ".join(
+        f"sum(CAST({quote(c)} AS DOUBLE)), count(*) FILTER ({quote(c)} <> 0)" for c in cols
+    )
+    row = con.execute(f"SELECT {parts} FROM {quote(table)}").fetchall()[0]
+    return {c: (row[2 * i] or 0.0, row[2 * i + 1]) for i, c in enumerate(cols)}
+
+
+def _skipped(con: duckdb.DuckDBPyConnection, table: str, cols: list[str]) -> list[str]:
+    """Text columns holding some numbers, as `table.col (e.g. 'n/a')`; one query per table."""
+    if not cols:
+        return []
+    parts = ", ".join(
+        f"count(TRY_CAST({quote(c)} AS DOUBLE)), "
+        f"any_value({quote(c)}) FILTER (TRY_CAST({quote(c)} AS DOUBLE) IS NULL "
+        f"OR isnan(TRY_CAST({quote(c)} AS DOUBLE)))"
+        for c in cols
+    )
+    row = con.execute(f"SELECT {parts} FROM {quote(table)}").fetchall()[0]
+    return [
+        f"{table}.{c} (e.g. {row[2 * i + 1]!r})"
+        for i, c in enumerate(cols)
+        if row[2 * i] and row[2 * i + 1] is not None
+    ]
+
+
+def _close(a: float, b: float) -> bool:
+    return abs(a - b) <= 1e-6 * max(1.0, abs(a), abs(b))
+
+
+def _sources_behind(spec: PipelineSpec, name: str) -> set[str]:
+    """The sources that table `name` is built from (itself, when it is a source)."""
+    steps = {s.id: s for s in spec.steps}
+    seen: set[str] = set()
+    todo = [name]
+    while todo:
+        n = todo.pop()
+        if n not in seen:
+            seen.add(n)
+            todo.extend(steps[n].inputs if n in steps else [])
+    return seen & set(spec.sources)
+
+
+def verify(
+    spec: PipelineSpec, con: duckdb.DuckDBPyConnection, skip: set[str] | None = None
+) -> VerifyReport:
+    """Compare the source tables and output tables still held in `con` after a run. Outputs
+    named in `skip` were held back: a column only they keep is listed as excluded, not lost."""
+    skip = skip or set()
+    outs = {o.input for n, o in spec.outputs.items() if n not in skip}
+    held = {
+        c.casefold()
+        for n, o in spec.outputs.items()
+        if n in skip and o.input not in outs
+        for c, _ in _columns(con, o.input)
+    }
+    out_cols = {t: _columns(con, t) for t in outs}
+    names = {c.casefold() for cols in out_cols.values() for c, _ in cols}
+    out_sums = [
+        s
+        for t, cols in out_cols.items()
+        for s, _ in _sums(con, t, [c for c, typ in cols if _numeric(typ)]).values()
+    ]
+    text_cols = [(t, c) for t, cols in out_cols.items() for c, typ in cols if typ == "VARCHAR"]
+
+    checked, lost, excluded, values, skipped = 0, [], [], [], []
+    ml_sources = _sources_behind(spec, spec.ml.input) if spec.ml is not None else set()
+    for src in spec.sources:
+        src_cols = _columns(con, src)
+        cols = [c for c, typ in src_cols if _numeric(typ)]
+        skipped += _skipped(con, src, [c for c, typ in src_cols if typ == "VARCHAR"])
+        reasons = {k.casefold(): v for k, v in spec.excluded.get(src, {}).items()}
+        if spec.ml is not None and src in ml_sources:
+            reasons |= {c.casefold(): "left out by the ml declaration" for c in spec.ml.exclude}
+        missing: dict[str, int] = {}
+        for c, (total, nonzero) in _sums(con, src, cols).items():
+            if not nonzero:
+                continue
+            checked += 1
+            leaf = c.rsplit("|", 1)[-1].strip().casefold()
+            if c.casefold() in reasons:
+                excluded.append(f"{src}.{c}: {reasons[c.casefold()]}")
+            elif names.isdisjoint((c.casefold(), leaf)) and not held.isdisjoint(
+                (c.casefold(), leaf)
+            ):
+                excluded.append(f"{src}.{c}: only in an output held back by a failed check")
+            elif c.casefold() not in names and leaf not in names:
+                if any(_close(total, s) for s in out_sums):
+                    continue
+                missing[c] = nonzero
+            elif c.casefold() in names:
+                values += _sample(con, src, c, out_cols)
+        if missing:
+            wanted = {c.casefold(): c for c in missing} | {
+                c.rsplit("|", 1)[-1].strip().casefold(): c for c in missing
+            }
+            for t, col in text_cols:
+                rows = con.execute(
+                    f"SELECT DISTINCT lower({quote(col)}) FROM {quote(t)} "
+                    f"WHERE lower({quote(col)}) IN (SELECT unnest(?::VARCHAR[]))",
+                    [list(wanted)],
+                ).fetchall()
+                for (v,) in rows:
+                    missing.pop(wanted[v], None)
+            lost += [f"{src}.{c} ({n} non-zero)" for c, n in missing.items()]
+    status = "unexplained" if lost else ("explained" if excluded else "ok")
+    return VerifyReport(
+        status=status,
+        checked=checked,
+        lost=tuple(lost),
+        excluded=tuple(excluded),
+        values=tuple(values),
+        skipped=tuple(skipped),
+    )
+
+
+def _sample(
+    con: duckdb.DuckDBPyConnection, src: str, col: str, out_cols: dict[str, list[tuple[str, str]]]
+) -> list[str]:
+    """Output values of `col` that the source column does not hold, as report lines."""
+    found = []
+    for t, cols in out_cols.items():
+        hit = next((c for c, typ in cols if c.casefold() == col.casefold() and _numeric(typ)), None)
+        if hit is None:
+            continue
+        miss = con.execute(
+            f"SELECT count(*) FROM (SELECT DISTINCT CAST({quote(hit)} AS DOUBLE) v "
+            f"FROM {quote(t)} WHERE {quote(hit)} IS NOT NULL ORDER BY v LIMIT {_SAMPLE}) "
+            f"WHERE v NOT IN (SELECT CAST({quote(col)} AS DOUBLE) FROM {quote(src)} "
+            f"WHERE {quote(col)} IS NOT NULL)"
+        ).fetchall()[0][0]
+        if miss:
+            found.append(
+                f"{t}.{hit}: {miss} of up to {_SAMPLE} sampled values are not in {src}.{col} "
+                "(fine after a unit conversion, otherwise check the steps)"
+            )
+    return found

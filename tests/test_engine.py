@@ -8,9 +8,9 @@ import duckdb
 import pytest
 from conftest import make_xlsx
 
-from excel_etl.engine import PipelineError, run, validate
-from excel_etl.pipeline import SpecError, parse_spec
-from excel_etl.workbook import Workbook
+from moyung.engine import PipelineError, run, validate
+from moyung.pipeline import SpecError, parse_spec
+from moyung.workbook import Workbook
 
 
 def _spec(**parts) -> object:
@@ -413,7 +413,7 @@ def test_run_cannot_start_without_files_dict_or_with_a_file_as_out_dir(book, tmp
 
 
 def test_a_run_can_only_write_inside_out_dir(book, tmp_path) -> None:
-    from excel_etl.nodes.base import connect
+    from moyung.nodes.base import connect
 
     out = tmp_path / "out"
     out.mkdir()
@@ -667,7 +667,7 @@ def test_run_without_hitl_is_unchanged(book, tmp_path) -> None:
 
 
 def test_run_refused_until_checkpoint_approved(book, tmp_path) -> None:
-    from excel_etl.hitl import HitlPolicy, HitlState, approve
+    from moyung.hitl import HitlPolicy, HitlState, approve
 
     s = HitlState()
     with pytest.raises(PipelineError) as e:
@@ -687,7 +687,7 @@ def test_run_refused_until_checkpoint_approved(book, tmp_path) -> None:
 
 
 def test_run_refuses_stale_approval(book, tmp_path) -> None:
-    from excel_etl.hitl import HitlState, approve
+    from moyung.hitl import HitlState, approve
 
     s = approve(HitlState(), "after_propose_datasets", "dina", ref="v1")
     assert run(_pipeline(), {"f": book}, tmp_path, hitl=s, ref="v1").status == "ok"
@@ -710,7 +710,7 @@ def test_run_wrong_argument_types_raise_pipeline_error_not_attribute_error(book,
 
 
 def test_issues_beyond_the_cap_are_counted_not_dropped_silently(book) -> None:
-    from excel_etl.engine import _MAX_ISSUES
+    from moyung.engine import _MAX_ISSUES
 
     steps = [
         {"id": f"f{i}", "node": "filter", "inputs": ["orders"], "config": {"where": "nope > 1"}}
@@ -725,7 +725,7 @@ def test_issues_beyond_the_cap_are_counted_not_dropped_silently(book) -> None:
 
 
 def test_a_long_issue_message_is_cut_with_dots(book) -> None:
-    from excel_etl.engine import _MAX_MESSAGE, _State
+    from moyung.engine import _MAX_MESSAGE, _State
 
     st = _State()
     st.issue("x", "y" * 1000)
@@ -826,8 +826,8 @@ def test_a_mixed_column_writes_booleans_and_long_durations_the_way_excel_shows_t
 
 
 def test_an_unsupported_cast_is_not_blamed_on_mixed_text():
-    from excel_etl.engine import _explain
-    from excel_etl.pipeline import Step
+    from moyung.engine import _explain
+    from moyung.pipeline import Step
 
     con = duckdb.connect()
     with pytest.raises(duckdb.ConversionException) as caught:

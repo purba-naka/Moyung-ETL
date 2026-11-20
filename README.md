@@ -1,9 +1,9 @@
-# excel-etl
+# moyung
 
 Tools for LLM agents that turn raw Excel files (many sheets, many tables, irregular shapes) into
 clean tables. The agent looks at the workbook, writes a pipeline spec (JSON), runs it in duckdb
 to parquet/csv, and reruns the same spec on next month's file. Pure Python: no server, no state
-kept inside, no agent framework imported. Repository `Moyung-ETL`, package `excel_etl`.
+kept inside, no agent framework imported. Repository `Moyung-ETL`, package `moyung`.
 
 ## What it does
 
@@ -54,8 +54,8 @@ The host provides a **file provider** (`open(file_id) -> path or bytes`), a plac
 **state** (one JSON per job, or a `StateStore`) and an **out_dir**.
 
 ```python
-from excel_etl.state import Job, FileStore
-from excel_etl.tools import JobTools
+from moyung.state import Job, FileStore
+from moyung.tools import JobTools
 
 
 class Files:  # your storage: disk, S3, a database ...
@@ -85,7 +85,7 @@ from google.adk.agents import LlmAgent
 from google.adk.tools import FunctionTool
 
 agent = LlmAgent(
-    name="excel_etl",
+    name="moyung",
     model="gemini-2.5-pro",
     instruction=INSTRUCTION,
     tools=[FunctionTool(fn) for fn in tools.agent_tools()],
@@ -106,8 +106,8 @@ uv run python integrations/mcp_server.py --state-dir S --allow-dir D approve CHE
 The second form is the human side; Excel files are read only from `--allow-dir`.
 
 **Skills**: `skills/` holds five playbooks in the Agent Skills format (`SKILL.md` per folder):
-`excel-etl-understand`, `excel-etl-build-spec`, `excel-etl-run-verify`, `excel-etl-recycle`,
-`excel-etl-load`. Copy them into the agent's skills directory; they give the order of work.
+`moyung-understand`, `moyung-build-spec`, `moyung-run-verify`, `moyung-recycle`,
+`moyung-load`. Copy them into the agent's skills directory; they give the order of work.
 
 Short instruction to start from:
 
@@ -185,10 +185,10 @@ tried with `rebind`, and the first whose sources are all found is run. If none f
 written and the report names the closest spec.
 
 ```
-python -m excel_etl.auto <file.xlsx> <specs_dir> <out_dir>
+python -m moyung.auto <file.xlsx> <specs_dir> <out_dir>
 ```
 
-`excel_etl.synth` can also draft a spec from the output table a person describes, without an
+`moyung.synth` can also draft a spec from the output table a person describes, without an
 LLM; the result is an ordinary spec that stays editable.
 
 ## Load into a warehouse

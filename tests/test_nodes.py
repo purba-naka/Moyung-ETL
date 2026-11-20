@@ -4,8 +4,8 @@ import duckdb
 import pytest
 from pydantic import Field
 
-from excel_etl.nodes import Column, Node, NodeError, build, infer, names, node, quote, schema_of
-from excel_etl.nodes.base import NodeConfig, Relation, Schema
+from moyung.nodes import Column, Node, NodeError, build, infer, names, node, quote, schema_of
+from moyung.nodes.base import NodeConfig, Relation, Schema
 
 
 def _rel() -> Relation:
@@ -101,7 +101,7 @@ def test_a_new_node_registers_and_runs() -> None:
 
 
 def test_catalog_lists_every_node_with_a_description():
-    from excel_etl.nodes import catalog, names
+    from moyung.nodes import catalog, names
 
     lines = catalog().splitlines()
     assert [ln.split(":", 1)[0] for ln in lines] == names()
@@ -109,7 +109,7 @@ def test_catalog_lists_every_node_with_a_description():
 
 
 def test_catalog_each_node_has_fields_and_required_marks():
-    from excel_etl.nodes import catalog, names
+    from moyung.nodes import catalog, names
 
     for n in names():
         text = catalog(n)
@@ -125,7 +125,7 @@ def test_catalog_each_node_has_fields_and_required_marks():
 def test_catalog_unknown_node_lists_known_ones():
     import pytest as _pytest
 
-    from excel_etl.nodes import NodeError, catalog
+    from moyung.nodes import NodeError, catalog
 
     with _pytest.raises(NodeError, match="unknown node 'merge'; nodes: cast, dedupe"):
         catalog("merge")
@@ -134,7 +134,7 @@ def test_catalog_unknown_node_lists_known_ones():
 def test_config_error_names_the_valid_fields():
     import pytest as _pytest
 
-    from excel_etl.nodes import NodeError, build
+    from moyung.nodes import NodeError, build
 
     with _pytest.raises(NodeError) as e:
         build("group_by", {"aggs": [{"fn": "sum", "column": "Q", "as": "T"}]})
@@ -146,7 +146,7 @@ def test_config_error_names_the_valid_fields():
 
 
 def test_catalog_shows_named_choices_not_empty_braces():
-    from excel_etl.nodes import catalog, names
+    from moyung.nodes import catalog, names
 
     assert "value_type: date|" in catalog("unpivot") or "value_type: " in catalog("unpivot")
     assert "{}" not in "\n".join(catalog(n) for n in names())
@@ -154,6 +154,6 @@ def test_catalog_shows_named_choices_not_empty_braces():
 
 
 def test_catalog_shows_a_fixed_size_list_as_its_parts():
-    from excel_etl.nodes import catalog
+    from moyung.nodes import catalog
 
     assert "suffixes: [string, string] = None" in catalog("join")

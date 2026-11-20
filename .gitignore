@@ -10,3 +10,6 @@ __pycache__/
 *.xls
 *.parquet
 *.csv
+*.egg-info/
+build/
+dist/

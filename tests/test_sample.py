@@ -6,10 +6,10 @@ from datetime import date
 import pytest
 from conftest import make_xlsx
 
-from excel_etl.inspect.tables import sample_data
-from excel_etl.nodes.base import NodeError, connect
-from excel_etl.sample import MAX_ROWS, STRATEGIES, sample_table
-from excel_etl.workbook import Workbook, WorkbookError
+from moyung.inspect.tables import sample_data
+from moyung.nodes.base import NodeError, connect
+from moyung.sample import MAX_ROWS, STRATEGIES, sample_table
+from moyung.workbook import Workbook, WorkbookError
 
 
 def _rows() -> list[list]:
@@ -244,8 +244,8 @@ def test_random_gives_the_same_rows_in_another_process():
     import sys
 
     code = (
-        "from excel_etl.nodes.base import connect\n"
-        "from excel_etl.sample import sample_table\n"
+        "from moyung.nodes.base import connect\n"
+        "from moyung.sample import sample_table\n"
         "con = connect()\n"
         'con.execute("CREATE TABLE t AS SELECT range AS id FROM range(5000)")\n'
         "print(sample_table(con, 't', 'random', n=8, seed=11)['positions'])\n"

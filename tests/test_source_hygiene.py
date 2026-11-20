@@ -10,7 +10,7 @@ ROOT = Path(__file__).parent.parent
 
 def test_every_python_file_compiles_without_warnings():
     bad = []
-    for path in sorted([*ROOT.glob("excel_etl/**/*.py"), *ROOT.glob("tests/*.py")]):
+    for path in sorted([*ROOT.glob("moyung/**/*.py"), *ROOT.glob("tests/*.py")]):
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always")
             compile(path.read_text(encoding="utf-8"), str(path), "exec")

@@ -57,7 +57,7 @@ async def test_mcp_tools_flat_and_flow(tmp_path: Path) -> None:
 
 
 def test_library_never_imports_mcp() -> None:
-    for path in (ROOT / "excel_etl").rglob("*.py"):
+    for path in (ROOT / "moyung").rglob("*.py"):
         for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
             mods = [a.name for a in node.names] if isinstance(node, ast.Import) else []
             if isinstance(node, ast.ImportFrom):

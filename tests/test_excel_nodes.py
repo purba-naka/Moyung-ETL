@@ -6,11 +6,11 @@ import duckdb
 import pytest
 from conftest import make_xlsx
 
-from excel_etl.nodes import NodeError, build, infer, schema_of
-from excel_etl.nodes.base import connect
-from excel_etl.nodes.source import read_region
-from excel_etl.pipeline import Source
-from excel_etl.workbook import Workbook
+from moyung.nodes import NodeError, build, infer, schema_of
+from moyung.nodes.base import connect
+from moyung.nodes.source import read_region
+from moyung.pipeline import Source
+from moyung.workbook import Workbook
 
 
 def _rel(sql: str, con: duckdb.DuckDBPyConnection | None = None):
@@ -350,7 +350,7 @@ def test_unpivot_groups_missing_measure_is_typed_null() -> None:
 def test_drop_regex_and_keep_type_keep_a_row_whose_column_is_empty():
     import duckdb
 
-    from excel_etl.nodes import build
+    from moyung.nodes import build
 
     con = duckdb.connect()
     con.execute(
@@ -363,6 +363,6 @@ def test_drop_regex_and_keep_type_keep_a_row_whose_column_is_empty():
     ci = build("drop_rows", {"blank": False, "column": "Item", "drop_regex": "(?i)^total$"})
     con.execute("CREATE TABLE u AS SELECT * FROM (VALUES ('TOTAL'),('pen')) v(\"Item\")")
     assert [r[0] for r in ci.run([con.table("u")]).fetchall()] == ["pen"]
-    from excel_etl.nodes import catalog
+    from moyung.nodes import catalog
 
     assert "A row whose `column` is empty is kept" in " ".join(catalog("drop_rows").split())
