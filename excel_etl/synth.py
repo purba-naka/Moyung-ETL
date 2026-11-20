@@ -338,7 +338,7 @@ def match_columns(
             continue
         candidates = _header_ranking(col, enriched, names, types, used, answers)
         if not candidates:
-            if col in value_targets and col.required:
+            if _is_measure(col, target) and col.required:
                 scores[col.name] = 1.0
             elif col.required:
                 questions.append(_ask(col, "header", names))
