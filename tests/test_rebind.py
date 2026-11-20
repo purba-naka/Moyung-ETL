@@ -45,6 +45,8 @@ def test_a_matching_file_is_exact_and_gives_a_record() -> None:
         first_col=0,
         columns=("Item", "Qty", "Price"),
         types={"item": "VARCHAR", "qty": "BIGINT", "price": "BIGINT"},
+        sheet_columns={"Data": ("Item", "Qty", "Price")},
+        rows=2,
     )
     assert rep.records() == {"s": s.record}
     assert "s|exact at Data!A1" in rep.text()
@@ -227,6 +229,8 @@ def test_multi_sheet_rebind_ignores_new_sheet_names_and_counts() -> None:
         columns=_BASE[0],
         types={"item": "VARCHAR", "qty": "BIGINT", "price": "BIGINT"},
         sheets=2,
+        sheet_columns={"d1": tuple(_BASE[0]), "d2": tuple(_BASE[0])},
+        rows=4,
     )
     again = rebind(spec, _multi_book(), first.records())
     grown = rebind(spec, _multi_book(("d0", "d1", "d2", "d3")), first.records())
@@ -380,7 +384,7 @@ def test_an_unreadable_table_keeps_the_types_of_the_last_bind(monkeypatch) -> No
 
     spec = _spec(_src())
     prev = _bind(_BASE, spec).records()
-    monkeypatch.setattr(rb, "_read_types", lambda *a, **k: {})
+    monkeypatch.setattr(rb, "_read_types", lambda *a, **k: ({}, None))
     s = _bind(_BASE, spec, prev).sources["s"]
     assert s.record is not None and s.record.types == prev["s"].types != {}
 

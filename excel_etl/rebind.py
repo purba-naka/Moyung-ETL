@@ -55,6 +55,8 @@ class BindRecord(_Model):
     columns: tuple[str, ...]
     types: dict[str, str] = {}
     sheets: int = 1
+    sheet_columns: dict[str, tuple[str, ...]] = {}
+    rows: int | None = None
 
 
 class SourceBind(_Model):
@@ -71,6 +73,11 @@ class BindReport(_Model):
     def ok(self) -> bool:
         """True when the pipeline can run as is (every source exact or shifted)."""
         return all(s.status in ("exact", "shifted") for s in self.sources.values())
+
+    def accepted_records(self) -> dict[str, BindRecord]:
+        """The records of every source that was found, drifted or not: what a person who
+        approved the drift wants remembered as the new normal."""
+        return {k: s.record for k, s in self.sources.items() if s.record is not None}
 
     def records(self) -> dict[str, BindRecord]:
         """The records to hand to the next `rebind` as `previous`. Sources that drifted or
@@ -91,7 +98,7 @@ class BindReport(_Model):
         return "\n".join(lines)
 
 
-def _record(locs: list[Location], types: dict[str, str]) -> BindRecord:
+def _record(locs: list[Location], types: dict[str, str], rows: int | None) -> BindRecord:
     first = locs[0]
     columns_by_key: dict[str, str] = {}
     for loc in locs:
@@ -105,6 +112,8 @@ def _record(locs: list[Location], types: dict[str, str]) -> BindRecord:
         columns=columns,
         types={c.casefold(): types[c.casefold()] for c in columns if c.casefold() in types},
         sheets=len(locs),
+        sheet_columns={loc.sheet: tuple(loc.names) for loc in locs},
+        rows=rows,
     )
 
 
@@ -152,10 +161,61 @@ def _compare(
             )
 
 
+def _compare_sheets(
+    source: Source, old: BindRecord, locs: list[Location], drift: list[str], moved: list[str]
+) -> None:
+    """A source read from several same-shaped sheets: a sheet that went, or lost a column the
+    union of all sheets still has, would otherwise change the data without a word."""
+    if old.sheets <= 1 and len(locs) <= 1:
+        return
+    now = {loc.sheet: loc.names for loc in locs}
+    if not old.sheet_columns:
+        if old.sheets > len(locs):
+            drift.append(
+                f"{old.sheets} sheets matched this source before, {len(locs)} now: the pipeline "
+                "reads fewer tables; check the file"
+            )
+        return
+    gone = [s for s in old.sheet_columns if s not in now]
+    if gone:
+        drift.append(
+            f"sheet(s) {few(gone, 6)} no longer match this source, so their rows are missing "
+            "from the result; check the file, or accept the change"
+        )
+    for sheet, names in now.items():
+        was = old.sheet_columns.get(sheet)
+        if was is None:
+            continue
+        have = {n.casefold() for n in names}
+        lost = [c for c in was if c.casefold() not in have and not _covered(source, c)]
+        if lost:
+            drift.append(
+                f"sheet {sheet!r} lost column(s) {few(lost, 6)}: its rows would be empty there; "
+                "check the file, or add an expect_columns entry to accept it"
+            )
+
+
+_DROP = 0.5
+_DROP_MIN_ROWS = 20
+
+
+def _compare_rows(old: BindRecord, rows: int | None, drift: list[str], moved: list[str]) -> None:
+    if rows is None or old.rows is None or old.rows == 0:
+        return
+    if rows == 0:
+        drift.append(f"the table had {old.rows} rows and now has none: check the file")
+    elif old.rows >= _DROP_MIN_ROWS and rows < old.rows * _DROP:
+        moved.append(f"row count fell from {old.rows} to {rows}")
+
+
 def _judge(
-    source: Source, locs: list[Location], old: BindRecord | None, types: dict[str, str]
+    source: Source,
+    locs: list[Location],
+    old: BindRecord | None,
+    types: dict[str, str],
+    rows: int | None,
 ) -> SourceBind:
-    rec = _record(locs, types)
+    rec = _record(locs, types, rows)
     if not types and old is not None:
         rec = rec.model_copy(update={"types": old.types})
     loc = locs[0]
@@ -180,6 +240,8 @@ def _judge(
                 f"header {a1(old.header_row, old.first_col)} -> {a1(loc.header, loc.left)}"
             )
         _compare(source, old, names, types, drift, moved)
+        _compare_sheets(source, old, locs, drift, moved)
+        _compare_rows(old, rows, drift, moved)
     status: Status = "drift" if drift else "shifted" if moved else "exact"
     return SourceBind(status=status, record=rec, diff=tuple([*drift, *moved]))
 
@@ -206,6 +268,7 @@ def _bind_table(
         tf = as_table_file(files[role], source.kind)
         rel = read_table_file(tf, source, con, name)
         schema = schema_of(rel)
+        rows = int(con.execute(f"SELECT count(*) FROM {quote(name)}").fetchall()[0][0])
     except (TableFileError, NodeError, duckdb.Error, TypeError) as e:
         return SourceBind(
             status="missing",
@@ -217,7 +280,7 @@ def _bind_table(
         con.execute(f"DROP TABLE IF EXISTS {quote(name)}")
     names = tuple(c.name for c in schema)
     types = {c.name.casefold(): c.type for c in schema}
-    rec = BindRecord(sheet="", header_row=0, first_col=0, columns=names, types=types)
+    rec = BindRecord(sheet="", header_row=0, first_col=0, columns=names, types=types, rows=rows)
     drift: list[str] = [
         f"required column {expect_label(want)} not found: check the file's header, then change "
         f"expect_columns and the steps that use it"
@@ -226,20 +289,24 @@ def _bind_table(
     moved: list[str] = []
     if old is not None:
         _compare(source, old, names, types, drift, moved)
+        _compare_rows(old, rows, drift, moved)
     status: Status = "drift" if drift else "shifted" if moved else "exact"
     return SourceBind(status=status, record=rec, diff=tuple([*drift, *moved]))
 
 
 def _read_types(
     con: duckdb.DuckDBPyConnection, source: Source, locs: list[Location], name: str
-) -> dict[str, str]:
-    """The table's column types as the pipeline reads them (`{casefolded column: duckdb type}`).
-    Empty when the table cannot be read: the run will fail on it with the real error."""
+) -> tuple[dict[str, str], int | None]:
+    """The table's column types as the pipeline reads them (`{casefolded column: duckdb type}`)
+    and its row count. Empty and None when the table cannot be read: the run will fail on it
+    with the real error."""
     try:
         rel = read_locations(locs, source, con, name)
-        return {c.name.casefold(): c.type for c in schema_of(rel)}
+        types = {c.name.casefold(): c.type for c in schema_of(rel)}
+        rows = int(con.execute(f"SELECT count(*) FROM {quote(name)}").fetchall()[0][0])
+        return types, rows
     except (NodeError, WorkbookError, duckdb.Error):
-        return {}
+        return {}, None
     finally:
         con.execute(f"DROP TABLE IF EXISTS {quote(name)}")
 
@@ -295,8 +362,8 @@ def rebind(
                     message="" if matched else str(e),
                 )
                 continue
-            types = _read_types(con, source, locs, name)
-            out[name] = _judge(source, locs, previous.get(name), types)
+            types, rows = _read_types(con, source, locs, name)
+            out[name] = _judge(source, locs, previous.get(name), types, rows)
     finally:
         con.close()
     return BindReport(sources=out)
