@@ -24,9 +24,9 @@ A person stays in the loop: the agent asks questions and waits for approvals it 
 
 | Group | Tools |
 |---|---|
-| Look at a file | `workbook_map`, `sheet_regions`, `render_range`, `profile_region`, `sample_data`, `relate_tables`, `find_text`, `compare_sheets`, `formula_lineage`, `propose_datasets`, `source_for_region` |
+| Look at a file | `workbook_map`, `sheet_regions`, `render_range`, `profile_region`, `sample_data`, `relate_tables`, `find_text`, `compare_sheets`, `formula_lineage`, `propose_datasets`, `source_for_region`, `ml_candidates` |
 | Write a pipeline | `node_catalog`, `save_spec`, `edit_spec`, `get_spec`, `validate_spec`, `spec_history` |
-| Run and recycle | `run_pipeline`, `last_run`, `verify_run`, `rebind_sources`, `plan_load` |
+| Run and recycle | `run_pipeline`, `last_run`, `verify_run`, `rebind_sources`, `plan_load`, `apply_ml_preprocessing` |
 | People and context | `ask_human`, `pending_questions`, `lookup_knowledge`, `job_summary`, `list_files` |
 | Host only | `add_file`, `answer`, `approve`, `reload_job`, `record_load`, `build_context` |
 

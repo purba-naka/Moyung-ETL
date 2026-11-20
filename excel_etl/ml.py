@@ -56,10 +56,10 @@ _ROW = "__ml_rn"
 _BASE = "__ml_base"
 _PART = "__ml_part"
 _CONTINUOUS = ("FLOAT", "DOUBLE", "DECIMAL")
-_MAX_CLASSES = 20
+MAX_CLASSES = 20
 ARTIFACT_NOTES = {
     "preprocessing_metadata.json": "split settings and what was learned from train (apply it "
-    "to new data with apply_preprocessing)",
+    "to new data with apply_ml_preprocessing)",
     "feature_schema.json": "each output column's type and role (id, feature, target)",
     "preparation_report.json": "rows per partition, dropped columns, empty values, rows cut, "
     "target classes per partition",
@@ -83,7 +83,7 @@ def _choices(rule: type[BaseModel]) -> str:
     return " | ".join(get_args(rule.model_fields["strategy"].annotation))
 
 
-def _max_categories() -> int:
+def max_categories() -> int:
     return CategoricalRule.model_fields["max_categories"].default
 
 
@@ -104,13 +104,13 @@ def describe() -> str:
             "for time and group; refused for random and stratified)",
             "every column of the input must be placed in target, features, ids or exclude.",
             "to prepare new rows later with the same numbers, give preprocessing_metadata.json "
-            "to apply_preprocessing (a library function), never re-run the spec on the new "
+            "to apply_ml_preprocessing, never re-run the spec on the new "
             "rows: that would learn new numbers.",
             "preprocessing (optional, learned from the train rows only, applied to all "
             f"partitions): missing = {{column: {{strategy: {_choices(MissingRule)}, value for "
             f"constant}}}}; numerical = {{column: {{strategy: {_choices(NumericRule)}}}}}; "
             f"categorical = {{column: {{strategy: {_choices(CategoricalRule)}, unknown: ignore | "
-            f"error, max_categories: {_max_categories()}}}}}. Only features can have rules. "
+            f"error, max_categories: {max_categories()}}}}}. Only features can have rules. "
             "The learned numbers are written to preprocessing_metadata.json; a one_hot column "
             "is named <column>_<value> and exists only after the run.",
             "example: " + json.dumps(EXAMPLE),
@@ -315,7 +315,7 @@ def split(
     """Cut `ml.input` into the partition tables inside `con`. Returns the result, or None and
     the problems (a NULL where a value is needed, a partition left empty)."""
     source, strategy = quote(ml.input), ml.split.strategy
-    needs = ml.target if strategy == "stratified" else (ml.split.by or "")
+    needs = [ml.target, *([ml.split.by] if ml.split.by else [])]
     by_name = _lookup(schema)
     problems: list[str] = []
     con.execute(f"DROP TABLE IF EXISTS {_BASE}")
@@ -323,16 +323,15 @@ def split(
     con.execute(f"CREATE TABLE {_BASE} AS SELECT row_number() OVER () AS {_ROW}, * FROM {source}")
     try:
         total = con.execute(f"SELECT count(*) FROM {_BASE}").fetchall()[0][0]
-        needed = quote(by_name[needs.casefold()].name) if needs else ""
-        if needs and (
-            nulls := con.execute(f"SELECT count(*) FROM {_BASE} WHERE {needed} IS NULL").fetchall()[
-                0
-            ][0]
-        ):
-            return None, [
-                f"{needs!r} has {nulls} empty value(s) and the {strategy} split needs one in "
-                "every row; fill or drop those rows first"
-            ]
+        for needed_name in needs:
+            needed = quote(by_name[needed_name.casefold()].name)
+            nulls = con.execute(f"SELECT count(*) FROM {_BASE} WHERE {needed} IS NULL").fetchall()
+            if nulls[0][0]:
+                why = "a target" if needed_name == ml.target else f"the {strategy} split"
+                return None, [
+                    f"{needed_name!r} has {nulls[0][0]} empty value(s) and {why} needs one in "
+                    "every row; fill or drop those rows first"
+                ]
         if strategy == "group":
             by = quote(by_name[(ml.split.by or "").casefold()].name)
             key = f"md5({sql_text(str(ml.split.seed))} || ':' || CAST(__ml_g AS VARCHAR))"
@@ -371,13 +370,18 @@ def split(
             base=_BASE,
             part=_PART,
             row=_ROW,
+            columns=list(schema),
             target=by_name[ml.target.casefold()],
             features=[by_name[c.casefold()] for c in ml.features],
             ids=[by_name[c.casefold()] for c in ml.ids],
             by=by_name[ml.split.by.casefold()] if ml.split.by else None,
             strategy=strategy,
         )
-        result.warnings = [*_warnings(ml, classes, distinct), *found, *result.warnings]
+        result.warnings = [
+            *_warnings(ml, classes, distinct, [by_name[c.casefold()] for c in ml.features]),
+            *found,
+            *result.warnings,
+        ]
         return result, []
     finally:
         con.execute(f"DROP TABLE IF EXISTS {_BASE}")
@@ -465,10 +469,18 @@ def _missing_counts(
     return out
 
 
-def _warnings(ml: MlSpec, classes: dict[str, dict[str, int]], distinct: int) -> list[str]:
+def _warnings(
+    ml: MlSpec, classes: dict[str, dict[str, int]], distinct: int, features: list[Column]
+) -> list[str]:
     """Things a split got through but the author should look at."""
     found: list[str] = []
-    if ml.split.strategy == "stratified" and distinct > _MAX_CLASSES:
+    if dates := [c.name for c in features if leakage.temporal(c)]:
+        found.append(
+            f"date feature(s) {', '.join(repr(d) for d in dates[:5])} are not preprocessed and a "
+            "model cannot use a date as it is: derive a number from them (derive) or move them "
+            "to exclude or ids"
+        )
+    if ml.split.strategy == "stratified" and distinct > MAX_CLASSES:
         found.append(
             f"{ml.target!r} has {distinct} distinct values; a stratified split keeps the share "
             "of each one, which is probably not what you want: use a random split"
@@ -493,11 +505,11 @@ def _classes(
     how many distinct values it has."""
     target = quote(by_name[ml.target.casefold()].name)
     distinct = con.execute(f"SELECT count(DISTINCT {target}) FROM {_BASE}").fetchall()[0][0]
-    if distinct > _MAX_CLASSES:
+    if distinct > MAX_CLASSES:
         return {}, distinct
     rows = con.execute(
         f"SELECT p.__ml_p, CAST(b.{target} AS VARCHAR), count(*) FROM {_BASE} b "
-        f"JOIN {_PART} p USING ({_ROW}) GROUP BY ALL ORDER BY 1, 2"
+        f"JOIN {_PART} p USING ({_ROW}) WHERE b.{target} IS NOT NULL GROUP BY ALL ORDER BY 1, 2"
     ).fetchall()
     out: dict[str, dict[str, int]] = {}
     for part, value, n in rows:

@@ -552,4 +552,4 @@ def test_the_ml_catalog_text_names_the_strategies_from_the_models():
     text = describe()
     for word in ("median", "standard_scale", "log1p", "one_hot", "ordinal", "max_categories: 50"):
         assert word in text
-    assert "apply_preprocessing" in text
+    assert "apply_ml_preprocessing" in text

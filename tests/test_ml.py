@@ -479,3 +479,33 @@ def test_a_run_warns_about_a_feature_that_leaks_the_target(data, tmp_path):
     rep = run(_spec(ml), {"c": data}, tmp_path / "out")
     text = rep.text()
     assert "identifier" in text and "'id'" in text
+
+
+def test_a_null_target_is_an_error_for_every_strategy(tmp_path):
+    path = tmp_path / "n.csv"
+    lines = ["id,age,churn"] + [f"{i},{20 + i},{'' if i % 3 == 0 else 'a'}" for i in range(30)]
+    path.write_bytes(("\n".join(lines) + "\n").encode())
+    ml = {
+        "name": "m",
+        "input": "s",
+        "target": "churn",
+        "features": ["age"],
+        "ids": ["id"],
+        "split": {"strategy": "random", "test_size": 0.2, "seed": 1},
+    }
+    spec = parse_spec(
+        json.dumps(
+            {
+                "sources": {"s": {"kind": "csv", "file_role": "c"}},
+                "ml": ml,
+                "outputs": {"o": {"input": "m_train"}},
+            }
+        )
+    )
+    rep = run(spec, {"c": path}, tmp_path / "out")
+    assert rep.status == "failed" and "a target needs one in every row" in rep.text()
+
+
+def test_a_date_feature_gets_a_warning(data, tmp_path):
+    rep = run(_spec(), {"c": data}, tmp_path / "out")
+    assert "date feature(s) 'day' are not preprocessed" in rep.text()

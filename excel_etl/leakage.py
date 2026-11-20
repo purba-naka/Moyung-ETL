@@ -9,15 +9,27 @@ import duckdb
 
 from excel_etl.nodes.base import Column, quote
 
+ID_SHARE = 0.95
+MIN_ROWS = 20
 _SHOWN = 5
-_ID_SHARE = 0.95
-_ID_MIN_ROWS = 20
 _AFTER_SHARE = 0.5
+_PURE = 0.99
+_BALANCED = 0.95
 _CONTINUOUS = ("FLOAT", "DOUBLE", "DECIMAL")
 
 
-def _temporal(column: Column) -> bool:
+def temporal(column: Column) -> bool:
     return column.type.startswith(("DATE", "TIMESTAMP"))
+
+
+def id_like(column: Column, filled: int, distinct: int) -> bool:
+    """A column whose value differs in almost every row, such as a key."""
+    return (
+        filled >= MIN_ROWS
+        and distinct >= ID_SHARE * filled
+        and not column.type.startswith(_CONTINUOUS)
+        and not temporal(column)
+    )
 
 
 def _list(names: list[str]) -> str:
@@ -29,21 +41,38 @@ def _scalar(con: duckdb.DuckDBPyConnection, sql: str) -> int:
     return int(con.execute(sql).fetchall()[0][0] or 0)
 
 
+def _emptiness_decides(con: duckdb.DuckDBPyConnection, base: str, f: str, t: str) -> bool:
+    """True when whether `f` is empty almost fixes the target, and the target is not already
+    one-sided."""
+    total, top = con.execute(
+        f"SELECT sum(__ml_n), max(__ml_n) FROM (SELECT count(*) AS __ml_n FROM {base} "
+        f"WHERE {t} IS NOT NULL GROUP BY {t})"
+    ).fetchall()[0]
+    pure, groups = con.execute(
+        f"SELECT sum(__ml_m), count(*) FROM (SELECT max(__ml_n) AS __ml_m FROM (SELECT "
+        f"({f} IS NULL) AS __ml_e, count(*) AS __ml_n FROM {base} WHERE {t} IS NOT NULL "
+        f"GROUP BY __ml_e, {t}) GROUP BY __ml_e)"
+    ).fetchall()[0]
+    if not total or groups < 2 or total < MIN_ROWS:
+        return False
+    return pure / total >= _PURE and top / total <= _BALANCED
+
+
 def _predictors(
     con: duckdb.DuckDBPyConnection, base: str, target: Column, features: list[Column]
-) -> tuple[list[str], list[str]]:
-    """Features that equal the target or fix its value, and features that look like row ids."""
+) -> tuple[list[str], list[str], list[str]]:
+    """Features that equal or fix the target, features whose emptiness fixes it, and features
+    that look like row ids."""
     t = quote(target.name)
     perfect: list[str] = []
-    id_like: list[str] = []
+    by_empty: list[str] = []
+    ids: list[str] = []
+    target_values = _scalar(con, f"SELECT count(DISTINCT {t}) FROM {base}")
     for feature in features:
         f = quote(feature.name)
-        if _scalar(
-            con,
-            f"SELECT count(*) FROM {base} WHERE {f} IS NOT NULL AND {t} IS NOT NULL "
-            f"AND CAST({f} AS VARCHAR) <> CAST({t} AS VARCHAR)",
-        ) == 0 and _scalar(
-            con, f"SELECT count(*) FROM {base} WHERE {f} IS NOT NULL AND {t} IS NOT NULL"
+        pair_rows = f"FROM {base} WHERE {f} IS NOT NULL AND {t} IS NOT NULL"
+        if _scalar(con, f"SELECT count(*) {pair_rows}") and not _scalar(
+            con, f"SELECT count(*) {pair_rows} AND CAST({f} AS VARCHAR) <> CAST({t} AS VARCHAR)"
         ):
             perfect.append(feature.name)
             continue
@@ -53,22 +82,20 @@ def _predictors(
                 0
             ]
         )
-        pairs = _scalar(
-            con,
-            f"SELECT count(*) FROM (SELECT DISTINCT {f}, {t} FROM {base} "
-            f"WHERE {f} IS NOT NULL AND {t} IS NOT NULL)",
-        )
-        target_values = _scalar(con, f"SELECT count(DISTINCT {t}) FROM {base}")
-        if distinct >= 2 and target_values >= 2 and pairs == distinct and distinct * 2 <= filled:
-            perfect.append(feature.name)
-        elif (
-            filled >= _ID_MIN_ROWS
-            and distinct >= _ID_SHARE * filled
-            and not feature.type.startswith(_CONTINUOUS)
-            and not _temporal(feature)
+        pairs = _scalar(con, f"SELECT count(*) FROM (SELECT DISTINCT {f}, {t} {pair_rows})")
+        if (
+            filled >= MIN_ROWS
+            and distinct >= 2
+            and target_values >= 2
+            and pairs == distinct
+            and distinct * 2 <= filled
         ):
-            id_like.append(feature.name)
-    return perfect, id_like
+            perfect.append(feature.name)
+        elif id_like(feature, filled, distinct):
+            ids.append(feature.name)
+        elif filled > 0 and _emptiness_decides(con, base, f, t):
+            by_empty.append(feature.name)
+    return perfect, by_empty, ids
 
 
 def _after_reference(
@@ -78,7 +105,7 @@ def _after_reference(
     ref = quote(reference.name)
     late: list[str] = []
     for feature in features:
-        if not _temporal(feature):
+        if not temporal(feature):
             continue
         f = quote(feature.name)
         both = _scalar(
@@ -94,13 +121,22 @@ def _after_reference(
     return late
 
 
-def _spread(con: duckdb.DuckDBPyConnection, base: str, part: str, row: str, cols: list[str]) -> int:
-    """Rows whose values in `cols` also occur in another partition."""
+def _spread(
+    con: duckdb.DuckDBPyConnection,
+    base: str,
+    part: str,
+    row: str,
+    cols: list[str],
+    filled: bool,
+) -> int:
+    """Rows whose values in `cols` also occur in another partition; with `filled`, rows with
+    an empty value in `cols` do not count."""
     keys = ", ".join(f"b.{quote(c)}" for c in cols)
+    where = " WHERE " + " AND ".join(f"b.{quote(c)} IS NOT NULL" for c in cols) if filled else ""
     return _scalar(
         con,
-        f"SELECT sum(n) FROM (SELECT count(*) AS n, count(DISTINCT p.__ml_p) AS d FROM {base} b "
-        f"JOIN {part} p USING ({row}) GROUP BY {keys}) WHERE d > 1",
+        f"SELECT sum(__ml_n) FROM (SELECT count(*) AS __ml_n, count(DISTINCT p.__ml_p) AS __ml_d "
+        f"FROM {base} b JOIN {part} p USING ({row}){where} GROUP BY {keys}) WHERE __ml_d > 1",
     )
 
 
@@ -110,27 +146,35 @@ def check(
     base: str,
     part: str,
     row: str,
+    columns: list[Column],
     target: Column,
     features: list[Column],
     ids: list[Column],
     by: Column | None,
     strategy: str,
 ) -> list[str]:
-    """Leakage warnings for the declared columns; `base` holds the rows, `part` their partition."""
+    """Leakage warnings for the declared columns. `base` holds the rows (`row` numbers them,
+    `columns` are all its other columns), `part` the partition of each row."""
     found: list[str] = []
-    perfect, id_like = _predictors(con, base, target, features)
+    perfect, by_empty, id_named = _predictors(con, base, target, features)
     if perfect:
         found.append(
             f"feature(s) {_list(perfect)} equal or fully determine {target.name!r} in these rows; "
             "if they are known only after the outcome, they leak it: move them to exclude"
         )
-    if id_like:
+    if by_empty:
         found.append(
-            f"feature(s) {_list(id_like)} have a different value in almost every row, like an "
+            f"whether feature(s) {_list(by_empty)} are empty almost fixes {target.name!r}; a "
+            "column filled in only after the outcome (such as a cancel reason) leaks it: move "
+            "it to exclude"
+        )
+    if id_named:
+        found.append(
+            f"feature(s) {_list(id_named)} have a different value in almost every row, like an "
             "identifier; a model can memorize them instead of learning: list them under ids or "
             "exclude"
         )
-    reference = target if _temporal(target) else by if strategy == "time" and by else None
+    reference = target if temporal(target) else by if strategy == "time" and by else None
     if reference is not None:
         late = _after_reference(con, base, reference, [f for f in features if f is not reference])
         if late:
@@ -139,17 +183,17 @@ def check(
                 f"date feature(s) {_list(late)} fall after {what} in most rows; information from "
                 "after the outcome is not available when predicting: check them"
             )
-    if ids:
+    if strategy != "group":
         names = [c.name for c in ids]
-        if strategy != "group" and (n := _spread(con, base, part, row, names)):
+        if names and (n := _spread(con, base, part, row, names, True)):
             found.append(
                 f"{n} row(s) share their ids ({_list(names)}) with a row in another partition: "
                 "the same entity is on both sides of the split; use a group split on that id"
             )
-    cols = [c.name for c in (*features, target)]
-    if strategy != "group" and (n := _spread(con, base, part, row, cols)):
-        found.append(
-            f"{n} row(s) have the same feature and target values as a row in another partition: "
-            "duplicates across the split make a score look better than it is; deduplicate first"
-        )
+        if n := _spread(con, base, part, row, [c.name for c in columns], False):
+            found.append(
+                f"{n} row(s) are identical in every column to a row in another partition: "
+                "duplicates across the split make a score look better than it is; deduplicate "
+                "first"
+            )
     return found

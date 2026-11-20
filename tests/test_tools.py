@@ -65,7 +65,7 @@ def spec_json(**over):
 def test_agent_tools_are_the_documented_fixed_list(tools):
     names = [f.__name__ for f in tools.agent_tools()]
     assert names[:3] == ["job_summary", "list_files", "workbook_map"]
-    assert len(names) == len(set(names)) == 27
+    assert len(names) == len(set(names)) == 29
     for banned in ("add_file", "answer", "approve", "reload_job", "record_load"):
         assert banned not in names
 
