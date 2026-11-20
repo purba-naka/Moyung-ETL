@@ -70,6 +70,23 @@ def test_last_run_round_trips(tmp_path):
     assert JobState.model_validate_json(s.model_dump_json()).last_run == rep
 
 
+def test_run_history_round_trips_with_the_last_run(tmp_path):
+    wb = make_xlsx({"D": [["Ton", "Note"], [1, "a"], [2, "b"]]})
+    rep = run(_spec(), {"f": wb}, tmp_path, ref="v1")
+    assert rep.status == "ok"
+    runs = [rep.summary("2026-11-19T08:00:00+00:00"), rep.summary("2026-11-19T09:00:00+00:00")]
+    s = _full().model_copy(update={"runs": runs})
+    back = JobState.model_validate_json(s.model_dump_json())
+    assert back.runs == runs and back.runs[0].ref == "v1" and back.runs[0].rows == {"o": 2}
+
+
+def test_state_saved_before_run_history_still_loads():
+    raw = json.loads(_full().model_dump_json())
+    raw.pop("runs")
+    back = JobState.model_validate(raw)
+    assert back.runs == []
+
+
 @pytest.mark.parametrize(
     "bad", ["", "Job1", "a b", "a/b", "a\\b", "..", ".x", "x.", "é", "x" * 101, "a\nb", "-"]
 )

@@ -4,15 +4,18 @@ Both go through `_load_sources` and `_run_steps`, one pass, so they cannot disag
 stops short of running the steps, nothing more. A problem in one step does not hide problems
 in steps that do not depend on it; the report lists them all.
 
-ponytail: no memory or row limit on a run (a many-to-many join can be large); duckdb's own
-default (80% of RAM) applies. Upgrade: a `memory_limit` argument passed to `connect`.
+ponytail: a run has a memory limit (`connect`, 4GB) that bounds tables and joins but not the
+vectors of one scalar expression (the deny list in `sqlexpr` covers those), and no row limit.
+Upgrade: run in a process with an OS memory cap, a row cap per step.
 """
 
 from __future__ import annotations
 
+import hashlib
 import os
 import time
 from dataclasses import dataclass, field
+from importlib import metadata
 from pathlib import Path
 from typing import Literal
 
@@ -21,23 +24,29 @@ from pydantic import BaseModel, ConfigDict
 
 from excel_etl.hitl import HitlState, gate
 from excel_etl.inspect.regions import TOTAL_LABEL
+from excel_etl.ml import ARTIFACT_FILES, ARTIFACT_NOTES, MlResult, artifacts, check_columns
+from excel_etl.ml import split as ml_split
 from excel_etl.nodes import Column, NodeError, Schema, build, infer, quote, schema_of
 from excel_etl.nodes.base import check_arity, connect, sql_text
 from excel_etl.nodes.source import (
     Location,
+    accepted_types,
     expect_hits,
     expect_label,
     locate_all,
     missing_required,
     read_locations,
+    read_table_file,
     type_fits,
 )
-from excel_etl.pipeline import PipelineSpec, Source, Step
-from excel_etl.quality import CheckResult, check_schema, run_checks
+from excel_etl.pipeline import PipelineSpec, Source, Step, dump_spec
+from excel_etl.prep import planned_columns
+from excel_etl.quality import CheckResult, check_schema, run_checks, tables_of
+from excel_etl.tablefile import TableFile, TableFileError, as_table_file
 from excel_etl.verify import VerifyReport, verify
 from excel_etl.workbook import Workbook, WorkbookError
 
-type FileInput = Workbook | str | os.PathLike[str] | bytes
+type FileInput = Workbook | TableFile | str | os.PathLike[str] | bytes
 
 _MAX_MESSAGE = 400
 _MAX_ISSUES = 50
@@ -64,13 +73,14 @@ class Issue(_Report):
 
 class NodeStat(_Report):
     id: str
-    kind: Literal["source", "step"]
+    kind: Literal["source", "step", "ml"]
     node: str
     rows_in: int
     rows_out: int
     columns: int
     seconds: float
     note: str = ""
+    schema_out: tuple[str, ...] = ()
 
 
 class OutputStat(_Report):
@@ -79,11 +89,79 @@ class OutputStat(_Report):
     format: Literal["parquet", "csv"]
     rows: int
     columns: int
+    sha256: str = ""
+
+
+class NodeRows(_Report):
+    id: str
+    rows_in: int
+    rows_out: int
+
+
+class RunSummary(_Report):
+    """One line of a job's run history: when it ran (`at`, the end), on which spec version and
+    content (`spec_sha256`), from which input files (`files`: role -> sha256), through which
+    steps, and which output files it made (`outputs` with their sha256)."""
+
+    at: str
+    ref: str | None = None
+    status: Literal["ok", "partial", "failed"]
+    seconds: float
+    rows: dict[str, int] = {}
+    checks_failed: tuple[str, ...] = ()
+    spec_sha256: str = ""
+    engine_version: str = ""
+    files: dict[str, str] = {}
+    names: dict[str, str] = {}
+    nodes: tuple[NodeRows, ...] = ()
+    outputs: tuple[OutputStat, ...] = ()
+    drift: str = ""
+    blocked: tuple[str, ...] = ()
+
+
+_SUMMARY_NODES = 100
+_CHUNK = 1 << 20
+
+
+def _engine_version() -> str:
+    try:
+        return metadata.version("excel-etl")
+    except metadata.PackageNotFoundError:
+        return "unknown"
+
+
+ENGINE_VERSION = _engine_version()
+
+
+def sha256_file(path: str | os.PathLike[str]) -> str:
+    """The sha256 of a file's bytes, read in chunks."""
+    digest = hashlib.sha256()
+    with open(path, "rb") as f:
+        while chunk := f.read(_CHUNK):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _input_sha256(ref: FileInput) -> str:
+    """The sha256 of an input file whatever form the host gave it; empty when unreadable."""
+    if isinstance(ref, Workbook | TableFile):
+        return ref.sha256
+    if isinstance(ref, bytes):
+        return hashlib.sha256(ref).hexdigest()
+    try:
+        return sha256_file(ref)
+    except OSError:
+        return ""
 
 
 def _columns(cols: tuple[Column, ...], limit: int = 40) -> str:
     shown = ", ".join(c.name for c in cols[:limit])
     return shown + (f", ... ({len(cols)} columns)" if len(cols) > limit else "")
+
+
+def _schema_tuple(cols: tuple[Column, ...], limit: int = 40) -> tuple[str, ...]:
+    """A node's output schema as `name TYPE` lines (first 40): what a run actually produced."""
+    return tuple(f"{c.name} {c.type}" for c in cols[:limit])
 
 
 def _explain(e: Exception, step: Step, schemas: dict[str, Schema]) -> str:
@@ -132,7 +210,7 @@ class ValidationReport(_Report):
 
 
 class RunReport(_Report):
-    status: Literal["ok", "failed"]
+    status: Literal["ok", "partial", "failed"]
     issues: tuple[Issue, ...]
     warnings: tuple[str, ...]
     nodes: tuple[NodeStat, ...]
@@ -142,7 +220,32 @@ class RunReport(_Report):
     ref: str | None = None
     files: dict[str, str] = {}
     verify: VerifyReport | None = None
-    files: dict[str, str] = {}
+    artifacts: tuple[str, ...] = ()
+    spec_sha256: str = ""
+    engine_version: str = ""
+    blocked: dict[str, tuple[str, ...]] = {}
+
+    def summary(self, at: str) -> RunSummary:
+        """The run as one history line (`at` is now, UTC, given by the caller)."""
+        return RunSummary(
+            at=at,
+            ref=self.ref,
+            status=self.status,
+            seconds=self.seconds,
+            rows={o.name: o.rows for o in self.outputs},
+            checks_failed=tuple(
+                c.name for c in self.checks if not c.passed and c.severity == "error"
+            ),
+            spec_sha256=self.spec_sha256,
+            engine_version=self.engine_version,
+            files=dict(self.files),
+            nodes=tuple(
+                NodeRows(id=n.id, rows_in=n.rows_in, rows_out=n.rows_out)
+                for n in self.nodes[:_SUMMARY_NODES]
+            ),
+            outputs=self.outputs,
+            blocked=tuple(self.blocked),
+        )
 
     def text(self, full: bool = True) -> str:
         """`full=False` is for an agent that only needs to act: on success the outputs, on
@@ -165,6 +268,19 @@ class RunReport(_Report):
                 f"  check {c.name}|{c.kind}|{mark}" + ("" if c.passed else f": {c.message}")
             )
         lines += [f"  wrote {o.path}|{o.rows} rows|{o.columns} cols" for o in self.outputs]
+        lines += [
+            f"  NOT written: output {name!r}, blocked by failed check(s) {', '.join(why)}"
+            for name, why in self.blocked.items()
+        ]
+        if self.blocked:
+            lines.append(
+                f"  partial: {len(self.outputs)} output(s) written, {len(self.blocked)} held "
+                "back; fix the data or the check and run again, or ask the person whether "
+                "the written outputs may be used"
+            )
+        lines += [
+            f"  wrote {a}|artifact: {ARTIFACT_NOTES.get(Path(a).name, '')}" for a in self.artifacts
+        ]
         lines += [f"  {i.where}: {i.message}" for i in self.issues]
         lines += [f"  warning: {w}" for w in self.warnings]
         if self.verify is not None:
@@ -180,6 +296,7 @@ class _State:
     schemas: dict[str, Schema] = field(default_factory=dict)
     stats: list[NodeStat] = field(default_factory=list)
     cut: int = 0
+    failed_checks: dict[str, str] = field(default_factory=dict)
 
     def rows(self, name: str) -> int:
         """Rows of a source or step that ran: the one place a count lives is its NodeStat."""
@@ -204,7 +321,39 @@ class _State:
 def open_file(ref: FileInput) -> Workbook:
     if isinstance(ref, Workbook):
         return ref
+    if isinstance(ref, TableFile):
+        raise WorkbookError(f"the file is a {ref.format} file, but this source reads Excel")
     return Workbook.open(ref)
+
+
+def _open_tables(
+    spec: PipelineSpec, files: dict[str, FileInput] | None, st: _State
+) -> dict[str, TableFile]:
+    """The CSV and Parquet files the spec reads, one per `file_role`. A missing, unreadable or
+    mismatched file is an issue on its source, not an exception."""
+    tables: dict[str, TableFile] = {}
+    if files is None:
+        return tables
+    for name, source in spec.sources.items():
+        if source.kind == "excel":
+            continue
+        role, where = source.file_role, f"sources.{name}"
+        if role in tables:
+            if tables[role].format != source.kind:
+                st.issue(
+                    where,
+                    f"file {role!r} is {tables[role].format}, but this source is {source.kind}",
+                )
+            continue
+        if role not in files:
+            known = ", ".join(sorted(files)) or "none"
+            st.issue(where, f"no file for file_role {role!r}; files given: {known}")
+            continue
+        try:
+            tables[role] = as_table_file(files[role], source.kind)
+        except TableFileError as e:
+            st.issue(where, f"file {role!r}: {e}")
+    return tables
 
 
 def _check_columns(source: Source, schema: Schema, st: _State, where: str) -> None:
@@ -220,7 +369,8 @@ def _check_columns(source: Source, schema: Schema, st: _State, where: str) -> No
                 st.issue(
                     where,
                     f"column {col.name!r} is {col.type} but expect_columns "
-                    f"{expect_label(want)} says {want.type}",
+                    f"{expect_label(want)} says {want.type} "
+                    f"(accepts {'/'.join(accepted_types(want.type))})",
                 )
 
 
@@ -265,6 +415,7 @@ def _read_warnings(source: Source, locs: list[Location], where: str) -> list[str
 def _load_sources(
     spec: PipelineSpec,
     files: dict[str, FileInput] | None,
+    tables: dict[str, TableFile],
     con: duckdb.DuckDBPyConnection,
     st: _State,
 ) -> None:
@@ -274,6 +425,10 @@ def _load_sources(
     for name, source in spec.sources.items():
         where = f"sources.{name}"
         role = source.file_role
+        if source.kind != "excel":
+            if role in tables:
+                _load_table(name, source, tables[role], con, st)
+            continue
         if role not in books:
             books[role] = _open_role(role, files, st, where)
         wb = books[role]
@@ -299,6 +454,7 @@ def _load_sources(
                 rows_out=_count(con, name),
                 columns=len(schema),
                 seconds=round(time.perf_counter() - t0, 4),
+                schema_out=_schema_tuple(schema),
                 note=(
                     f"{len(locs)} sheets: {locs[0].sheet}..{locs[-1].sheet}"
                     if source.sheet.name_regex is not None
@@ -308,6 +464,131 @@ def _load_sources(
         )
 
 
+def _load_table(
+    name: str, source: Source, tf: TableFile, con: duckdb.DuckDBPyConnection, st: _State
+) -> None:
+    t0 = time.perf_counter()
+    try:
+        rel = read_table_file(tf, source, con, name)
+    except (NodeError, duckdb.Error) as e:
+        st.issue(f"sources.{name}", str(e))
+        return
+    schema = schema_of(rel)
+    st.schemas[name] = schema
+    _check_columns(source, schema, st, f"sources.{name}")
+    one = schema[0].name if len(schema) == 1 else ""
+    if tf.format == "csv" and source.delimiter is None and any(d in one for d in ",;\t|"):
+        st.warnings.append(
+            f"sources.{name}: the file reads as one column {one!r}; the delimiter was not "
+            "detected, set `delimiter` on the source"
+        )
+    st.stats.append(
+        NodeStat(
+            id=name,
+            kind="source",
+            node=f"read_{tf.format}",
+            rows_in=0,
+            rows_out=_count(con, name),
+            columns=len(schema),
+            seconds=round(time.perf_counter() - t0, 4),
+            schema_out=_schema_tuple(schema),
+        )
+    )
+
+
+def _encoded_hint(spec: PipelineSpec, why: str) -> str:
+    """Say why a check cannot name a one_hot column: it exists only after the run."""
+    ml = spec.ml
+    if ml is None or not any(r.strategy == "one_hot" for r in ml.categorical.values()):
+        return ""
+    if "has no column" not in why or not any(t in why for t in ml.tables().values()):
+        return ""
+    return (
+        " (a one_hot column is replaced by <column>_<value> columns that exist only after the "
+        "run: check the other columns, or the row counts)"
+    )
+
+
+def _plan_ml(spec: PipelineSpec, st: _State) -> bool:
+    """Check the `ml` declaration against its input's columns and register its tables."""
+    ml = spec.ml
+    if ml is None or ml.input not in st.schemas:
+        return False
+    problems = check_columns(ml, st.schemas[ml.input])
+    for problem in problems:
+        st.issue("ml", problem)
+    if problems:
+        return False
+    columns = planned_columns(ml, st.schemas[ml.input])
+    for table in ml.tables().values():
+        st.schemas[table] = columns
+    return True
+
+
+def _run_ml(spec: PipelineSpec, con: duckdb.DuckDBPyConnection, st: _State) -> MlResult | None:
+    """Split the `ml` input into its partition tables."""
+    ml = spec.ml
+    if ml is None or not _plan_ml(spec, st):
+        return None
+    t0 = time.perf_counter()
+    try:
+        result, problems = ml_split(con, ml, st.schemas[ml.input])
+    except (NodeError, duckdb.Error) as e:
+        st.issue("ml", str(e).splitlines()[0])
+        return None
+    for problem in problems:
+        st.issue("ml", problem)
+    if result is None:
+        return None
+    seconds = round(time.perf_counter() - t0, 4)
+    st.warnings.extend(f"ml: {w}" for w in result.warnings)
+    if result.cut:
+        cut = ", ".join(f"{part} {n}" for part, n in result.cut.items())
+        st.warnings.append(
+            f"ml: rows with an empty value were dropped ({cut}); the partitions are smaller "
+            "than the sizes asked for"
+        )
+    for table in ml.tables().values():
+        st.schemas[table] = result.columns
+    for part, table in ml.tables().items():
+        st.stats.append(
+            NodeStat(
+                id=table,
+                kind="ml",
+                node="ml_split",
+                rows_in=result.rows_in,
+                rows_out=result.rows[part],
+                columns=len(result.columns),
+                seconds=seconds,
+                schema_out=_schema_tuple(result.columns),
+            )
+        )
+    return result
+
+
+def _write_artifacts(
+    spec: PipelineSpec,
+    result: MlResult | None,
+    st: _State,
+    out_path: Path,
+    parts: list[tuple[Path, Path]],
+) -> tuple[str, ...]:
+    """The JSON files that describe the prepared dataset, queued like the outputs."""
+    if spec.ml is None or result is None:
+        return ()
+    names = []
+    for name, text in artifacts(spec.ml, st.schemas[spec.ml.input], result).items():
+        tmp, final = out_path / f"{name}.part", out_path / name
+        try:
+            tmp.write_text(text, encoding="utf-8", newline="\n")
+        except OSError as e:
+            st.issue("ml", f"could not write {name}: {e}")
+            return ()
+        parts.append((tmp, final))
+        names.append(str(final))
+    return tuple(names)
+
+
 def _count(con: duckdb.DuckDBPyConnection, table: str) -> int:
     return con.execute(f"SELECT count(*) FROM {quote(table)}").fetchall()[0][0]
 
@@ -315,16 +596,27 @@ def _count(con: duckdb.DuckDBPyConnection, table: str) -> int:
 def _run_steps(
     spec: PipelineSpec, con: duckdb.DuckDBPyConnection, st: _State, run_nodes: bool
 ) -> None:
+    earlier = set(spec.sources)
     for step in spec.steps:
         where = f"steps.{step.id}"
+        known, earlier = earlier, earlier | {step.id}
         try:
             n = build(step.node, step.config)
             check_arity(n, len(step.inputs))
         except NodeError as e:
             st.issue(where, str(e))
             continue
+        if unknown := [i for i in step.inputs if i not in known]:
+            st.issue(
+                where,
+                f"reads {unknown[0]!r}, which is not a source or an earlier step",
+            )
+            continue
         inputs = [st.schemas.get(i) for i in step.inputs]
         if any(s is None for s in inputs):
+            lost = next(i for i, s in zip(step.inputs, inputs, strict=True) if s is None)
+            if st.issues:
+                st.warnings.append(f"{where}: skipped because {lost!r} did not come out")
             continue
         t0 = time.perf_counter()
         try:
@@ -361,6 +653,7 @@ def _run_steps(
                 rows_out=rows,
                 columns=len(actual),
                 seconds=round(time.perf_counter() - t0, 4),
+                schema_out=_schema_tuple(actual),
                 note=n.why_rows_change() if rows != rows_in else "",
             )
         )
@@ -375,12 +668,14 @@ def validate(spec: PipelineSpec, files: dict[str, FileInput] | None = None) -> V
     if files is not None and not isinstance(files, dict):
         st.issue("files", "files must be a dict of file_role -> file")
         files = None
-    con = connect()
+    tables = _open_tables(spec, files, st)
+    con = connect(read_paths=[t.path for t in tables.values()])
     try:
-        _load_sources(spec, files, con, st)
+        _load_sources(spec, files, tables, con, st)
         _run_steps(spec, con, st, run_nodes=False)
+        _plan_ml(spec, st)
         for name, why in check_schema(spec.checks, st.schemas).items():
-            st.issue(f"checks.{name}", why)
+            st.issue(f"checks.{name}", why + _encoded_hint(spec, why))
     finally:
         con.close()
     if files is None:
@@ -404,10 +699,93 @@ def _run_checks(
         if r.passed:
             continue
         if r.severity == "error":
-            st.issue(f"checks.{r.name}", r.message)
+            st.failed_checks[r.name] = r.message
         else:
             st.warnings.append(f"checks.{r.name}: {r.message}")
     return results
+
+
+def _upstream(spec: PipelineSpec, name: str) -> set[str]:
+    """`name` and every source or step it reads, directly or not."""
+    steps = {s.id: s for s in spec.steps}
+    ml_tables = set(spec.ml.tables().values()) if spec.ml is not None else set()
+    seen: set[str] = set()
+    todo = [name]
+    while todo:
+        n = todo.pop()
+        if n in seen:
+            continue
+        seen.add(n)
+        if n in steps:
+            todo.extend(steps[n].inputs)
+        elif n in ml_tables and spec.ml is not None:
+            todo.append(spec.ml.input)
+            seen |= ml_tables
+    return seen
+
+
+def _blocked_outputs(spec: PipelineSpec, failed: dict[str, str]) -> dict[str, tuple[str, ...]]:
+    """Output -> the failed `error` checks that read a table it is built from. A check that
+    reads no output's lineage (an ml table, a dead branch) blocks every output."""
+    ups = {oname: _upstream(spec, o.input) for oname, o in spec.outputs.items()}
+    out: dict[str, list[str]] = {}
+    for cname in failed:
+        tables = set(tables_of(spec.checks[cname]))
+        hit = [o for o, up in ups.items() if up & tables] or list(ups)
+        for oname in hit:
+            out.setdefault(oname, []).append(cname)
+    return {k: tuple(v) for k, v in out.items()}
+
+
+def _ml_held(spec: PipelineSpec, failed: dict[str, str]) -> bool:
+    """A failed check reads a table the ml partitions are built from."""
+    if spec.ml is None:
+        return False
+    up = _upstream(spec, next(iter(spec.ml.tables().values())))
+    return any(up.intersection(tables_of(spec.checks[c])) for c in failed)
+
+
+def _remove_stale(
+    spec: PipelineSpec,
+    out_path: Path,
+    blocked: dict[str, tuple[str, ...]],
+    ml_held: bool,
+    st: _State,
+) -> None:
+    """Delete what an earlier run wrote for an output held back now, so no old file is read
+    as this run's result."""
+    names = [f"{n}.{spec.outputs[n].format}" for n in blocked]
+    if ml_held:
+        names += list(ARTIFACT_FILES)
+    gone = []
+    for name in names:
+        path = out_path / name
+        try:
+            if path.is_file():
+                path.unlink()
+                gone.append(name)
+        except OSError as e:
+            st.warnings.append(f"could not remove the old {name}: {e}; do not use it")
+    if gone:
+        st.warnings.append(f"removed the files of an earlier run: {', '.join(gone)}")
+
+
+def _warn_old_files(spec: PipelineSpec, out_path: Path, st: _State) -> None:
+    """A failed run writes nothing, so whatever stands in the out_dir belongs to an earlier run.
+    Name those files: without this the out_dir of a failed run reads like a fresh result."""
+    names = [
+        name
+        for n, out in spec.outputs.items()
+        if (out_path / (name := f"{n}.{out.format}")).is_file()
+    ]
+    names += [a for a in ARTIFACT_FILES if (out_path / a).is_file()]
+    if names:
+        one = len(names) == 1
+        st.warnings.append(
+            f"nothing was written, so {', '.join(names)} in the out_dir "
+            f"{'is' if one else 'are'} from an earlier run, not this one; do not read "
+            f"{'it' if one else 'them'} as this run's result"
+        )
 
 
 def _publish(parts: list[tuple[Path, Path]], st: _State) -> None:
@@ -464,7 +842,11 @@ def run(
     """Run a spec: read the sources, run the steps in order, write each output to
     `out_dir/<output name>.<format>`. Files are written under a temporary name and moved into
     place only when every step and every output succeeded, so a failed run leaves no
-    half-written file. A failed run returns status "failed" with the issues; it raises
+    half-written file. A failed `error` check holds back only the outputs built from a table
+    it reads: the others are written and the status is "partial", and the held back output's
+    file from an earlier run is removed. When a check holds back every output, or reads a
+    table no output is built from, the run is "failed". A failed run returns status "failed"
+    with the issues; it raises
     PipelineError only when it cannot start (bad `out_dir`, `files`, or a checkpoint that
     needs a person's approval). With `hitl` the checkpoints `after_propose_datasets` and
     `after_spec` are checked first; `ref` names what is being run (e.g. a spec version) so an
@@ -503,30 +885,54 @@ def run(
         ) from None
     t0 = time.perf_counter()
     st = _State()
-    con = connect(out_path)
+    if not spec.outputs:
+        st.warnings.append("the spec has no outputs: nothing is written")
+    tables = _open_tables(spec, files, st)
+    con = connect(out_path, [t.path for t in tables.values()])
     parts: list[tuple[Path, Path]] = []
     outputs: list[OutputStat] = []
     results: list[CheckResult] = []
     checked: VerifyReport | None = None
+    ml_result: MlResult | None = None
+    written: tuple[str, ...] = ()
+    blocked: dict[str, tuple[str, ...]] = {}
     try:
-        _load_sources(spec, files, con, st)
+        _load_sources(spec, files, tables, con, st)
         _run_steps(spec, con, st, run_nodes=True)
         if not st.issues:
-            results = _run_checks(spec, con, st)
+            ml_result = _run_ml(spec, con, st)
         if not st.issues:
-            _write_outputs(spec, con, out_path, st, parts, outputs)
+            results = _run_checks(spec, con, st)
+        if not st.issues and st.failed_checks:
+            blocked = _blocked_outputs(spec, st.failed_checks)
+            if len(blocked) >= len(spec.outputs):
+                for cname, why in st.failed_checks.items():
+                    st.issue(f"checks.{cname}", why)
+                blocked = {}
+        ml_held = blocked and _ml_held(spec, st.failed_checks)
+        if not st.issues:
+            _write_outputs(spec, con, out_path, st, parts, outputs, frozenset(blocked))
+        if not st.issues and ml_held:
+            st.warnings.append("the ml artifacts were not written: a check on the ml data failed")
+        elif not st.issues:
+            written = _write_artifacts(spec, ml_result, st, out_path, parts)
         if not st.issues:
             _publish(parts, st)
+        if not st.issues and blocked:
+            _remove_stale(spec, out_path, blocked, bool(ml_held), st)
         if not st.issues:
-            checked = verify(spec, con)
+            checked = verify(spec, con, skip=set(blocked))
     finally:
         con.close()
         for tmp, _ in parts:
             if not tmp.is_dir():
                 tmp.unlink(missing_ok=True)
     failed = bool(st.issues)
+    if failed:
+        _warn_old_files(spec, out_path, st)
     return RunReport(
-        status="failed" if failed else "ok",
+        status="failed" if failed else ("partial" if blocked else "ok"),
+        blocked={} if failed else blocked,
         issues=st.done(),
         warnings=tuple(st.warnings),
         nodes=tuple(st.stats),
@@ -534,8 +940,11 @@ def run(
         checks=tuple(results),
         seconds=round(time.perf_counter() - t0, 3),
         ref=ref,
-        files={role: f.sha256 for role, f in files.items() if isinstance(f, Workbook)},
+        files={role: sha for role, f in files.items() if (sha := _input_sha256(f))},
+        spec_sha256=hashlib.sha256(dump_spec(spec).encode()).hexdigest(),
+        engine_version=ENGINE_VERSION,
         verify=checked,
+        artifacts=() if failed else written,
     )
 
 
@@ -546,8 +955,11 @@ def _write_outputs(
     st: _State,
     parts: list[tuple[Path, Path]],
     outputs: list[OutputStat],
+    skip: frozenset[str] = frozenset(),
 ) -> None:
     for name, out in spec.outputs.items():
+        if name in skip:
+            continue
         where = f"outputs.{name}"
         schema = st.schemas.get(out.input)
         final = out_path / f"{name}.{out.format}"
@@ -578,5 +990,6 @@ def _write_outputs(
                 format=out.format,
                 rows=st.rows(out.input),
                 columns=len(schema or ()),
+                sha256=sha256_file(tmp),
             )
         )

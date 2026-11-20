@@ -7,12 +7,22 @@ check of severity `error` fails the run before any file is written; `warn` is on
     not_null         no NULL in the columns
     unique           no two rows share the same values in the columns (NULL equals NULL here)
     range            numbers or dates within min / max (NULL is skipped: use not_null for that)
-    accepted_values  values (compared as text) are among a list
+    accepted_values  values are among a list (whole numbers compared exactly, other
+                     numbers as DOUBLE, everything else as text); NULL is skipped
+    regex            text values contain a match of the pattern (RE2 syntax: no lookaround,
+                     no backreferences; anchor with ^ and $ to check the whole value;
+                     NULL does not match: pair with not_null)
+    row_count        the table has between min and max rows (give one or both)
+    duplicate_rows   no two rows are the same in every column
+    foreign_key      values of a column all exist in another table (NULL is skipped)
     reconcile        an aggregate of one table equals that of another table, or a number,
                      optionally per group; tolerance absolute and/or relative
 
-ponytail: `accepted_values` compares text, so a DOUBLE 1.0 does not equal the value 1.
-`reconcile` handles one aggregate per check. Upgrade: typed comparison, a list of aggregates.
+ponytail: `reconcile` compares aggregates as DOUBLE (about 15 significant digits). Without an
+explicit `rel_tol` a DOUBLE/FLOAT column gets 1e-9 (summing millions of floats differs in the
+last digits); other columns stay exact. Give an `abs_tol` for money or large totals. NaN and
+infinity on either side always fail. It handles one aggregate per check. Upgrade: exact decimal
+aggregates, a list of aggregates.
 """
 
 from __future__ import annotations
@@ -22,16 +32,26 @@ import re
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import date, datetime, time
+from decimal import Decimal, InvalidOperation
 from typing import Annotated, Any, Literal
 
 import duckdb
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from excel_etl.nodes.base import NUMERIC_TYPE, NodeError, Schema, quote
+from excel_etl.nodes.base import (
+    DECIMAL_TYPE,
+    INTEGER_TYPE,
+    NUMERIC_TYPE,
+    NodeError,
+    Schema,
+    quote,
+)
 from excel_etl.nodes.sqlexpr import bind, check_expression
 
 _ORDERED = re.compile(r"^(DATE|TIME|TIMESTAMP.*)$")
+_TEMPORAL = re.compile(r"^(DATE|TIMESTAMP.*)$")
 _EXAMPLES = 5
+_HUGEINT_MAX = 2**127 - 1
 
 type Scalar = str | int | float
 
@@ -64,6 +84,13 @@ class Range(_OnTable):
     min: Scalar | None = None
     max: Scalar | None = None
 
+    @model_validator(mode="before")
+    @classmethod
+    def _no_boolean_bound(cls, data: Any) -> Any:
+        if isinstance(data, dict) and any(isinstance(data.get(k), bool) for k in ("min", "max")):
+            raise ValueError("min and max are numbers or dates, not true/false")
+        return data
+
     @model_validator(mode="after")
     def _some_bound(self) -> Range:
         if self.min is None and self.max is None:
@@ -81,6 +108,50 @@ class AcceptedValues(_OnTable):
     kind: Literal["accepted_values"]
     column: str = Field(min_length=1)
     values: list[str | int | float | bool] = Field(min_length=1)
+
+
+class Regex(_OnTable):
+    kind: Literal["regex"]
+    column: str = Field(min_length=1)
+    pattern: str = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def _compiles(self) -> Regex:
+        try:
+            with duckdb.connect() as con:
+                con.execute("SELECT regexp_matches('', ?)", [self.pattern]).fetchall()
+        except duckdb.Error as e:
+            first = str(e).splitlines()[0]
+            raise ValueError(
+                f"pattern {self.pattern!r} is not valid RE2 (no lookaround, no backreferences): "
+                f"{first}"
+            ) from e
+        return self
+
+
+class RowCount(_OnTable):
+    kind: Literal["row_count"]
+    min: int | None = Field(default=None, ge=0)
+    max: int | None = Field(default=None, ge=0)
+
+    @model_validator(mode="after")
+    def _some_bound(self) -> RowCount:
+        if self.min is None and self.max is None:
+            raise ValueError("give min, max or both")
+        if self.min is not None and self.max is not None and self.min > self.max:
+            raise ValueError(f"min {self.min} is above max {self.max}; no count could pass")
+        return self
+
+
+class DuplicateRows(_OnTable):
+    kind: Literal["duplicate_rows"]
+
+
+class ForeignKey(_OnTable):
+    kind: Literal["foreign_key"]
+    column: str = Field(min_length=1)
+    ref_table: str = Field(min_length=1)
+    ref_column: str = Field(min_length=1)
 
 
 class Side(_Model):
@@ -107,10 +178,10 @@ class Reconcile(_Base):
     kind: Literal["reconcile"]
     left: Side
     right: Side | None = None
-    value: float | None = None
+    value: float | None = Field(default=None, allow_inf_nan=False)
     by: list[str] = []
-    abs_tol: float = Field(default=0, ge=0)
-    rel_tol: float = Field(default=0, ge=0)
+    abs_tol: float = Field(default=0, ge=0, allow_inf_nan=False)
+    rel_tol: float | None = Field(default=None, ge=0, allow_inf_nan=False)
 
     @model_validator(mode="after")
     def _shape(self) -> Reconcile:
@@ -125,7 +196,16 @@ class Reconcile(_Base):
 
 
 type Check = Annotated[
-    NotNull | Unique | Range | AcceptedValues | Reconcile, Field(discriminator="kind")
+    NotNull
+    | Unique
+    | Range
+    | AcceptedValues
+    | Regex
+    | RowCount
+    | DuplicateRows
+    | ForeignKey
+    | Reconcile,
+    Field(discriminator="kind"),
 ]
 
 
@@ -133,6 +213,8 @@ def tables_of(c: Check) -> list[str]:
     """Every table a check reads."""
     if isinstance(c, Reconcile):
         return [c.left.table, *([c.right.table] if c.right else [])]
+    if isinstance(c, ForeignKey):
+        return [c.table, c.ref_table]
     return [c.table]  # type: ignore[union-attr]
 
 
@@ -210,6 +292,29 @@ def _plan_unique(c: Unique, schemas: dict[str, Schema]) -> _Plan:
     return _Plan(sql, [], judge)
 
 
+def _exact_bound(kind: str, bound: Scalar) -> tuple[str, str] | None:
+    """The SQL type and text to compare a whole-number or decimal column with `bound` without
+    rounding through DOUBLE, or None when DOUBLE is the only sensible way."""
+    try:
+        number = Decimal(str(bound).strip())
+    except InvalidOperation:
+        return None
+    if not number.is_finite():
+        return None
+    if kind == "FLOAT":
+        return "FLOAT", str(number)
+    if INTEGER_TYPE.match(kind) and kind != "UHUGEINT":
+        if number != number.to_integral_value() or abs(int(number)) > _HUGEINT_MAX:
+            return None
+        return "HUGEINT", str(int(number))
+    if m := DECIMAL_TYPE.match(kind):
+        width, scale = int(m[1]), int(m[2])
+        places = max(0, -int(number.as_tuple().exponent))
+        if places <= scale and number.adjusted() + 1 <= width - scale:
+            return f"DECIMAL({width},{scale})", format(number, "f")
+    return None
+
+
 def _check_bound(bound: Scalar, kind: str, col: str) -> None:
     """A bound that cannot be read as the column's kind is a spec error, not a run failure."""
     if NUMERIC_TYPE.match(kind):
@@ -241,9 +346,20 @@ def _plan_range(c: Range, schemas: dict[str, Schema]) -> _Plan:
     for sign, bound in (("<", c.min), (">", c.max)):
         if bound is not None:
             _check_bound(bound, kind, col)
-            bad.append(f"{q} {sign} CAST(? AS {'DOUBLE' if NUMERIC_TYPE.match(kind) else kind})")
-            params.append(str(bound))
+            exact = _exact_bound(kind, bound) if NUMERIC_TYPE.match(kind) else None
+            if exact is not None:
+                sql_type, text = exact
+                side = f"CAST({q} AS HUGEINT)" if sql_type == "HUGEINT" else q
+                bad.append(f"{side} {sign} CAST(? AS {sql_type})")
+                params.append(text)
+            else:
+                bad.append(
+                    f"{q} {sign} CAST(? AS {'DOUBLE' if NUMERIC_TYPE.match(kind) else kind})"
+                )
+                params.append(str(bound))
             bounds.append(f"{'min' if sign == '<' else 'max'} {bound}")
+    if kind in ("FLOAT", "DOUBLE"):
+        bad.append(f"isnan({q})")
     cond = " OR ".join(bad)
     sql = (
         f"SELECT count(*) FILTER (WHERE {cond}), min({q}) FILTER (WHERE {cond}), "
@@ -257,6 +373,15 @@ def _plan_range(c: Range, schemas: dict[str, Schema]) -> _Plan:
     return _Plan(sql, params * 3, judge)
 
 
+def _is_exact_kind(kind: str) -> bool:
+    """Columns whose values are compared without DOUBLE: whole numbers, decimals, FLOAT."""
+    return bool(
+        (INTEGER_TYPE.match(kind) and kind != "UHUGEINT")
+        or DECIMAL_TYPE.match(kind)
+        or kind == "FLOAT"
+    )
+
+
 def _plan_accepted(c: AcceptedValues, schemas: dict[str, Schema]) -> _Plan:
     (col,) = _cols(schemas, c.table, [c.column])
     q = quote(col)
@@ -266,8 +391,16 @@ def _plan_accepted(c: AcceptedValues, schemas: dict[str, Schema]) -> _Plan:
         bad = [v for v in c.values if isinstance(v, bool) or not _is_number(v)]
         if bad:
             raise _Bad(f"{col!r} is {kind}; accepted_values must be numbers, got {bad[0]!r}")
-        want: list[Any] = [float(v) for v in c.values]
-        cond = f"CAST({q} AS DOUBLE) NOT IN ({marks})"
+        if _is_exact_kind(kind):
+            pairs = [e for v in c.values if (e := _exact_bound(kind, v)) is not None]
+            want: list[Any] = [text for _, text in pairs]
+            sql_type = pairs[0][0] if pairs else ""
+            col = f"CAST({q} AS HUGEINT)" if sql_type == "HUGEINT" else q
+            marks = ", ".join(f"CAST(? AS {sql_type})" for _ in want)
+            cond = f"{col} NOT IN ({marks})" if want else f"{q} IS NOT NULL"
+        else:
+            want = [float(v) for v in c.values]
+            cond = f"CAST({q} AS DOUBLE) NOT IN ({marks})"
     else:
         want = [str(v).lower() if isinstance(v, bool) else str(v) for v in c.values]
         cond = f"CAST({q} AS VARCHAR) NOT IN ({marks})"
@@ -289,6 +422,86 @@ def _is_number(v: object) -> bool:
         return math.isfinite(float(v))  # type: ignore[arg-type]
     except (TypeError, ValueError):
         return False
+
+
+def _plan_regex(c: Regex, schemas: dict[str, Schema]) -> _Plan:
+    (col,) = _cols(schemas, c.table, [c.column])
+    kind = _type(schemas, c.table, col)
+    if kind not in ("VARCHAR", "NULL"):
+        raise _Bad(f"regex needs a text column; {col!r} is {kind}")
+    q = quote(col)
+    bad = f"{q} IS NULL OR NOT regexp_matches(CAST({q} AS VARCHAR), ?)"
+    sql = (
+        f"SELECT count(*) FILTER (WHERE {bad}), "
+        f"list_sort(list(DISTINCT {q}) FILTER (WHERE {bad}))[1:{_EXAMPLES}] "
+        f"FROM {quote(c.table)}"
+    )
+
+    def judge(rows: list[tuple]) -> tuple[int, str]:
+        n, seen = rows[0]
+        shown = [str(v) for v in (seen or [])]
+        return n, f"{n} value(s) of {col!r} do not match /{c.pattern}/: {_list(shown)}"
+
+    return _Plan(sql, [c.pattern, c.pattern], judge)
+
+
+def _plan_row_count(c: RowCount, schemas: dict[str, Schema]) -> _Plan:
+    sql = f"SELECT count(*) FROM {quote(c.table)}"
+    if c.min is not None and c.max is not None:
+        bounds = f"between {c.min} and {c.max}"
+    elif c.min is not None:
+        bounds = f"at least {c.min}"
+    else:
+        bounds = f"at most {c.max}"
+
+    def judge(rows: list[tuple]) -> tuple[int, str]:
+        n = rows[0][0]
+        short = max(0, (c.min or 0) - n)
+        over = max(0, n - (c.max if c.max is not None else n))
+        bad = short + over
+        side = "short" if short else "over"
+        return bad, f"table has {n} row(s), expected {bounds}: {side} by {bad}"
+
+    return _Plan(sql, [], judge)
+
+
+def _plan_duplicate_rows(c: DuplicateRows, schemas: dict[str, Schema]) -> _Plan:
+    sql = (
+        f"SELECT coalesce(sum(k - 1), 0), count(*) FROM "
+        f"(SELECT count(*) AS k FROM (SELECT t AS row FROM {quote(c.table)} t) "
+        f"GROUP BY row HAVING count(*) > 1)"
+    )
+
+    def judge(rows: list[tuple]) -> tuple[int, str]:
+        bad, groups = rows[0]
+        return bad, f"{bad} duplicate row(s) in {c.table!r} ({groups} group(s) of them)"
+
+    return _Plan(sql, [], judge)
+
+
+def _plan_foreign_key(c: ForeignKey, schemas: dict[str, Schema]) -> _Plan:
+    (col,) = _cols(schemas, c.table, [c.column])
+    (ref,) = _cols(schemas, c.ref_table, [c.ref_column])
+    kind, ref_kind = _type(schemas, c.table, col), _type(schemas, c.ref_table, ref)
+    both_numeric = NUMERIC_TYPE.match(kind) and NUMERIC_TYPE.match(ref_kind)
+    both_temporal = _TEMPORAL.match(kind) and _TEMPORAL.match(ref_kind)
+    if "NULL" not in (kind, ref_kind) and kind != ref_kind and not (both_numeric or both_temporal):
+        raise _Bad(f"{c.table}.{col} is {kind} but {c.ref_table}.{ref} is {ref_kind}")
+    q, r = quote(col), quote(ref)
+    sql = (
+        f"SELECT count(*), list_sort(list(DISTINCT t.{q}))[1:{_EXAMPLES}] "
+        f"FROM {quote(c.table)} t "
+        f"LEFT JOIN {quote(c.ref_table)} p ON t.{q} = p.{r} "
+        f"WHERE t.{q} IS NOT NULL AND p.{r} IS NULL"
+    )
+
+    def judge(rows: list[tuple]) -> tuple[int, str]:
+        n, seen = rows[0]
+        shown = [str(v) for v in (seen or [])]
+        where = f"{c.table}.{col} missing from {c.ref_table}.{ref}"
+        return n, f"{n} row(s) with a value of {where}: {_list(shown)}"
+
+    return _Plan(sql, [], judge)
 
 
 def _side_sql(schemas: dict[str, Schema], side: Side, by: list[str]) -> tuple[str, list[str], str]:
@@ -323,6 +536,23 @@ def _side_sql(schemas: dict[str, Schema], side: Side, by: list[str]) -> tuple[st
     return sql, keys, label
 
 
+_FLOAT_REL_TOL = 1e-9
+_FLOAT_TYPE = re.compile(r"^(DOUBLE|FLOAT|REAL)$", re.I)
+
+
+def _rel_tol(c: Reconcile, schemas: dict[str, Schema]) -> float:
+    if c.rel_tol is not None:
+        return c.rel_tol
+    for side in (c.left, c.right):
+        if (
+            side is not None
+            and side.column
+            and _FLOAT_TYPE.match(_type(schemas, side.table, side.column))
+        ):
+            return _FLOAT_REL_TOL
+    return 0.0
+
+
 def _plan_reconcile(c: Reconcile, schemas: dict[str, Schema]) -> _Plan:
     lsql, _, llabel = _side_sql(schemas, c.left, c.by)
     params: list[Any] = []
@@ -341,11 +571,14 @@ def _plan_reconcile(c: Reconcile, schemas: dict[str, Schema]) -> _Plan:
         params.append(c.value)
     sql = f"SELECT {ks}{lv} AS lv, {rv} AS rv FROM {body}"
     bad = (
-        "(lv IS NULL) <> (rv IS NULL) OR abs(lv - rv) > greatest(?, ? * greatest(abs(lv), abs(rv)))"
+        "(lv IS NULL) <> (rv IS NULL) "
+        "OR (lv IS NOT NULL AND NOT isfinite(lv)) OR (rv IS NOT NULL AND NOT isfinite(rv)) "
+        "OR abs(lv - rv) > greatest(?, ? * greatest(abs(lv), abs(rv)))"
     )
     sql = f"SELECT * FROM ({sql}) WHERE {bad} ORDER BY 1"
-    params += [c.abs_tol, c.rel_tol]
-    tol = f"tolerance abs {c.abs_tol:g}, rel {c.rel_tol:g}"
+    rel_tol = _rel_tol(c, schemas)
+    params += [c.abs_tol, rel_tol]
+    tol = f"tolerance abs {c.abs_tol:g}, rel {rel_tol:g}"
 
     def judge(rows: list[tuple]) -> tuple[int, str]:
         if not rows:
@@ -365,6 +598,10 @@ _PLANS: dict[str, Callable[[Any, dict[str, Schema]], _Plan]] = {
     "unique": _plan_unique,
     "range": _plan_range,
     "accepted_values": _plan_accepted,
+    "regex": _plan_regex,
+    "row_count": _plan_row_count,
+    "duplicate_rows": _plan_duplicate_rows,
+    "foreign_key": _plan_foreign_key,
     "reconcile": _plan_reconcile,
 }
 

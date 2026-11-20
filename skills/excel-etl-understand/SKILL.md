@@ -22,6 +22,14 @@ rows, merged labels, total rows, units). Tool names may carry a prefix in your h
 4. `formula_lineage` when roles are unclear: which sheet reads which.
 5. `sheet_regions(file, sheet)` for each candidate sheet: ranges, header rows, total rows.
 6. `profile_region(file, region)` per candidate table: type, range and empty count per column.
+   Add `depth="full"` once you picked a table: all rows as a pipeline will read them, with
+   median, quartiles, outlier candidates, top values, duplicate rows and key candidates, plus
+   file hash and time. An outlier or a negative number is evidence to ask about, not an error.
+   `sample_data(file, region, strategy=...)` shows real rows to test a guess: `where` with a
+   condition (`"amount" < 0`), `nulls` + column, `duplicates`, `stratified` + column, `random` +
+   `seed`, `head`/`tail`. The first line says what was picked and how many rows matched.
+   `relate_tables(a, b)` with two region ids when tables must be joined: which columns share
+   values and the cardinality. N:M means a join multiplies rows; ask before joining.
 7. `render_range` only to settle a doubt. `compressed` first. `raw` for one small range
    (`range="B4:N20"`), never for a whole sheet.
 8. `find_text` to locate a label or term the person named.

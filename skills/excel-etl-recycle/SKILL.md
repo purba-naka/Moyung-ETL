@@ -58,3 +58,8 @@ Tool names may carry a prefix in your host.
 A source is `missing`, a check depends on a column that disappeared, or the repair changes
 what the output means (a different unit, period, or plant). Policy may also require approval
 at `on_rebind_drift`: ask the person with `ask_human` and stop.
+
+`run_pipeline` itself checks the sources against the last bind first. When one drifted it runs
+nothing and answers with the drift and a ref such as `drift:1a2b3c4d5e6f`: ask the person with
+`ask_human`; the host approves exactly that ref, and the run then goes on and the drifted
+file becomes the new normal. A different drift later needs a new approval.

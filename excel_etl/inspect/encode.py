@@ -656,9 +656,21 @@ def _profile_column(g: SheetGrid, c: int, rows: list[int]) -> str:
 
 
 def profile_region(
-    wb: Workbook, file_id: str, ref: str, offset: int = 0, budget: int = 24_000
+    wb: Workbook,
+    file_id: str,
+    ref: str,
+    offset: int = 0,
+    budget: int = 24_000,
+    depth: Literal["quick", "full"] = "quick",
 ) -> dict:
     """Describe each column of one table (region id from sheet_regions). Use before a pipeline.
+
+    depth quick (default): read from the grid, see below. depth full: the table is read the way
+    a pipeline reads it (types as the nodes will see them), over all rows, and each column gets
+    `TYPE min max mean median std q25 q75 outliers n (IQR 1.5, candidates only) top v:n len a..b
+    distinct n null p% unique key candidate`; text shows top values and length, dates min..max,
+    `all null` for an empty column. The first line holds rows, duplicate rows, `basis all rows`,
+    the file hash and the UTC time. Findings are evidence for a person to judge, not errors.
 
     One line per column: `D JANUARI|PKG: num 0..523 distinct 31 null 4% odd text 2 at r25,r26 (x)`
     = column letter, name from the header rows, main type with min..max, distinct values,
@@ -670,6 +682,12 @@ def profile_region(
     """
     _paging(offset)
     _check_budget(budget)
+    if depth not in ("quick", "full"):
+        raise WorkbookError(f"depth must be 'quick' or 'full', got {depth!r}")
+    if depth == "full":
+        from excel_etl.inspect.tables import profile_full
+
+        return profile_full(wb, file_id, ref, offset, budget)
     label, _, region, g = _region(wb, file_id, ref)
     top, left, bottom, right = region.box
     totals = set(region.total_rows)
@@ -679,7 +697,7 @@ def profile_region(
         f"{label} {_box(region.box)}: {len(rows)} data rows"
         + (f" from r{rows[0] + 1}" if rows else "")
         + (f", header r{hdr[0] + 1}-r{hdr[-1] + 1}" if hdr else ", no header")
-        + (f", totals left out: {_rows(sorted(totals), 6)}" if totals else "")
+        + (f", total rows {_rows(sorted(totals), 6)} excluded from these numbers" if totals else "")
         + ". col name: type range|e.g. distinct null =? odd"
     )
     names = column_names(g, region)

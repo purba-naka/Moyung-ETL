@@ -238,6 +238,10 @@ def _stage_path(where: Where, name: str) -> str:
     ref = f"{where.stage.rstrip('/')}/{name}" if where.stage else f"@~/{name}"
     if not _STAGE.fullmatch(ref):
         raise LoadError(f"stage path {ref!r} may hold only letters, digits and _ $ . / ~ % -")
+    if any(bad in ref for bad in ("--", "//", "..")):
+        raise LoadError(
+            f"stage path {ref!r} may not hold --, // or .. (SQL comments, parent paths)"
+        )
     return ref
 
 

@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import json
 import re
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any, Literal, get_args
 
 from pydantic import (
     BaseModel,
@@ -21,8 +21,10 @@ from pydantic import (
     model_validator,
 )
 
+from excel_etl.ml import MlSpec
 from excel_etl.nodes.base import _NAME_PATTERN, describe
 from excel_etl.quality import Check, tables_of
+from excel_etl.tablefile import FileKind
 
 _IDENT = _NAME_PATTERN
 _END = re.compile(r"until_blank_rows\(([0-9]+)\)")
@@ -117,7 +119,7 @@ class RegionRef(_Model):
 class ColumnExpect(_Model):
     match: str | None = None
     match_regex: str | None = None
-    type: Literal["text", "int", "float", "date", "datetime", "bool"] | None = None
+    type: ColumnType | None = None
     required: bool = True
 
     @model_validator(mode="after")
@@ -132,11 +134,67 @@ class ColumnExpect(_Model):
         return self
 
 
+ColumnType = Literal["text", "int", "float", "date", "datetime", "bool"]
+_CSV_ONLY = "delimiter, header, decimal and types are settings of a csv source"
+SourceKind = FileKind
+SOURCE_KINDS: tuple[str, ...] = get_args(SourceKind)
+
+
 class Source(_Model):
+    """One table read from a file. `kind` says what the file is and is left out of the saved
+    spec while it is `excel`.
+
+    `excel` finds the table in a workbook: `sheet` and `region` are required. `csv`,
+    `parquet`, `json` (one array of objects) and `jsonl` (one object per line) files already
+    are a table, so `sheet` and `region` are refused. A `csv` may set
+    `delimiter` (default: detected), `header` (default true; false names the columns
+    column0, column1, ...), `decimal` (`","` reads 1,5 as 1.5) and `types` (column name to
+    text/int/float/date/datetime/bool, for a column whose type would otherwise be guessed
+    from its values). `expect_columns` works for every kind.
+    """
+
+    kind: SourceKind = "excel"
     file_role: str = Field(min_length=1)
-    sheet: SheetRef
-    region: RegionRef
+    sheet: SheetRef | None = None
+    region: RegionRef | None = None
+    delimiter: str | None = Field(default=None, min_length=1, max_length=1)
+    header: bool = True
+    decimal: Literal[".", ","] = "."
+    types: dict[str, ColumnType] = {}
     expect_columns: list[ColumnExpect] = []
+
+    @model_validator(mode="after")
+    def _fits_kind(self) -> Source:
+        if self.kind == "excel":
+            if self.sheet is None or self.region is None:
+                raise ValueError("an excel source needs sheet and region")
+            if self._csv_settings():
+                raise ValueError(_CSV_ONLY)
+            return self
+        if self.sheet is not None or self.region is not None:
+            raise ValueError(
+                f"a {self.kind} file is already a table: leave out sheet and region "
+                "(they are for excel)"
+            )
+        if self.kind != "csv" and self._csv_settings():
+            raise ValueError(_CSV_ONLY)
+        return self
+
+    def _csv_settings(self) -> bool:
+        return bool(self.model_fields_set & {"delimiter", "header", "decimal", "types"})
+
+    @model_serializer(mode="wrap")
+    def _omit_defaults(self, handler: Any) -> dict[str, Any]:
+        data = handler(self)
+        if data.get("kind") == "excel":
+            data.pop("kind", None)
+        for key in ("sheet", "region", "delimiter"):
+            if data.get(key) is None:
+                data.pop(key, None)
+        for key, default in (("header", True), ("decimal", "."), ("types", {})):
+            if data.get(key) == default:
+                data.pop(key, None)
+        return data
 
 
 class Step(_Model):
@@ -198,12 +256,15 @@ class PipelineSpec(_Model):
     outputs: dict[Ident, Output] = {}
     checks: dict[Ident, Check] = {}
     excluded: dict[Ident, dict[str, Annotated[str, StringConstraints(min_length=3)]]] = {}
+    ml: MlSpec | None = None
 
     @model_serializer(mode="wrap")
     def _omit_empty_excluded(self, handler: Any) -> dict[str, Any]:
         data = handler(self)
         if not data.get("excluded"):
             data.pop("excluded", None)
+        if data.get("ml") is None:
+            data.pop("ml", None)
         return data
 
     @model_validator(mode="after")
@@ -224,6 +285,20 @@ class PipelineSpec(_Model):
                         f"step {step.id!r} reads {inp!r}, which is not a source or an earlier step"
                     )
             known.add(step.id)
+        if (ml := self.ml) is not None:
+            if ml.input not in known:
+                raise ValueError(f"ml reads {ml.input!r}, which is not a source or a step")
+            for table in ml.tables().values():
+                if table in known:
+                    raise ValueError(
+                        f"the ml table {table!r} has the same name as a source or step; "
+                        "change ml.name"
+                    )
+                if (other := lower.setdefault(table.lower(), table)) != table:
+                    raise ValueError(
+                        f"the ml table {table!r} and {other!r} differ only in letter case"
+                    )
+                known.add(table)
         for name, chk in self.checks.items():
             for t in tables_of(chk):
                 if t not in known:
@@ -236,7 +311,13 @@ class PipelineSpec(_Model):
         files: dict[str, str] = {}
         for name, out in self.outputs.items():
             if out.input not in known:
-                raise ValueError(f"output {name!r} reads {out.input!r}, which is not defined")
+                late = self.ml is not None and out.input == f"{self.ml.name}_validation"
+                hint = (
+                    " (the validation table exists only when ml.split.validation_size is set)"
+                    if late
+                    else ""
+                )
+                raise ValueError(f"output {name!r} reads {out.input!r}, which is not defined{hint}")
             if name.lower() in _DEVICE_NAMES:
                 raise ValueError(f"output name {name!r} is a reserved file name on Windows")
             if (other := files.setdefault(name.lower(), name)) != name:
@@ -282,11 +363,11 @@ def patch_spec(spec: PipelineSpec, patch_json: str) -> PipelineSpec:
         raise SpecError(f"the patch must be a JSON object: {e}") from None
     if not isinstance(patch, dict):
         raise SpecError("the patch must be a JSON object")
-    unknown = set(patch) - {"steps", "remove", "sources", "outputs", "excluded"}
+    unknown = set(patch) - {"steps", "remove", "sources", "outputs", "excluded", "ml"}
     if unknown:
         raise SpecError(
             f"patch: {sorted(unknown)} is not a setting here; "
-            "use steps, remove, sources, outputs, excluded"
+            "use steps, remove, sources, outputs, excluded, ml"
         )
     remove, new_steps = patch.get("remove", []), patch.get("steps", [])
     if not isinstance(remove, list) or not all(isinstance(r, str) for r in remove):
@@ -317,6 +398,11 @@ def patch_spec(spec: PipelineSpec, patch_json: str) -> PipelineSpec:
                 data.get(key, {}).pop(name, None)
             else:
                 data.setdefault(key, {})[name] = value
+    if "ml" in patch:
+        if patch["ml"] is None:
+            data.pop("ml", None)
+        else:
+            data["ml"] = patch["ml"]
     return parse_spec(json.dumps(data))
 
 

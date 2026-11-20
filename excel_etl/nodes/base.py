@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 import math
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, ClassVar
@@ -23,7 +23,10 @@ type Relation = duckdb.DuckDBPyRelation
 _MAX_ERRORS = 10
 _NAME_PATTERN = r"^(?:[A-Za-z]|_[A-Za-z0-9])[A-Za-z0-9_]{0,62}$"
 INTEGER_TYPE = re.compile(r"^U?(TINY|SMALL|BIG|HUGE)?INT(EGER)?$")
-NUMERIC_TYPE = re.compile(r"^(U?(TINY|SMALL|BIG|HUGE)?INT(EGER)?|FLOAT|DOUBLE|DECIMAL\(.*\))$")
+_INTEGER = r"U?(TINY|SMALL|BIG|HUGE)?INT(EGER)?"
+NUMERIC_TYPE = re.compile(rf"^({_INTEGER}|FLOAT|DOUBLE|DECIMAL\(.*\))$")
+INTEGER_TYPE = re.compile(rf"^{_INTEGER}$")
+DECIMAL_TYPE = re.compile(r"^DECIMAL\((\d+),\s*(\d+)\)$")
 
 
 class NodeError(Exception):
@@ -99,6 +102,16 @@ def _say(item: Any) -> str:
     if kind == "string_type":
         return "must be one piece of text (a single name), not a list or a number"
     if kind == "extra_forbidden":
+        if item["loc"][:1] == ("ml",):
+            return (
+                "is not a setting of the ml section; it takes name, input, target, features, "
+                "ids, exclude and split (strategy, by, test_size, validation_size, seed)"
+            )
+        if "checks" in item["loc"]:
+            return (
+                "is not a setting of this check kind (not_null and unique take `columns`, a list; "
+                "the other kinds take `column`, one name; see the skill's check list)"
+            )
         return "is not a setting here (check the spelling; node_catalog lists the valid ones)"
     return msg.removeprefix("Value error, ")
 
@@ -277,17 +290,34 @@ def infer(n: Node, inputs: list[Schema]) -> Schema:
     return out
 
 
-def connect(write_dir: Path | None = None) -> duckdb.DuckDBPyConnection:
+MEMORY_LIMIT = "4GB"
+
+
+def connect(
+    write_dir: Path | None = None,
+    read_paths: Sequence[Path] = (),
+    memory_limit: str = MEMORY_LIMIT,
+) -> duckdb.DuckDBPyConnection:
     """A fresh in-memory duckdb that cannot touch files or the network.
+
+    `read_paths` are the individual files it may read (the CSV and Parquet sources of a run),
+    allowed before the lock like `write_dir` and for the same reason.
 
     `write_dir` is the one directory it may read and write in (outputs of a run); the
     permission is set before access is locked, after which it cannot be widened (measured:
     `..` paths, siblings and a later SET are refused). Every relation of one run must come
     from the same connection.
+
+    `memory_limit` caps what one expression or join can take from the host; going over it is a
+    duckdb error, which a run reports as an issue.
     """
     con = duckdb.connect()
+    con.execute(f"SET memory_limit={sql_text(memory_limit)}")
     if write_dir is not None:
         path = write_dir.resolve().as_posix().replace("'", "''")
         con.execute(f"SET allowed_directories=['{path}']")
+    if read_paths:
+        listed = ", ".join(sql_text(p.resolve().as_posix()) for p in read_paths)
+        con.execute(f"SET allowed_paths=[{listed}]")
     con.execute("SET enable_external_access=false")
     return con

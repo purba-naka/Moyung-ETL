@@ -20,10 +20,15 @@ Tool names may carry a prefix in your host.
    `sheet_regions` with its header texts and sheet name read from the file; paste it into the
    spec instead of typing them (9 of 15 refused saves in real jobs were header texts that were
    not on the sheet). Then adjust (see "Sources").
+   A CSV, Parquet, JSON or JSONL file is already a table: use `{"kind": "csv", "file_role": "..."}` (or
+   `"parquet"`, `"json"`, `"jsonl"`) with no `sheet` or `region`; `workbook_map` of such a file lists its columns
+   and gives the source to paste. A csv takes `delimiter` and `header` (see patterns.md).
 4. Add steps one concern at a time, in this order: tidy the shape, fix types, derive, combine,
    summarise. `references/patterns.md` maps an Excel shape to the nodes that fix it.
 5. `save_spec(spec_json, note)`. It validates against the files and does not save a spec
    with problems. Read every listed problem, fix them all, save again.
+   To prepare a dataset for machine learning (train/validation/test), add the `ml`
+   section last: see "A dataset for machine learning" in patterns.md.
 6. Add `checks` (see "Checks"), save again with a `note` saying what changed. For a small
    change after the first version use `edit_spec(patch_json, note)`: `{"steps": [...]}` (same
    id replaces, a new id is placed before the step that reads it), `"remove": [ids]`,
@@ -62,7 +67,14 @@ Tool names may carry a prefix in your host.
 
 Add at least one per output. Examples with all kinds are in `references/patterns.md`.
 
-- `not_null`, `unique`, `range`, `accepted_values`: facts about one table.
+- `not_null`, `unique`, `range`, `accepted_values`, `regex`: facts about one table. `regex`
+  needs a text column and matches anywhere in the value (anchor with `^...$` for the whole
+  value); the syntax is RE2 (no lookaround, no backreferences); NULL does not match, so pair
+  it with `not_null` when NULL is wrong.
+- `row_count`, `duplicate_rows`: the shape of one table (how many rows, and no two rows the
+  same in every column). Good as `severity: "warn"` on a monthly file.
+- `foreign_key`: every value of a column exists in a column of another table (NULL is
+  skipped; pair with `not_null` when NULL is wrong).
 - `reconcile`: a total in the sheet against the sum of the rows. Give each side a `where`
   to pick the total row on one side and the detail rows on the other. This is the check
   that catches a lost or doubled row.

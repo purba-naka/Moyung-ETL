@@ -7,7 +7,7 @@ import pytest
 
 from excel_etl.pipeline import PipelineSpec, SpecError, dump_spec, parse_spec
 
-_SPEC = {
+_SPEC: dict = {
     "sources": {
         "produksi_npk_pkg": {
             "file_role": "balansitas",
@@ -299,3 +299,24 @@ def test_patch_orders_a_replaced_step_after_a_step_added_with_it() -> None:
     cycle = {"steps": [{"id": "b", "node": "cast", "inputs": ["b"]}]}
     with pytest.raises(SpecError, match="cycle"):
         patch_spec(spec, json.dumps(cycle))
+
+
+def test_source_kind_defaults_to_excel_and_is_left_out_of_the_dump():
+    spec = parse_spec(json.dumps(_SPEC))
+    (source,) = spec.sources.values()
+    assert source.kind == "excel"
+    assert "kind" not in json.loads(dump_spec(spec))["sources"]["produksi_npk_pkg"]
+    assert parse_spec(dump_spec(spec)) == spec
+    explicit = copy.deepcopy(_SPEC)
+    explicit["sources"]["produksi_npk_pkg"]["kind"] = "excel"
+    assert parse_spec(json.dumps(explicit)) == spec
+
+
+def test_unknown_source_kind_names_the_supported_ones():
+    from excel_etl.pipeline import SOURCE_KINDS
+
+    bad = copy.deepcopy(_SPEC)
+    bad["sources"]["produksi_npk_pkg"]["kind"] = "xml"
+    with pytest.raises(SpecError, match="excel"):
+        parse_spec(json.dumps(bad))
+    assert SOURCE_KINDS == ("excel", "csv", "parquet", "json", "jsonl")

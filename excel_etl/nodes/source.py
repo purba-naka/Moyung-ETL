@@ -16,7 +16,8 @@ import duckdb
 
 from excel_etl.inspect.encode import column_names, few, text_key
 from excel_etl.inspect.regions import Region, SheetGrid, detect_regions
-from excel_etl.nodes.base import NodeError, Relation, quote
+from excel_etl.nodes.base import NodeError, Relation, quote, sql_text
+from excel_etl.tablefile import TableFile
 from excel_etl.workbook import Workbook
 
 if TYPE_CHECKING:
@@ -69,6 +70,7 @@ def _header(wb: Workbook, g: SheetGrid, sheet: str, source: Source) -> tuple[int
     rows = source.region.header_rows
     anchors = [text_key(a) for a in source.region.header_anchor]
     found = False
+    has_text = False
     for reg in detect_regions(wb, sheet, g):
         top, left, bottom, right = reg.box
         for r in range(top, min(bottom, top + _HEADER_SEARCH) + 1):
@@ -82,7 +84,12 @@ def _header(wb: Workbook, g: SheetGrid, sheet: str, source: Source) -> tuple[int
                 return r, reg
     for r in range(len(g.values)):
         texts = {text_key(lbl) for c in range(len(g.values[r])) if (lbl := g.label(r, c))}
+        has_text = has_text or bool(texts)
         found = found or all(a in texts for a in anchors)
+    if not has_text:
+        raise NodeError(
+            f"sheet {sheet!r} is empty, so the header {source.region.header_anchor} is not there"
+        )
     where = "but not inside a table" if found else "not found"
     raise NodeError(
         f"header {source.region.header_anchor} {where} on sheet {sheet!r}; "
@@ -175,7 +182,9 @@ def locate_all(wb: Workbook, source: Source) -> list[Location]:
         except NodeError as e:
             errors.append(f"{sheet}: {e}")
     if errors:
-        raise NodeError(f"{len(errors)} sheet(s) failed: {few(errors, 5)}")
+        others = few([e.split(": ", 1)[0] for e in errors[1:]], 6)
+        more = f"; the same on sheet(s) {others}" if len(errors) > 1 else ""
+        raise NodeError(f"{len(errors)} sheet(s) failed. {errors[0]}{more}")
     return locations
 
 
@@ -231,9 +240,19 @@ _FITS: dict[str, tuple[str, ...]] = {
 }
 
 
+def accepted_types(want: str) -> tuple[str, ...]:
+    """The duckdb types an `expect_columns` type accepts, for messages."""
+    return _FITS[want]
+
+
 def type_fits(want: str, actual: str) -> bool:
-    """Whether a column read as duckdb type `actual` satisfies an `expect_columns` type."""
-    return actual in _FITS[want]
+    """Whether a column read as duckdb type `actual` satisfies an `expect_columns` type.
+    Parquet also brings DECIMAL(p,s) (a `float`) and TIMESTAMP variants (a `datetime`)."""
+    if actual in _FITS[want]:
+        return True
+    return (want == "float" and actual.startswith("DECIMAL")) or (
+        want == "datetime" and actual.startswith("TIMESTAMP")
+    )
 
 
 def missing_required(source: Source, names: Sequence[str]) -> list[ColumnExpect]:
@@ -359,4 +378,68 @@ def read_location(
             f"INSERT INTO {quote(name)} SELECT " + ", ".join(f"unnest(?::{t}[])" for t in types),
             cols,
         )
+    return con.table(name)
+
+
+_CSV_TYPES = {
+    "text": "VARCHAR",
+    "int": "BIGINT",
+    "float": "DOUBLE",
+    "date": "DATE",
+    "datetime": "TIMESTAMP",
+    "bool": "BOOLEAN",
+}
+_WIDEN_TO_BIGINT = {"TINYINT", "SMALLINT", "INTEGER", "UTINYINT", "USMALLINT", "UINTEGER"}
+_WIDEN_TO_DOUBLE = {"FLOAT"}
+_TO_TEXT = {"JSON"}
+
+
+def read_table_file(
+    tf: TableFile, source: Source, con: duckdb.DuckDBPyConnection, name: str
+) -> Relation:
+    """Load a CSV, Parquet, JSON (an array of objects) or JSONL file as table `name`. Column
+    types are the engine's: narrow integers read as BIGINT and FLOAT as DOUBLE, so a check or
+    `expect_columns` means the same for every kind of source."""
+    path = sql_text(tf.path.as_posix())
+    if tf.format == "parquet":
+        reader = f"read_parquet({path})"
+    elif tf.format == "json":
+        reader = f"read_json({path}, format = 'array')"
+    elif tf.format == "jsonl":
+        reader = f"read_json({path}, format = 'newline_delimited')"
+    else:
+        options = f", delim = {sql_text(source.delimiter)}" if source.delimiter else ""
+        if source.decimal != ".":
+            options += f", decimal_separator = {sql_text(source.decimal)}"
+        if source.types:
+            pairs = ", ".join(
+                f"{sql_text(column)}: {sql_text(_CSV_TYPES[kind])}"
+                for column, kind in source.types.items()
+            )
+            options += f", types = {{{pairs}}}"
+        reader = f"read_csv({path}, header = {'true' if source.header else 'false'}{options})"
+    try:
+        return _create_table(con, name, reader)
+    except duckdb.Error as e:
+        raise NodeError(str(e).replace(tf.path.as_posix(), "<file>")) from None
+
+
+def _create_table(con: duckdb.DuckDBPyConnection, name: str, reader: str) -> Relation:
+    described = con.execute(f"DESCRIBE SELECT * FROM {reader}").fetchall()
+    columns = []
+    for column, kind in ((row[0], row[1]) for row in described):
+        target = (
+            "BIGINT"
+            if kind in _WIDEN_TO_BIGINT
+            else "DOUBLE"
+            if kind in _WIDEN_TO_DOUBLE
+            else "VARCHAR"
+            if kind in _TO_TEXT
+            else None
+        )
+        columns.append(
+            f"CAST({quote(column)} AS {target}) AS {quote(column)}" if target else quote(column)
+        )
+    con.execute(f"DROP TABLE IF EXISTS {quote(name)}")
+    con.execute(f"CREATE TABLE {quote(name)} AS SELECT {', '.join(columns)} FROM {reader}")
     return con.table(name)

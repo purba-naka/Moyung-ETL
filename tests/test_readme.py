@@ -58,6 +58,7 @@ def test_tools_table_matches_the_code():
         "approve",
         "reload_job",
         "record_load",
+        "build_context",
     }
     assert named == exposed
 

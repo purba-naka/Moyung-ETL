@@ -108,9 +108,32 @@ def _close(a: float, b: float) -> bool:
     return abs(a - b) <= 1e-6 * max(1.0, abs(a), abs(b))
 
 
-def verify(spec: PipelineSpec, con: duckdb.DuckDBPyConnection) -> VerifyReport:
-    """Compare the source tables and output tables still held in `con` after a run."""
-    outs = {o.input for o in spec.outputs.values()}
+def _sources_behind(spec: PipelineSpec, name: str) -> set[str]:
+    """The sources that table `name` is built from (itself, when it is a source)."""
+    steps = {s.id: s for s in spec.steps}
+    seen: set[str] = set()
+    todo = [name]
+    while todo:
+        n = todo.pop()
+        if n not in seen:
+            seen.add(n)
+            todo.extend(steps[n].inputs if n in steps else [])
+    return seen & set(spec.sources)
+
+
+def verify(
+    spec: PipelineSpec, con: duckdb.DuckDBPyConnection, skip: set[str] | None = None
+) -> VerifyReport:
+    """Compare the source tables and output tables still held in `con` after a run. Outputs
+    named in `skip` were held back: a column only they keep is listed as excluded, not lost."""
+    skip = skip or set()
+    outs = {o.input for n, o in spec.outputs.items() if n not in skip}
+    held = {
+        c.casefold()
+        for n, o in spec.outputs.items()
+        if n in skip and o.input not in outs
+        for c, _ in _columns(con, o.input)
+    }
     out_cols = {t: _columns(con, t) for t in outs}
     names = {c.casefold() for cols in out_cols.values() for c, _ in cols}
     out_sums = [
@@ -121,11 +144,14 @@ def verify(spec: PipelineSpec, con: duckdb.DuckDBPyConnection) -> VerifyReport:
     text_cols = [(t, c) for t, cols in out_cols.items() for c, typ in cols if typ == "VARCHAR"]
 
     checked, lost, excluded, values, skipped = 0, [], [], [], []
+    ml_sources = _sources_behind(spec, spec.ml.input) if spec.ml is not None else set()
     for src in spec.sources:
         src_cols = _columns(con, src)
         cols = [c for c, typ in src_cols if _numeric(typ)]
         skipped += _skipped(con, src, [c for c, typ in src_cols if typ == "VARCHAR"])
         reasons = {k.casefold(): v for k, v in spec.excluded.get(src, {}).items()}
+        if spec.ml is not None and src in ml_sources:
+            reasons |= {c.casefold(): "left out by the ml declaration" for c in spec.ml.exclude}
         missing: dict[str, int] = {}
         for c, (total, nonzero) in _sums(con, src, cols).items():
             if not nonzero:
@@ -134,6 +160,10 @@ def verify(spec: PipelineSpec, con: duckdb.DuckDBPyConnection) -> VerifyReport:
             leaf = c.rsplit("|", 1)[-1].strip().casefold()
             if c.casefold() in reasons:
                 excluded.append(f"{src}.{c}: {reasons[c.casefold()]}")
+            elif names.isdisjoint((c.casefold(), leaf)) and not held.isdisjoint(
+                (c.casefold(), leaf)
+            ):
+                excluded.append(f"{src}.{c}: only in an output held back by a failed check")
             elif c.casefold() not in names and leaf not in names:
                 if any(_close(total, s) for s in out_sums):
                     continue
