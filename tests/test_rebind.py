@@ -6,8 +6,8 @@ from datetime import date, datetime
 import pytest
 from conftest import make_xlsx
 
-from excel_etl.pipeline import parse_spec
-from excel_etl.rebind import BindRecord, rebind
+from moyung.pipeline import parse_spec
+from moyung.rebind import BindRecord, rebind
 
 
 def _spec(source: dict, **extra) -> object:
@@ -380,7 +380,7 @@ def test_a_renamed_column_reports_names_not_types() -> None:
 
 
 def test_an_unreadable_table_keeps_the_types_of_the_last_bind(monkeypatch) -> None:
-    import excel_etl.rebind as rb
+    import moyung.rebind as rb
 
     spec = _spec(_src())
     prev = _bind(_BASE, spec).records()

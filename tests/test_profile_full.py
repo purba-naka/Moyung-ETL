@@ -7,10 +7,10 @@ from datetime import date
 import pytest
 from conftest import make_xlsx
 
-from excel_etl.inspect.encode import profile_region
-from excel_etl.nodes.base import connect
-from excel_etl.profile import column_line, profile_table
-from excel_etl.workbook import Workbook, WorkbookError
+from moyung.inspect.encode import profile_region
+from moyung.nodes.base import connect
+from moyung.profile import column_line, profile_table
+from moyung.workbook import Workbook, WorkbookError
 
 
 def _wb() -> Workbook:

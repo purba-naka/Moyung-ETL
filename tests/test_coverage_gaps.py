@@ -13,15 +13,15 @@ from pydantic import TypeAdapter
 from test_ml import _ml
 from test_ml import data as data  # noqa: F401
 
-from excel_etl import state as state_mod
-from excel_etl.auto import auto
-from excel_etl.engine import run
-from excel_etl.ml import ARTIFACT_FILES
-from excel_etl.nodes.base import Column
-from excel_etl.pipeline import parse_spec
-from excel_etl.quality import Check, run_checks
-from excel_etl.state import FileStore, Job, StateError, new_state
-from excel_etl.tools import JobTools
+from moyung import state as state_mod
+from moyung.auto import auto
+from moyung.engine import run
+from moyung.ml import ARTIFACT_FILES
+from moyung.nodes.base import Column
+from moyung.pipeline import parse_spec
+from moyung.quality import Check, run_checks
+from moyung.state import FileStore, Job, StateError, new_state
+from moyung.tools import JobTools
 
 ROWS = [["Plant", "Product", "Ton"], ["A", "urea", 10], ["B", "npk", 5]]
 
@@ -87,7 +87,7 @@ class TestAuto:
     def _cli(self, *args):
         env = {**os.environ, "PYTHONPATH": os.getcwd()}
         return subprocess.run(
-            [sys.executable, "-m", "excel_etl.auto", *map(str, args)],
+            [sys.executable, "-m", "moyung.auto", *map(str, args)],
             capture_output=True,
             text=True,
             env=env,
@@ -105,7 +105,7 @@ class TestAuto:
 
     def test_cli_usage(self):
         r = self._cli("only-one")
-        assert r.returncode == 1 and "python -m excel_etl.auto" in r.stderr
+        assert r.returncode == 1 and "python -m moyung.auto" in r.stderr
 
 
 def _ml_spec_with_side_output(check_table):
@@ -206,7 +206,7 @@ class TestRunPipelineRecordRetry:
             Job.open("j", store).update(lambda s: s)
             return rep
 
-        monkeypatch.setattr("excel_etl.tools.run", racing)
+        monkeypatch.setattr("moyung.tools.run", racing)
         assert t.run_pipeline()["ok"] is True
         assert Job.open("j", store).state.last_run is not None
 
@@ -223,7 +223,7 @@ class TestRunPipelineRecordRetry:
             assert other.save_spec(json.dumps(spec), "rename the output")["saved"]
             return rep
 
-        monkeypatch.setattr("excel_etl.tools.run", racing)
+        monkeypatch.setattr("moyung.tools.run", racing)
         res = t.run_pipeline()
         assert "the spec changed while this run was being recorded" in res["error"]
         assert Job.open("j", store).state.last_run is None

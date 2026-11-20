@@ -7,13 +7,13 @@ import duckdb
 import pytest
 from conftest import make_xlsx
 
-from excel_etl.engine import run, validate
-from excel_etl.pipeline import SpecError, parse_spec
-from excel_etl.rebind import rebind
-from excel_etl.state import Job, new_state
-from excel_etl.tablefile import TableFile, TableFileError, kind_of_filename
-from excel_etl.tools import JobTools
-from excel_etl.workbook import Workbook
+from moyung.engine import run, validate
+from moyung.pipeline import SpecError, parse_spec
+from moyung.rebind import rebind
+from moyung.state import Job, new_state
+from moyung.tablefile import TableFile, TableFileError, kind_of_filename
+from moyung.tools import JobTools
+from moyung.workbook import Workbook
 
 CSV = "item,qty,price\npen,2,1.5\nink,1,2.0\npen,5,1.5\n"
 
@@ -281,7 +281,7 @@ def test_workbook_map_of_a_csv_shows_delimiter_and_the_last_rows(tmp_path):
 
 
 def test_the_default_file_kind_is_not_written_to_state():
-    from excel_etl.state import add_file
+    from moyung.state import add_file
 
     state = new_state("j")
     filled = add_file(state, "f", "a.csv", "0" * 64, "c", "csv")
@@ -292,7 +292,7 @@ def test_the_default_file_kind_is_not_written_to_state():
 
 
 def test_parquet_decimal_and_timestamp_variants_satisfy_expect_columns():
-    from excel_etl.nodes.source import type_fits
+    from moyung.nodes.source import type_fits
 
     assert type_fits("float", "DECIMAL(18,3)") and type_fits("datetime", "TIMESTAMP_NS")
     assert not type_fits("int", "DECIMAL(18,3)") and not type_fits("text", "DECIMAL(18,3)")
@@ -356,7 +356,7 @@ def test_csv_only_settings_and_their_values_are_checked(source):
 
 
 def test_defaults_of_the_new_settings_are_left_out_of_the_saved_spec():
-    from excel_etl.pipeline import dump_spec
+    from moyung.pipeline import dump_spec
 
     plain = dump_spec(_spec())
     assert '"types"' not in plain and '"decimal"' not in plain and '"header"' not in plain
@@ -471,4 +471,4 @@ def test_a_json_column_of_mixed_types_reads_as_text_not_the_json_type():
 def test_read_errors_do_not_show_the_temporary_file_path():
     rep = validate(_json_spec("json"), {"j": b'[{"a": 1, "a": 2}]'})
     assert not rep.ok
-    assert "excel_etl_" not in rep.issues[0].message and "<file>" in rep.issues[0].message
+    assert "moyung_" not in rep.issues[0].message and "<file>" in rep.issues[0].message

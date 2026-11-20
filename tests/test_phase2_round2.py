@@ -10,13 +10,13 @@ from conftest import make_xlsx
 from pydantic import TypeAdapter
 from test_phase2_drift import Provider, _ref, _swap, blobs, tools
 
-from excel_etl.nodes.base import NodeError, connect, schema_of
-from excel_etl.nodes.sqlexpr import check_expression
-from excel_etl.pipeline import parse_spec
-from excel_etl.quality import Check, run_checks
-from excel_etl.rebind import rebind
-from excel_etl.state import Job, new_state
-from excel_etl.tools import JobTools
+from moyung.nodes.base import NodeError, connect, schema_of
+from moyung.nodes.sqlexpr import check_expression
+from moyung.pipeline import parse_spec
+from moyung.quality import Check, run_checks
+from moyung.rebind import rebind
+from moyung.state import Job, new_state
+from moyung.tools import JobTools
 
 _ADAPTER = TypeAdapter(Check)
 

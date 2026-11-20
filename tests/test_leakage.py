@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import duckdb
 
-from excel_etl import leakage
-from excel_etl.nodes.base import schema_of
+from moyung import leakage
+from moyung.nodes.base import schema_of
 
 
 def _run(rows, columns, *, target, features, ids=(), by=None, strategy="random", parts=None):

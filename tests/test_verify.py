@@ -7,10 +7,10 @@ import json
 import pytest
 from conftest import make_xlsx
 
-from excel_etl.engine import run
-from excel_etl.pipeline import SpecError, parse_spec, patch_spec
-from excel_etl.state import Job, new_state
-from excel_etl.tools import JobTools
+from moyung.engine import run
+from moyung.pipeline import SpecError, parse_spec, patch_spec
+from moyung.state import Job, new_state
+from moyung.tools import JobTools
 
 ROWS = [
     ["Region", "Jan", "Feb", "Note", "Empty"],

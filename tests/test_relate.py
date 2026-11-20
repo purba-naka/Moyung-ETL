@@ -5,11 +5,11 @@ import json
 import pytest
 from conftest import make_xlsx
 
-from excel_etl.inspect.tables import relate_tables
-from excel_etl.nodes.base import NodeError, connect
-from excel_etl.profile import profile_table
-from excel_etl.relate import relate
-from excel_etl.workbook import Workbook, WorkbookError
+from moyung.inspect.tables import relate_tables
+from moyung.nodes.base import NodeError, connect
+from moyung.profile import profile_table
+from moyung.relate import relate
+from moyung.workbook import Workbook, WorkbookError
 
 
 def _con():
@@ -202,7 +202,7 @@ def test_unmatched_examples_are_listed_for_text_keys():
 
 
 def test_pairs_with_the_same_column_name_are_compared_first_when_there_are_too_many():
-    from excel_etl import relate as mod
+    from moyung import relate as mod
 
     con = connect()
     try:

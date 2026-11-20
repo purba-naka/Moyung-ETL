@@ -6,8 +6,8 @@ from pathlib import Path
 import duckdb
 import pytest
 
-from excel_etl.engine import run, validate
-from excel_etl.pipeline import SpecError, dump_spec, parse_spec, patch_spec
+from moyung.engine import run, validate
+from moyung.pipeline import SpecError, dump_spec, parse_spec, patch_spec
 
 ROWS = 100
 
@@ -394,8 +394,8 @@ def test_the_seed_must_be_a_real_integer(seed):
 
 
 def test_columns_that_differ_only_in_case_are_refused_by_the_column_check():
-    from excel_etl.ml import MlSpec, check_columns
-    from excel_etl.nodes.base import Column
+    from moyung.ml import MlSpec, check_columns
+    from moyung.nodes.base import Column
 
     schema = (Column("a", "BIGINT"), Column("A", "BIGINT"), Column("y", "VARCHAR"))
     ml = MlSpec.model_validate(_ml(target="y", features=["a"], ids=[], split=_split()["split"]))
@@ -436,8 +436,8 @@ def test_ml_exclude_only_explains_the_sources_behind_the_ml_input(tmp_path):
 
 
 def test_agents_can_find_the_ml_section_from_the_tools(tmp_path):
-    from excel_etl.state import Job, new_state
-    from excel_etl.tools import JobTools
+    from moyung.state import Job, new_state
+    from moyung.tools import JobTools
 
     t = JobTools(Job(new_state("j")), None, tmp_path)
     detail = t.node_catalog("ml")["text"]
@@ -448,7 +448,7 @@ def test_agents_can_find_the_ml_section_from_the_tools(tmp_path):
 
 
 def test_the_documented_ml_example_is_a_valid_declaration():
-    from excel_etl.ml import EXAMPLE, MlSpec
+    from moyung.ml import EXAMPLE, MlSpec
 
     assert MlSpec.model_validate(EXAMPLE).name == "churn"
 

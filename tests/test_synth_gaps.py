@@ -9,15 +9,15 @@ import openpyxl
 import pytest
 from test_synth import _item_qty, _two_groups, book, target
 
-from excel_etl.pipeline import parse_spec
-from excel_etl.synth import (
+from moyung.pipeline import parse_spec
+from moyung.synth import (
     Target,
     TargetColumn,
     draft_targets,
     match_columns,
     synthesize,
 )
-from excel_etl.workbook import Workbook
+from moyung.workbook import Workbook
 
 
 def _code_price(**kwargs) -> Target:

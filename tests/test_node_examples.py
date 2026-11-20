@@ -6,8 +6,8 @@ import json
 
 import pytest
 
-from excel_etl.nodes import build, catalog, infer, names, quote, schema_of
-from excel_etl.nodes.base import _REGISTRY, connect
+from moyung.nodes import build, catalog, infer, names, quote, schema_of
+from moyung.nodes.base import _REGISTRY, connect
 
 _TABLE = """select * from (values
     (1, 'A-12', 'PT Maju', 120.0, 2.5, date '2026-01-15', '15/01/2026', 'pen', 'north', 'inv 42'),

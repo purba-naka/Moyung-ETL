@@ -5,11 +5,11 @@ from datetime import date
 import pytest
 from conftest import make_xlsx
 
-from excel_etl.nodes import NodeError
-from excel_etl.nodes.base import connect
-from excel_etl.nodes.source import read_region
-from excel_etl.pipeline import Source
-from excel_etl.workbook import Workbook
+from moyung.nodes import NodeError
+from moyung.nodes.base import connect
+from moyung.nodes.source import read_region
+from moyung.pipeline import Source
+from moyung.workbook import Workbook
 
 
 def _rows(n: int = 4, shift: int = 0) -> list[list]:
@@ -165,8 +165,8 @@ def test_a_grand_total_below_a_gap_is_warned_about_not_silently_dropped():
 
     from conftest import make_xlsx
 
-    from excel_etl.engine import validate
-    from excel_etl.pipeline import parse_spec
+    from moyung.engine import validate
+    from moyung.pipeline import parse_spec
 
     rows = [["Item", "Qty"], ["pen", 2], ["ink", 1], [None, None], [None, None], ["Grand total", 3]]
     book = make_xlsx({"S": rows})
@@ -189,7 +189,7 @@ def test_a_grand_total_below_a_gap_is_warned_about_not_silently_dropped():
 
 
 def test_blank_gap_is_the_one_reading_of_end():
-    from excel_etl.pipeline import RegionRef
+    from moyung.pipeline import RegionRef
 
     assert RegionRef(header_anchor=["a"], end="until_blank_rows(7)").blank_gap == 7
     assert RegionRef(header_anchor=["a"]).blank_gap == 2
@@ -200,8 +200,8 @@ def test_two_row_header_is_named_parent_pipe_leaf_as_the_docs_say():
 
     from conftest import make_xlsx
 
-    from excel_etl.engine import validate
-    from excel_etl.pipeline import RegionRef, parse_spec
+    from moyung.engine import validate
+    from moyung.pipeline import RegionRef, parse_spec
 
     rows = [["Sales", None, "Cost", None], ["Qty", "Value", "Qty", "Value"], [1, 2, 3, 4]]
     src = {
@@ -242,14 +242,14 @@ def _book_with_errors(cells: dict[str, str], rows):
 def _spec_for(sheet="S", anchor="Qty"):
     import json
 
-    from excel_etl.pipeline import parse_spec
+    from moyung.pipeline import parse_spec
 
     src = {"file_role": "f", "sheet": {"name": sheet}, "region": {"header_anchor": [anchor]}}
     return parse_spec(json.dumps({"sources": {"s": src}}))
 
 
 def test_error_cells_in_the_table_are_counted_and_warned_about_not_silently_empty():
-    from excel_etl.engine import validate
+    from moyung.engine import validate
 
     rows = [["Item", "Qty"], ["a", 1], ["b", 2], ["c", 3]]
     book = _book_with_errors({"B2": "#DIV/0!", "B4": "#N/A"}, rows)
@@ -260,7 +260,7 @@ def test_error_cells_in_the_table_are_counted_and_warned_about_not_silently_empt
 
 
 def test_a_clean_table_and_errors_outside_the_table_give_no_warning():
-    from excel_etl.engine import validate
+    from moyung.engine import validate
 
     clean = _book_with_errors({}, [["Item", "Qty"], ["a", 1], ["b", 2]])
     assert validate(_spec_for(), {"f": clean}).warnings == ()
@@ -273,7 +273,7 @@ def test_a_clean_table_and_errors_outside_the_table_give_no_warning():
 
 
 def test_error_cells_are_listed_by_the_workbook_and_formula_errors_are_not_confused_with_them():
-    from excel_etl.workbook import Workbook
+    from moyung.workbook import Workbook
 
     book = _book_with_errors({"B2": "#DIV/0!"}, [["a", "b"], [1, 0], [2, 0]])
     wb = Workbook.open(book)
@@ -283,7 +283,7 @@ def test_error_cells_are_listed_by_the_workbook_and_formula_errors_are_not_confu
 
 
 def test_an_error_cell_beside_the_table_is_not_counted():
-    from excel_etl.engine import validate
+    from moyung.engine import validate
 
     rows = [["Note", "Item", "Qty"], ["x", "a", 1], ["y", "b", 2]]
     book = _book_with_errors({"A2": "#N/A"}, rows)

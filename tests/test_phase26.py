@@ -4,9 +4,9 @@ import json
 
 import pytest
 
-from excel_etl.engine import run
-from excel_etl.pipeline import parse_spec
-from excel_etl.state import STATE_SCHEMA, Job, StateError, new_state
+from moyung.engine import run
+from moyung.pipeline import parse_spec
+from moyung.state import STATE_SCHEMA, Job, StateError, new_state
 
 
 @pytest.fixture
@@ -95,7 +95,7 @@ def test_state_carries_its_schema_version_and_refuses_a_newer_one():
     data = json.loads(job.state_json())
     assert data["schema_version"] == STATE_SCHEMA
     data["schema_version"] = STATE_SCHEMA + 1
-    with pytest.raises(StateError, match="upgrade excel-etl"):
+    with pytest.raises(StateError, match="upgrade moyung"):
         Job.from_state(json.dumps(data))
 
 
@@ -131,7 +131,7 @@ def _tool_spec(checks):
 
 @pytest.fixture
 def jt(files, tmp_path):
-    from excel_etl.tools import JobTools
+    from moyung.tools import JobTools
 
     t = JobTools(Job(new_state("j")), _Paths(files), tmp_path / "out")
     t.add_file("a", "a.csv", "a")

@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import pytest
 
-from excel_etl.nodes import Column, NodeError, build, infer
+from moyung.nodes import Column, NodeError, build, infer
 
 SCHEMA = (
     Column("Item", "VARCHAR"),

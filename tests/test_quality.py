@@ -7,10 +7,10 @@ import pytest
 from conftest import make_xlsx
 from pydantic import TypeAdapter, ValidationError
 
-from excel_etl.engine import run, validate
-from excel_etl.nodes import schema_of
-from excel_etl.pipeline import SpecError, parse_spec
-from excel_etl.quality import Check, check_schema, run_checks
+from moyung.engine import run, validate
+from moyung.nodes import schema_of
+from moyung.pipeline import SpecError, parse_spec
+from moyung.quality import Check, check_schema, run_checks
 
 _CHECK = TypeAdapter(Check)
 
@@ -556,7 +556,7 @@ def test_foreign_key_accepts_numeric_families_but_not_text_against_numbers():
 
 
 def test_spec_round_trip_keeps_checks():
-    from excel_etl.pipeline import dump_spec
+    from moyung.pipeline import dump_spec
 
     spec = _spec({"r": {"kind": "range", "table": "daily", "column": "Ton", "min": 0}})
     assert parse_spec(dump_spec(spec)) == spec

@@ -10,10 +10,10 @@ import openpyxl
 import pytest
 from conftest import make_xlsx
 
-from excel_etl.engine import validate
-from excel_etl.pipeline import parse_spec
-from excel_etl.synth import Target, TargetColumn, synthesize
-from excel_etl.workbook import Workbook
+from moyung.engine import validate
+from moyung.pipeline import parse_spec
+from moyung.synth import Target, TargetColumn, synthesize
+from moyung.workbook import Workbook
 
 SOURCE = {
     "file_role": "f",

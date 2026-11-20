@@ -1,7 +1,7 @@
 import pytest
 from pydantic import ValidationError
 
-from excel_etl.knowledge import QA, Example, Knowledge, lookup_knowledge
+from moyung.knowledge import QA, Example, Knowledge, lookup_knowledge
 
 
 def test_empty_knowledge_overview_and_miss():

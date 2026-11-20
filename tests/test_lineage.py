@@ -6,8 +6,8 @@ import zipfile
 import pytest
 from conftest import make_xlsx
 
-from excel_etl.inspect.lineage import classify, lineage, region_role, sheet_role
-from excel_etl.workbook import Workbook, WorkbookError
+from moyung.inspect.lineage import classify, lineage, region_role, sheet_role
+from moyung.workbook import Workbook, WorkbookError
 
 
 def _wb(sheets: dict, names: list[tuple[str, str, int | str | None]] | None = None) -> Workbook:
@@ -166,8 +166,8 @@ def test_sample_lineage(sample_path) -> None:
 
 
 def test_a_block_of_texts_is_a_source_but_one_label_or_one_row_is_not():
-    from excel_etl.inspect.lineage import region_role
-    from excel_etl.workbook import Workbook
+    from moyung.inspect.lineage import region_role
+    from moyung.workbook import Workbook
 
     book = Workbook.open(
         make_xlsx({"S": [["Kode", "Nama"], ["a", "x"], ["b", "y"], [None, None], ["solo", None]]})
@@ -181,8 +181,8 @@ def test_a_block_of_texts_is_a_source_but_one_label_or_one_row_is_not():
 
 
 def test_the_text_table_guard_needs_two_rows_two_columns_and_four_texts():
-    from excel_etl.inspect.lineage import region_role
-    from excel_etl.workbook import Workbook
+    from moyung.inspect.lineage import region_role
+    from moyung.workbook import Workbook
 
     book = Workbook.open(
         make_xlsx(
@@ -204,9 +204,9 @@ def test_the_text_table_guard_needs_two_rows_two_columns_and_four_texts():
 
 
 def test_a_sheet_of_texts_only_is_a_source_in_the_map_like_its_region():
-    from excel_etl.inspect.encode import workbook_map
-    from excel_etl.inspect.lineage import region_role, sheet_role
-    from excel_etl.workbook import Workbook
+    from moyung.inspect.encode import workbook_map
+    from moyung.inspect.lineage import region_role, sheet_role
+    from moyung.workbook import Workbook
 
     book = Workbook.open(
         make_xlsx(

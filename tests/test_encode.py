@@ -3,14 +3,14 @@ from __future__ import annotations
 import pytest
 from conftest import make_xlsx
 
-from excel_etl.inspect.encode import (
+from moyung.inspect.encode import (
     col_letters,
     formula_lineage,
     propose_datasets,
     sheet_regions,
     workbook_map,
 )
-from excel_etl.workbook import Workbook, WorkbookError
+from moyung.workbook import Workbook, WorkbookError
 
 
 @pytest.mark.parametrize(("c", "s"), [(0, "A"), (25, "Z"), (26, "AA"), (158, "FC"), (701, "ZZ")])
@@ -161,8 +161,8 @@ def test_workbook_map_150_same_shape_sheets_stays_under_budget() -> None:
 def test_sheet_regions_text_and_lookup() -> None:
     from datetime import date
 
-    from excel_etl.inspect.encode import sheet_regions
-    from excel_etl.workbook import WorkbookError
+    from moyung.inspect.encode import sheet_regions
+    from moyung.workbook import WorkbookError
 
     rows = [
         ["Judul"],
@@ -187,7 +187,7 @@ def test_sheet_regions_text_and_lookup() -> None:
 
 @pytest.mark.sample
 def test_sample_sheet_regions_budget(sample_path) -> None:
-    from excel_etl.inspect.encode import sheet_regions
+    from moyung.inspect.encode import sheet_regions
 
     wb = Workbook.open(sample_path)
     for name in ("(N) PKG", "Per Bulan", "RKAP 2026", "REKAP BALANS", "(U) PKT"):

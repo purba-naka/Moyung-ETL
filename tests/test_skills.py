@@ -15,15 +15,15 @@ from pathlib import Path
 import pytest
 from pydantic import BaseModel, TypeAdapter
 
-from excel_etl.hitl import CHECKPOINTS
-from excel_etl.ml import MlSpec, Split
-from excel_etl.nodes import build, names
-from excel_etl.nodes.base import _REGISTRY
-from excel_etl.pipeline import Output, PipelineSpec, RegionRef, Source, Step
-from excel_etl.prep import CategoricalRule, MissingRule, NumericRule
-from excel_etl.quality import Check
-from excel_etl.state import Job, new_state
-from excel_etl.tools import JobTools
+from moyung.hitl import CHECKPOINTS
+from moyung.ml import MlSpec, Split
+from moyung.nodes import build, names
+from moyung.nodes.base import _REGISTRY
+from moyung.pipeline import Output, PipelineSpec, RegionRef, Source, Step
+from moyung.prep import CategoricalRule, MissingRule, NumericRule
+from moyung.quality import Check
+from moyung.state import Job, new_state
+from moyung.tools import JobTools
 
 ROOT = Path(__file__).resolve().parents[1] / "skills"
 SKILLS = sorted(p for p in ROOT.iterdir() if p.is_dir())
@@ -197,7 +197,7 @@ def test_every_json_snippet_is_a_valid_step_check_source_or_output(snippet: dict
 
 def test_the_steps_in_the_patterns_file_run_end_to_end() -> None:
     """A snippet that parses can still be wrong. Run the wide-to-long ones on a real table."""
-    from excel_etl.nodes.base import connect
+    from moyung.nodes.base import connect
 
     steps = {s["id"]: s for _, s in _snippets() if "node" in s}
     con = connect()

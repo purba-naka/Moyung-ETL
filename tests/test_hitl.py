@@ -1,6 +1,6 @@
 import pytest
 
-from excel_etl.hitl import (
+from moyung.hitl import (
     HitlError,
     HitlPolicy,
     HitlState,
@@ -10,7 +10,7 @@ from excel_etl.hitl import (
     gate,
     should_ask,
 )
-from excel_etl.knowledge import Knowledge, lookup_knowledge
+from moyung.knowledge import Knowledge, lookup_knowledge
 
 
 def ask(s, kind="clarify", q="what is amt?", **kw):

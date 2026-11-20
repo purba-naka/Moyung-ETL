@@ -3,11 +3,11 @@ from __future__ import annotations
 import pytest
 from conftest import make_xlsx
 
-from excel_etl.nodes import NodeError, build, infer, schema_of
-from excel_etl.nodes.base import connect
-from excel_etl.nodes.source import read_region
-from excel_etl.pipeline import Source
-from excel_etl.workbook import Workbook
+from moyung.nodes import NodeError, build, infer, schema_of
+from moyung.nodes.base import connect
+from moyung.nodes.source import read_region
+from moyung.pipeline import Source
+from moyung.workbook import Workbook
 
 
 def _run(name: str, config: dict, *rels):

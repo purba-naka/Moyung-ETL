@@ -4,9 +4,9 @@ import duckdb
 import pytest
 from pydantic import TypeAdapter, ValidationError
 
-from excel_etl.nodes.base import NodeError, connect, schema_of
-from excel_etl.nodes.sqlexpr import check_expression
-from excel_etl.quality import Check, run_checks
+from moyung.nodes.base import NodeError, connect, schema_of
+from moyung.nodes.sqlexpr import check_expression
+from moyung.quality import Check, run_checks
 
 _ADAPTER = TypeAdapter(Check)
 

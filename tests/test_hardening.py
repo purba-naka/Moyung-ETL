@@ -9,9 +9,9 @@ from datetime import date
 import pytest
 from conftest import make_xlsx
 
-from excel_etl.inspect.encode import render_range, sheet_regions, workbook_map
-from excel_etl.inspect.regions import detect_regions
-from excel_etl.workbook import Workbook, WorkbookError
+from moyung.inspect.encode import render_range, sheet_regions, workbook_map
+from moyung.inspect.regions import detect_regions
+from moyung.workbook import Workbook, WorkbookError
 
 
 def _table(n: int = 5, shift: int = 0) -> list[list]:

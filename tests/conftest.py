@@ -33,7 +33,7 @@ def make_xlsx(
 @pytest.fixture
 def sample_path() -> Path:
     """The real BALANSITAS file. It is internal data, so it never lives in the repo."""
-    path = os.environ.get("EXCEL_ETL_SAMPLE")
+    path = os.environ.get("MOYUNG_SAMPLE")
     if not path or not Path(path).is_file():
-        pytest.skip("EXCEL_ETL_SAMPLE not set")
+        pytest.skip("MOYUNG_SAMPLE not set")
     return Path(path)

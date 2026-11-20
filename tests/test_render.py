@@ -5,8 +5,8 @@ from datetime import date
 import pytest
 from conftest import make_xlsx
 
-from excel_etl.inspect.encode import col_index, render_range
-from excel_etl.workbook import Workbook, WorkbookError
+from moyung.inspect.encode import col_index, render_range
+from moyung.workbook import Workbook, WorkbookError
 
 
 def _wb() -> Workbook:

@@ -20,5 +20,5 @@ jobs:
       - run: uv run ruff check .
       - run: uv run ruff format --check .
       # -W error turns a bad escape such as "\d" into a failure even when a cached .pyc exists
-      - run: uv run python -W error -m compileall -q excel_etl tests
+      - run: uv run python -W error -m compileall -q moyung tests
       - run: uv run pytest -q

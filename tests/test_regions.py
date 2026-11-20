@@ -5,9 +5,9 @@ from datetime import date
 import pytest
 from conftest import make_xlsx
 
-from excel_etl.inspect.encode import a1
-from excel_etl.inspect.regions import detect_regions
-from excel_etl.workbook import Workbook
+from moyung.inspect.encode import a1
+from moyung.inspect.regions import detect_regions
+from moyung.workbook import Workbook
 
 
 def _ref(box: tuple[int, int, int, int]) -> str:
@@ -138,7 +138,7 @@ def test_a_table_of_texts_away_from_a_corner_keeps_its_box():
 
 
 def test_the_header_is_listed_and_proposed_with_a_source_role():
-    from excel_etl.inspect.encode import propose_datasets, sheet_regions
+    from moyung.inspect.encode import propose_datasets, sheet_regions
 
     wb = _text_book(_MASTERS["product master"])
     assert (
@@ -208,20 +208,20 @@ def test_a_formula_inside_a_text_block_keeps_the_numeric_path_not_the_master_rul
     buf = io.BytesIO()
     wb.save(buf)
     book = Workbook.open(buf.getvalue())
-    from excel_etl.inspect.regions import SheetGrid, _text_header
+    from moyung.inspect.regions import SheetGrid, _text_header
 
     g = SheetGrid(book, "S")
     assert _text_header(g, (0, 0, 4, 1)) is False
 
 
 def _grid(rows, bold=False):
-    from excel_etl.inspect.regions import SheetGrid
+    from moyung.inspect.regions import SheetGrid
 
     return SheetGrid(_text_book(rows, bold=bold), "S")
 
 
 def _verdict(rows, bold=False):
-    from excel_etl.inspect.regions import _text_header
+    from moyung.inspect.regions import _text_header
 
     g = _grid(rows, bold)
     width = max(len(r) for r in rows)
@@ -250,7 +250,7 @@ def test_each_rule_of_the_master_table_alone_turns_a_good_block_down():
 
 
 def test_a_number_or_a_formula_anywhere_in_the_block_turns_it_down():
-    from excel_etl.inspect.regions import SheetGrid, _text_header
+    from moyung.inspect.regions import SheetGrid, _text_header
 
     with_number = [["Kode", "Nama"], ["a", "x"], ["b", "y"], ["c", "z"], ["d", 7]]
     g = _grid(with_number, bold=True)

@@ -6,8 +6,8 @@ import duckdb
 import pytest
 from conftest import make_xlsx
 
-from excel_etl.state import Job, new_state
-from excel_etl.tools import JobTools
+from moyung.state import Job, new_state
+from moyung.tools import JobTools
 
 
 class Provider:

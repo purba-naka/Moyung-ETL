@@ -3,8 +3,8 @@ from __future__ import annotations
 import pytest
 from conftest import make_xlsx
 
-from excel_etl.inspect.encode import formula_lineage
-from excel_etl.workbook import Workbook, WorkbookError
+from moyung.inspect.encode import formula_lineage
+from moyung.workbook import Workbook, WorkbookError
 
 
 def test_formula_lineage_lines() -> None:

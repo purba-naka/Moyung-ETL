@@ -8,8 +8,8 @@ from functools import cmp_to_key
 
 import pytest
 
-from excel_etl.nodes import NodeError, build, infer, schema_of
-from excel_etl.nodes.base import connect
+from moyung.nodes import NodeError, build, infer, schema_of
+from moyung.nodes.base import connect
 
 _COLS = "grp VARCHAR, sub VARCHAR, seq INTEGER, qty INTEGER, price INTEGER"
 _NAMES = ["grp", "sub", "seq", "qty", "price"]

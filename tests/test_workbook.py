@@ -8,7 +8,7 @@ import pytest
 from conftest import make_xlsx
 from openpyxl.styles import Border, Font, PatternFill, Side
 
-from excel_etl.workbook import CellMeta, Workbook, WorkbookError
+from moyung.workbook import CellMeta, Workbook, WorkbookError
 
 
 def _styled() -> bytes:

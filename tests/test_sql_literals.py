@@ -2,7 +2,7 @@ import math
 
 import pytest
 
-from excel_etl.nodes.base import NodeError, check_fits, sql_value
+from moyung.nodes.base import NodeError, check_fits, sql_value
 
 
 @pytest.mark.parametrize(
