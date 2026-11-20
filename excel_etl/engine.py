@@ -41,7 +41,7 @@ from excel_etl.nodes.source import (
 )
 from excel_etl.pipeline import PipelineSpec, Source, Step, dump_spec
 from excel_etl.prep import planned_columns
-from excel_etl.quality import CheckResult, check_schema, run_checks
+from excel_etl.quality import CheckResult, check_schema, run_checks, tables_of
 from excel_etl.tablefile import TableFile, TableFileError, as_table_file
 from excel_etl.verify import VerifyReport, verify
 from excel_etl.workbook import Workbook, WorkbookError
@@ -105,7 +105,7 @@ class RunSummary(_Report):
 
     at: str
     ref: str | None = None
-    status: Literal["ok", "failed"]
+    status: Literal["ok", "partial", "failed"]
     seconds: float
     rows: dict[str, int] = {}
     checks_failed: tuple[str, ...] = ()
@@ -209,7 +209,7 @@ class ValidationReport(_Report):
 
 
 class RunReport(_Report):
-    status: Literal["ok", "failed"]
+    status: Literal["ok", "partial", "failed"]
     issues: tuple[Issue, ...]
     warnings: tuple[str, ...]
     nodes: tuple[NodeStat, ...]
@@ -222,6 +222,7 @@ class RunReport(_Report):
     artifacts: tuple[str, ...] = ()
     spec_sha256: str = ""
     engine_version: str = ""
+    blocked: dict[str, tuple[str, ...]] = {}
 
     def summary(self, at: str) -> RunSummary:
         """The run as one history line (`at` is now, UTC, given by the caller)."""
@@ -266,6 +267,10 @@ class RunReport(_Report):
             )
         lines += [f"  wrote {o.path}|{o.rows} rows|{o.columns} cols" for o in self.outputs]
         lines += [
+            f"  NOT written: output {name!r}, blocked by failed check(s) {', '.join(why)}"
+            for name, why in self.blocked.items()
+        ]
+        lines += [
             f"  wrote {a}|artifact: {ARTIFACT_NOTES.get(Path(a).name, '')}" for a in self.artifacts
         ]
         lines += [f"  {i.where}: {i.message}" for i in self.issues]
@@ -283,6 +288,7 @@ class _State:
     schemas: dict[str, Schema] = field(default_factory=dict)
     stats: list[NodeStat] = field(default_factory=list)
     cut: int = 0
+    failed_checks: dict[str, str] = field(default_factory=dict)
 
     def rows(self, name: str) -> int:
         """Rows of a source or step that ran: the one place a count lives is its NodeStat."""
@@ -685,10 +691,42 @@ def _run_checks(
         if r.passed:
             continue
         if r.severity == "error":
-            st.issue(f"checks.{r.name}", r.message)
+            st.failed_checks[r.name] = r.message
         else:
             st.warnings.append(f"checks.{r.name}: {r.message}")
     return results
+
+
+def _upstream(spec: PipelineSpec, name: str) -> set[str]:
+    """`name` and every source or step it reads, directly or not."""
+    steps = {s.id: s for s in spec.steps}
+    ml_tables = set(spec.ml.tables().values()) if spec.ml is not None else set()
+    seen: set[str] = set()
+    todo = [name]
+    while todo:
+        n = todo.pop()
+        if n in seen:
+            continue
+        seen.add(n)
+        if n in steps:
+            todo.extend(steps[n].inputs)
+        elif n in ml_tables and spec.ml is not None:
+            todo.append(spec.ml.input)
+            seen |= ml_tables
+    return seen
+
+
+def _blocked_outputs(spec: PipelineSpec, failed: dict[str, str]) -> dict[str, tuple[str, ...]]:
+    """Output -> the failed `error` checks that read a table it is built from. A check that
+    reads no output's lineage (an ml table, a dead branch) blocks every output."""
+    ups = {oname: _upstream(spec, o.input) for oname, o in spec.outputs.items()}
+    out: dict[str, list[str]] = {}
+    for cname in failed:
+        tables = set(tables_of(spec.checks[cname]))
+        hit = [o for o, up in ups.items() if up & tables] or list(ups)
+        for oname in hit:
+            out.setdefault(oname, []).append(cname)
+    return {k: tuple(v) for k, v in out.items()}
 
 
 def _publish(parts: list[tuple[Path, Path]], st: _State) -> None:
@@ -794,6 +832,7 @@ def run(
     checked: VerifyReport | None = None
     ml_result: MlResult | None = None
     written: tuple[str, ...] = ()
+    blocked: dict[str, tuple[str, ...]] = {}
     try:
         _load_sources(spec, files, tables, con, st)
         _run_steps(spec, con, st, run_nodes=True)
@@ -801,9 +840,22 @@ def run(
             ml_result = _run_ml(spec, con, st)
         if not st.issues:
             results = _run_checks(spec, con, st)
+        if not st.issues and st.failed_checks:
+            blocked = _blocked_outputs(spec, st.failed_checks)
+            if len(blocked) >= len(spec.outputs):
+                for cname, why in st.failed_checks.items():
+                    st.issue(f"checks.{cname}", why)
+                blocked = {}
+            else:
+                st.warnings.append(
+                    "some outputs were not written because a check failed; the other outputs were"
+                )
         if not st.issues:
-            _write_outputs(spec, con, out_path, st, parts, outputs)
-        if not st.issues:
+            _write_outputs(spec, con, out_path, st, parts, outputs, frozenset(blocked))
+        if not st.issues and blocked:
+            if spec.ml is not None:
+                st.warnings.append("the ml artifacts were not written: a check failed")
+        elif not st.issues:
             written = _write_artifacts(spec, ml_result, st, out_path, parts)
         if not st.issues:
             _publish(parts, st)
@@ -816,7 +868,8 @@ def run(
                 tmp.unlink(missing_ok=True)
     failed = bool(st.issues)
     return RunReport(
-        status="failed" if failed else "ok",
+        status="failed" if failed else ("partial" if blocked else "ok"),
+        blocked={} if failed else blocked,
         issues=st.done(),
         warnings=tuple(st.warnings),
         nodes=tuple(st.stats),
@@ -839,8 +892,11 @@ def _write_outputs(
     st: _State,
     parts: list[tuple[Path, Path]],
     outputs: list[OutputStat],
+    skip: frozenset[str] = frozenset(),
 ) -> None:
     for name, out in spec.outputs.items():
+        if name in skip:
+            continue
         where = f"outputs.{name}"
         schema = st.schemas.get(out.input)
         final = out_path / f"{name}.{out.format}"

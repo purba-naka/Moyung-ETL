@@ -49,6 +49,7 @@ _JOB_ID = re.compile(r"[a-z0-9](?:[a-z0-9_.-]{0,98}[a-z0-9_-])?")
 _SHA = re.compile(r"[0-9a-f]{64}")
 _MAX_FILES = 50
 MAX_RUNS = 20
+STATE_SCHEMA = 1
 _LOCK_WAIT = 5.0
 _STALE = 30.0
 
@@ -108,6 +109,11 @@ class PlannedLoad(_Model):
 
 
 class JobState(_Model):
+    """A job's saved state. `schema_version` is the layout of this JSON: a state written by a
+    newer library is refused instead of being read wrongly (`extra="forbid"` would only fail
+    on a field it does not know, not on one that changed meaning)."""
+
+    schema_version: int = Field(default=STATE_SCHEMA, ge=1)
     job_id: str
     version: int = Field(default=0, ge=0)
     files: list[FileRef] = Field(default=[], max_length=_MAX_FILES)
@@ -123,6 +129,11 @@ class JobState(_Model):
 
     @model_validator(mode="after")
     def _consistent(self) -> JobState:
+        if self.schema_version > STATE_SCHEMA:
+            raise ValueError(
+                f"this state has schema_version {self.schema_version}, but this library reads "
+                f"up to {STATE_SCHEMA}; upgrade excel-etl"
+            )
         if not _JOB_ID.fullmatch(self.job_id):
             raise ValueError(
                 "job_id must be 1-100 characters: a-z, 0-9, _ . - (lower case, "
