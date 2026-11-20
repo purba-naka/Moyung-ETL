@@ -287,8 +287,13 @@ def infer(n: Node, inputs: list[Schema]) -> Schema:
     return out
 
 
+MEMORY_LIMIT = "4GB"
+
+
 def connect(
-    write_dir: Path | None = None, read_paths: Sequence[Path] = ()
+    write_dir: Path | None = None,
+    read_paths: Sequence[Path] = (),
+    memory_limit: str = MEMORY_LIMIT,
 ) -> duckdb.DuckDBPyConnection:
     """A fresh in-memory duckdb that cannot touch files or the network.
 
@@ -299,8 +304,12 @@ def connect(
     permission is set before access is locked, after which it cannot be widened (measured:
     `..` paths, siblings and a later SET are refused). Every relation of one run must come
     from the same connection.
+
+    `memory_limit` caps what one expression or join can take from the host; going over it is a
+    duckdb error, which a run reports as an issue.
     """
     con = duckdb.connect()
+    con.execute(f"SET memory_limit={sql_text(memory_limit)}")
     if write_dir is not None:
         path = write_dir.resolve().as_posix().replace("'", "''")
         con.execute(f"SET allowed_directories=['{path}']")
