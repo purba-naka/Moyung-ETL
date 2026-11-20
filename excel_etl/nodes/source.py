@@ -70,6 +70,7 @@ def _header(wb: Workbook, g: SheetGrid, sheet: str, source: Source) -> tuple[int
     rows = source.region.header_rows
     anchors = [text_key(a) for a in source.region.header_anchor]
     found = False
+    has_text = False
     for reg in detect_regions(wb, sheet, g):
         top, left, bottom, right = reg.box
         for r in range(top, min(bottom, top + _HEADER_SEARCH) + 1):
@@ -83,7 +84,12 @@ def _header(wb: Workbook, g: SheetGrid, sheet: str, source: Source) -> tuple[int
                 return r, reg
     for r in range(len(g.values)):
         texts = {text_key(lbl) for c in range(len(g.values[r])) if (lbl := g.label(r, c))}
+        has_text = has_text or bool(texts)
         found = found or all(a in texts for a in anchors)
+    if not has_text:
+        raise NodeError(
+            f"sheet {sheet!r} is empty, so the header {source.region.header_anchor} is not there"
+        )
     where = "but not inside a table" if found else "not found"
     raise NodeError(
         f"header {source.region.header_anchor} {where} on sheet {sheet!r}; "
@@ -176,7 +182,9 @@ def locate_all(wb: Workbook, source: Source) -> list[Location]:
         except NodeError as e:
             errors.append(f"{sheet}: {e}")
     if errors:
-        raise NodeError(f"{len(errors)} sheet(s) failed: {few(errors, 5)}")
+        others = few([e.split(": ", 1)[0] for e in errors[1:]], 6)
+        more = f"; the same on sheet(s) {others}" if len(errors) > 1 else ""
+        raise NodeError(f"{len(errors)} sheet(s) failed. {errors[0]}{more}")
     return locations
 
 

@@ -158,12 +158,35 @@ def _changed_tables(old: PipelineSpec | None, new: PipelineSpec) -> set[str] | N
     return changed
 
 
-def _drift_ref(drifted: dict[str, Any]) -> str | None:
-    """A short name for one particular drift, so an approval covers it and no other."""
+_DRIFT_SHOWN = 2
+_DRIFT_LINE = 240
+
+
+def _drift_ref(drifted: dict[str, Any], shas: dict[str, str]) -> str | None:
+    """A short name for one particular drift (the sources, every difference found, and the
+    file it was found in), so an approval covers exactly it and no other."""
     if not drifted:
         return None
-    body = json.dumps({n: [b.status, list(b.diff)] for n, b in sorted(drifted.items())})
+    body = json.dumps(
+        {
+            n: [b.status, list(b.diff), b.message, shas.get(n, "")]
+            for n, b in sorted(drifted.items())
+        }
+    )
     return "drift:" + hashlib.sha256(body.encode()).hexdigest()[:12]
+
+
+def _drift_lines(drifted: dict[str, Any]) -> str:
+    """The first differences of each drifted source, one per line, each cut to a readable size."""
+    lines = []
+    for name, bind in drifted.items():
+        found = [*bind.diff, *([bind.message] if bind.message else [])]
+        for d in found[:_DRIFT_SHOWN]:
+            cut = d if len(d) <= _DRIFT_LINE else d[: _DRIFT_LINE - 3] + "..."
+            lines.append(f"  {name}: {cut}")
+        if len(found) > _DRIFT_SHOWN:
+            lines.append(f"  {name}: ... {len(found) - _DRIFT_SHOWN} more")
+    return "\n".join(lines)
 
 
 def _split_column(text: str) -> Column:
@@ -622,6 +645,25 @@ class JobTools:
             }
         )
 
+    def _drifted(self, bound: Any, spec: Any, files: dict[str, Any]) -> dict[str, Any]:
+        """The drifted sources that have an earlier bind to drift from. Without one, a source
+        that does not fit is only a failed run, and the run says why itself."""
+        known = self._state.binds
+        return {n: b for n, b in bound.sources.items() if b.status == "drift" and n in known}
+
+    def _source_shas(self, spec: Any, files: dict[str, Any]) -> dict[str, str]:
+        """The sha256 of the file each source reads, by source name."""
+        return {
+            n: str(getattr(files.get(src.file_role), "sha256", ""))
+            for n, src in spec.sources.items()
+        }
+
+    def _input_names(self) -> dict[str, str]:
+        """`file_role` -> the name of the file registered for it, as of now."""
+        s = self._state
+        names = {f.id: f.filename for f in s.files}
+        return {role: names.get(fid, "") for role, fid in s.roles.items()}
+
     def _role(self, fid: str) -> str:
         return next((r for r, i in self._state.roles.items() if i == self._ref(fid).id), "<role>")
 
@@ -924,7 +966,7 @@ class JobTools:
         if files is None:
             raise StateError("no files registered with a role; the host must add_file first")
         report = rebind(spec, files, s.binds)
-        drift_ref = _drift_ref({n: b for n, b in report.sources.items() if b.status == "drift"})
+        drift_ref = _drift_ref(self._drifted(report, spec, files), self._source_shas(spec, files))
         self.job.update(
             lambda st: st.model_copy(update={"binds": {**st.binds, **report.records()}})
         )
@@ -953,28 +995,39 @@ class JobTools:
         if files is None:
             raise StateError("no files registered with a role; the host must add_file first")
         bound = rebind(spec, files, s.binds or None)
-        drifted = {n: b for n, b in bound.sources.items() if b.status == "drift"}
-        drift_ref = _drift_ref(drifted)
+        drifted = self._drifted(bound, spec, files)
+        drift_ref = _drift_ref(drifted, self._source_shas(spec, files))
         if drifted and (why := gate(s.hitl, "on_rebind_drift", ref=drift_ref)):
             raise StateError(
-                f"{bound.text()}\nthe sources drifted, so nothing was run: {why}. After the person "
-                f"agrees, the host calls approve('on_rebind_drift', by, ref='{drift_ref}'); that "
-                "approval covers exactly this drift and makes it the new normal"
+                f"the sources drifted since the last run, so nothing was run:\n"
+                f"{_drift_lines(drifted)}\n{why}. After the person agrees, the host calls "
+                f"approve('on_rebind_drift', by, ref='{drift_ref}'). That approval covers exactly "
+                "this drift; once a run on it succeeds, it is the new normal"
             )
+        approval = s.hitl.approvals.get("on_rebind_drift")
+        approved = bool(drifted) and approval is not None and approval.ref == drift_ref
         target = Path(self.out_dir)
         if self.per_version:
             target = target / f"v{self._version()}"
         rep = self._portable(run(spec, files, target, hitl=s.hitl, ref=f"v{self._version()}"))
         stamp = datetime.now(UTC).isoformat(timespec="seconds")
 
-        baseline = bound.accepted_records() if rep.status == "ok" else {}
+        baseline: dict[str, Any] = {}
+        if rep.status == "ok":
+            baseline = bound.accepted_records() if approved else bound.records()
+        summary = rep.summary(stamp).model_copy(
+            update={
+                "names": self._input_names(),
+                "drift": f"{drift_ref} approved by {approval.by}" if approved and approval else "",
+            }
+        )
 
         def record() -> None:
             self.job.update(
                 lambda st: st.model_copy(
                     update={
                         "last_run": rep,
-                        "runs": [*st.runs, rep.summary(stamp)][-MAX_RUNS:],
+                        "runs": [*st.runs, summary][-MAX_RUNS:],
                         "binds": {**st.binds, **baseline},
                     }
                 )
@@ -984,14 +1037,25 @@ class JobTools:
             record()
         except StateConflict:
             self.job.reload()
+            if f"v{self._version()}" != rep.ref:
+                raise StateError(
+                    "the spec changed while this run was being recorded; the outputs were written "
+                    "from the older version. run_pipeline again"
+                ) from None
             record()
         text = rep.text(full=False)
         if drifted:
-            lines = [f"{n}: {b.diff[0]}" for n, b in drifted.items() if b.diff]
-            text += (
-                f"\nwarning: ran on drifted sources (approved as {drift_ref}); they are now the "
-                "normal. " + " | ".join(lines)[:600]
-            )
+            if rep.status != "ok":
+                text += (
+                    f"\nwarning: the sources drifted since the last run:\n{_drift_lines(drifted)}"
+                )
+            elif approved:
+                text += f"\nran on the approved drift {drift_ref}; it is the new normal"
+            else:
+                text += (
+                    "\nwarning: ran on drifted sources that nobody approved (the policy does not "
+                    f"ask); they stay flagged until accepted:\n{_drift_lines(drifted)}"
+                )
         if why := gate(self._state.hitl, "after_run", failed=rep.status != "ok"):
             text += (
                 f"\nthe run finished with status {rep.status}; the checks and problems are "
@@ -1003,7 +1067,8 @@ class JobTools:
     def last_run(self) -> dict:
         """The report of the last run: rows per step, checks, files written, problems. The tail
         lists this job's earlier runs, newest first, as `at|spec ref|status|seconds|output rows|
-        failed checks` (`-` when a run wrote nothing or no check failed)."""
+        failed checks|spec hash|inputs|drift` (`-` when a run wrote nothing, no check failed, or
+        nothing drifted). inputs are `role=file name@hash` as they were at that run."""
         rep = self._state.last_run
         if rep is None:
             return {"text": "no run yet"}
@@ -1012,13 +1077,17 @@ class JobTools:
         if past:
             lines.append(
                 f"earlier runs of this job (newest first, {len(past)}): "
-                f"at|spec ref|status|seconds|output rows|failed checks"
+                f"at|spec ref|status|seconds|output rows|failed checks|spec hash|inputs|drift"
             )
             for r in reversed(past):
                 out = sum(r.rows.values()) if r.rows else "-"
+                inputs = ",".join(
+                    f"{role}={r.names.get(role) or '?'}@{sha[:8]}" for role, sha in r.files.items()
+                )
                 lines.append(
                     f"  {r.at}|{r.ref or '-'}|{r.status}|{r.seconds:.2f}s|{out}|"
-                    f"{','.join(r.checks_failed) or '-'}"
+                    f"{','.join(r.checks_failed) or '-'}|{r.spec_sha256[:8] or '-'}|"
+                    f"{inputs or '-'}|{r.drift or '-'}"
                 )
         return {"text": "\n".join(lines)}
 
@@ -1087,7 +1156,12 @@ class JobTools:
                     f"file {role!r} changed since the last run; run_pipeline again first"
                 )
         produced = self._inside_out_dir(self._abs(stat.path), f"output {output!r}")
-        if stat.sha256 and sha256_file(produced) != stat.sha256:
+        if not stat.sha256:
+            raise StateError(
+                f"the last run did not record a hash of output {output!r}; run_pipeline again "
+                "before planning the load"
+            )
+        if sha256_file(produced) != stat.sha256:
             raise StateError(
                 f"output {output!r} changed on disk since the last run; run_pipeline again "
                 "before planning the load"

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import inspect
 import json
+import re
 import typing
 
 import pytest
@@ -145,8 +146,9 @@ def test_run_history_grows_one_line_per_run(tools):
     assert tools.run_pipeline()["ok"]
     text = tools.last_run()["text"]
     assert "earlier runs of this job (newest first, 1):" in text
-    assert "at|spec ref|status|seconds|output rows|failed checks" in text
-    assert text.count("|v1|ok|") == 1 and text.rstrip().endswith("|3|-")
+    assert "at|spec ref|status|seconds|output rows|failed checks|spec hash|inputs|drift" in text
+    assert text.count("|v1|ok|") == 1
+    assert re.search(r"\|3\|-\|[0-9a-f]{8}\|f=jan\.xlsx@[0-9a-f]{8}\|-\s*$", text)
     runs = tools._state.runs
     assert len(runs) == 2 and [r.ref for r in runs] == ["v1", "v1"]
     assert runs[0].rows == {"totals": 3} and runs[0].checks_failed == ()

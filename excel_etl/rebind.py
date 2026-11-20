@@ -161,8 +161,12 @@ def _compare(
             )
 
 
+def _count(con: duckdb.DuckDBPyConnection, table: str) -> int:
+    return int(con.execute(f"SELECT count(*) FROM {quote(table)}").fetchall()[0][0])
+
+
 def _compare_sheets(
-    source: Source, old: BindRecord, locs: list[Location], drift: list[str], moved: list[str]
+    source: Source, old: BindRecord, locs: list[Location], drift: list[str]
 ) -> None:
     """A source read from several same-shaped sheets: a sheet that went, or lost a column the
     union of all sheets still has, would otherwise change the data without a word."""
@@ -240,7 +244,7 @@ def _judge(
                 f"header {a1(old.header_row, old.first_col)} -> {a1(loc.header, loc.left)}"
             )
         _compare(source, old, names, types, drift, moved)
-        _compare_sheets(source, old, locs, drift, moved)
+        _compare_sheets(source, old, locs, drift)
         _compare_rows(old, rows, drift, moved)
     status: Status = "drift" if drift else "shifted" if moved else "exact"
     return SourceBind(status=status, record=rec, diff=tuple([*drift, *moved]))
@@ -268,7 +272,7 @@ def _bind_table(
         tf = as_table_file(files[role], source.kind)
         rel = read_table_file(tf, source, con, name)
         schema = schema_of(rel)
-        rows = int(con.execute(f"SELECT count(*) FROM {quote(name)}").fetchall()[0][0])
+        rows = _count(con, name)
     except (TableFileError, NodeError, duckdb.Error, TypeError) as e:
         return SourceBind(
             status="missing",
@@ -303,8 +307,7 @@ def _read_types(
     try:
         rel = read_locations(locs, source, con, name)
         types = {c.name.casefold(): c.type for c in schema_of(rel)}
-        rows = int(con.execute(f"SELECT count(*) FROM {quote(name)}").fetchall()[0][0])
-        return types, rows
+        return types, _count(con, name)
     except (NodeError, WorkbookError, duckdb.Error):
         return {}, None
     finally:

@@ -61,11 +61,11 @@ def test_a_drifted_source_refuses_the_run_until_that_drift_is_approved(tools, bl
     assert tools.rebind_sources()["ok"] and tools.run_pipeline()["ok"]
     _swap(tools, blobs, [["Item", "Qty"], ["pen", "many"], ["ink", 1]])
     refused = tools.run_pipeline()["error"]
-    assert "drifted, so nothing was run" in refused and "Qty" in refused
+    assert "so nothing was run" in refused and "Qty" in refused
     ref = _ref(refused)
     tools.approve("on_rebind_drift", "dina", ref)
     done = tools.run_pipeline()
-    assert done["ok"] and "ran on drifted sources" in done["text"]
+    assert done["ok"] and "ran on the approved drift" in done["text"]
     assert tools.rebind_sources()["ok"]
 
 
@@ -141,7 +141,7 @@ def test_an_empty_table_after_a_good_bind_is_drift_and_a_big_drop_is_reported():
         and "row count fell from 40 to 5" in dropped.sources["s"].diff[0]
     )
     empty = rebind(spec, _multi({"2023": [["Item", "Qty"]]})[1], first.records())
-    assert empty.sources["s"].status in ("drift", "missing")
+    assert empty.sources["s"].status == "drift"
 
 
 def test_a_spec_changed_after_parsing_cannot_hide_a_cycle_or_a_missing_input(tmp_path):

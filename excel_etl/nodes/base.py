@@ -23,7 +23,10 @@ type Relation = duckdb.DuckDBPyRelation
 _MAX_ERRORS = 10
 _NAME_PATTERN = r"^(?:[A-Za-z]|_[A-Za-z0-9])[A-Za-z0-9_]{0,62}$"
 INTEGER_TYPE = re.compile(r"^U?(TINY|SMALL|BIG|HUGE)?INT(EGER)?$")
-NUMERIC_TYPE = re.compile(r"^(U?(TINY|SMALL|BIG|HUGE)?INT(EGER)?|FLOAT|DOUBLE|DECIMAL\(.*\))$")
+_INTEGER = r"U?(TINY|SMALL|BIG|HUGE)?INT(EGER)?"
+NUMERIC_TYPE = re.compile(rf"^({_INTEGER}|FLOAT|DOUBLE|DECIMAL\(.*\))$")
+INTEGER_TYPE = re.compile(rf"^{_INTEGER}$")
+DECIMAL_TYPE = re.compile(r"^DECIMAL\((\d+),\s*(\d+)\)$")
 
 
 class NodeError(Exception):

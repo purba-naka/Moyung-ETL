@@ -61,9 +61,34 @@ _DENIED_FUNCTIONS = frozenset(
         "current_date", "current_time", "today", "get_current_timestamp",
         "get_current_time", "localtime", "localtimestamp", "transaction_timestamp",
         "statement_timestamp", "current_localtime", "current_localtimestamp",
-        "unnest", "unlist", "generate_subscripts", "format", "printf", "bar",
+        "unnest", "unlist", "generate_subscripts", "format", "printf", "bar", "bitstring",
+        "regexp_split_to_table", "ago", "pg_conf_load_time", "pg_postmaster_start_time",
     }
 )  # fmt: skip
+
+_MAX_GROWTH = 4096
+_GROWERS = frozenset({"replace", "regexp_replace"})
+_MACRO_RISK = (
+    "unnest|generate_series|generate_subscripts|range\\(|current_timestamp|current_date|"
+    "now\\(\\)|get_current|today\\(\\)|current_time|localtime"
+)
+_MACROS: frozenset[str] | None = None
+
+
+def _macro_denies() -> frozenset[str]:
+    """Names of duckdb macros built on row-multiplying or clock functions, read from duckdb
+    itself so a macro added by an upgrade is covered without a list to keep."""
+    global _MACROS
+    if _MACROS is None:
+        rows = duckdb.connect().execute(
+            "SELECT DISTINCT lower(function_name) FROM duckdb_functions() "
+            "WHERE function_type IN ('macro', 'table_macro') "
+            "AND regexp_matches(lower(macro_definition), ?)",
+            [_MACRO_RISK],
+        )
+        _MACROS = frozenset(r[0] for r in rows.fetchall())
+    return _MACROS
+
 
 _CLOCK_NAMES = frozenset(
     {"current_date", "current_time", "current_timestamp", "localtime", "localtimestamp"}
@@ -75,8 +100,29 @@ def _fail(expr: str, why: str) -> NodeError:
     return NodeError(f"expression {shown!r}: {why}")
 
 
-def _walk(node: Any, expr: str) -> None:
-    """Visit every dict that looks like an expression node, depth first."""
+def _args(node: dict) -> list[dict]:
+    """The argument expressions of a serialized function call (`arguments` in duckdb 2.x,
+    `children` before it)."""
+    raw = node.get("arguments") or node.get("children") or []
+    return [a.get("expression", a) if isinstance(a, dict) else {} for a in raw]
+
+
+def _literal_text(arg: dict) -> str | None:
+    """The text of a string constant argument, or None when it is not one."""
+    if arg.get("class") != "CONSTANT":
+        return None
+    literal = arg.get("literal")
+    if isinstance(literal, dict) and isinstance(literal.get("text"), str):
+        return literal["text"]
+    value = arg.get("value")
+    if isinstance(value, dict) and isinstance(value.get("value"), str):
+        return value["value"]
+    return None
+
+
+def _walk(node: Any, expr: str, growth: int = 1) -> None:
+    """Visit every dict that looks like an expression node, depth first. `growth` is how many
+    times longer nested replace calls can make a text."""
     if isinstance(node, dict):
         cls = node.get("class")
         if cls is not None and cls not in _ALLOWED:
@@ -102,8 +148,20 @@ def _walk(node: Any, expr: str) -> None:
                 )
         if cls == "FUNCTION":
             name = str(node.get("function_name", "")).lower()
-            if name in _DENIED_FUNCTIONS:
+            if name in _DENIED_FUNCTIONS or name in _macro_denies():
                 raise _fail(expr, f"function {name!r} is not allowed")
+            args = _args(node)
+            if name == "age" and len(args) == 1:
+                raise _fail(expr, "age(x) with one argument reads the clock; give both dates")
+            if name in _GROWERS and len(args) >= 3:
+                text = _literal_text(args[2])
+                growth *= max(1, len(text)) if text is not None else 1
+                if growth > _MAX_GROWTH:
+                    raise _fail(
+                        expr,
+                        "nested replace calls with long replacement texts can build a huge "
+                        "text; use shorter replacements or fewer levels",
+                    )
             if name in _aggregates():
                 raise _fail(expr, f"aggregate {name!r} is not allowed here; use the group_by node")
             if node.get("order_bys", {}).get("orders") or node.get("filter"):
@@ -111,10 +169,10 @@ def _walk(node: Any, expr: str) -> None:
             if node.get("distinct"):
                 raise _fail(expr, "DISTINCT inside a function call is not allowed")
         for v in node.values():
-            _walk(v, expr)
+            _walk(v, expr, growth)
     elif isinstance(node, list):
         for v in node:
-            _walk(v, expr)
+            _walk(v, expr, growth)
 
 
 _AGGREGATES: frozenset[str] | None = None
@@ -156,11 +214,7 @@ def check_expression(expr: str) -> str:
 
 
 def _check_expression(expr: str) -> str:
-    """Return `expr` (stripped) if it is one allowed scalar expression, else raise NodeError.
-
-    Column names that do not exist are not found here: that needs the input schema, and
-    happens when the node's `infer_schema` binds the expression.
-    """
+    """The same as `check_expression`, before `RecursionError` is turned into a NodeError."""
     if not isinstance(expr, str):
         raise NodeError(f"expression must be a string, got {type(expr).__name__}")
     text = expr.strip()

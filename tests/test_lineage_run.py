@@ -93,7 +93,7 @@ def test_a_direct_run_hashes_inputs_given_as_paths_or_bytes(tmp_path, form):
     rep = run(parse_spec(_spec()), {"f": given}, tmp_path / "out")
     assert rep.status == "ok"
     assert rep.files == {"f": hashlib.sha256(CSV_A).hexdigest()}
-    assert rep.spec_sha256 and rep.outputs[0].sha256
+    assert len(rep.spec_sha256) == 64 and len(rep.outputs[0].sha256) == 64
 
 
 def test_run_report_round_trips_with_the_new_fields(tmp_path):
