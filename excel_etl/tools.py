@@ -35,6 +35,7 @@ from typing import Any, Literal
 
 from pydantic import ValidationError
 
+from excel_etl import mlprofile
 from excel_etl.engine import PipelineError, run, validate
 from excel_etl.hitl import HitlError, answer, approve, ask_human, gate
 from excel_etl.inspect import encode, tables
@@ -42,7 +43,7 @@ from excel_etl.knowledge import lookup_knowledge
 from excel_etl.load import LoadError, Where, file_columns, plan_load
 from excel_etl.ml import describe as ml_describe
 from excel_etl.nodes import Column, NodeError, catalog, schema_of
-from excel_etl.nodes.base import connect, describe, quote
+from excel_etl.nodes.base import _NAME_PATTERN, connect, describe, quote, sql_text
 from excel_etl.nodes.source import read_table_file
 from excel_etl.pipeline import (
     PipelineSpec,
@@ -52,6 +53,7 @@ from excel_etl.pipeline import (
     parse_spec,
     patch_spec,
 )
+from excel_etl.prep import apply_preprocessing
 from excel_etl.rebind import rebind
 from excel_etl.state import (
     MAX_RUNS,
@@ -379,6 +381,8 @@ class JobTools:
             "formula_lineage",
             "propose_datasets",
             "source_for_region",
+            "ml_candidates",
+            "apply_ml_preprocessing",
             "node_catalog",
             "lookup_knowledge",
             "ask_human",
@@ -443,14 +447,7 @@ class JobTools:
         role = next((r for r, f in self._state.roles.items() if f == self._ref(fid).id), "<role>")
         con = connect(read_paths=[tf.path])
         try:
-            delimiter = None
-            if tf.format == "csv":
-                found = con.execute(
-                    "SELECT Delimiter FROM sniff_csv(?)", [tf.path.as_posix()]
-                ).fetchall()
-                delimiter = found[0][0] if found else None
-            settings = {"delimiter": delimiter} if delimiter else {}
-            source = Source(kind=tf.format, file_role=role, **settings)
+            source, delimiter = self._table_source(tf, role)
             rel = read_table_file(tf, source, con, "t")
             cols = schema_of(rel)
             shown = cols[:60]
@@ -475,6 +472,21 @@ class JobTools:
             lines += ["last rows (look here for a total row):", *map(cells, tail)]
         lines.append(f"source: {source.model_dump_json()}")
         return chr(10).join(lines)
+
+    def _table_source(self, tf: TableFile, role: str) -> tuple[Source, str | None]:
+        """The `Source` that reads a table file, with the CSV delimiter duckdb detected."""
+        delimiter = None
+        if tf.format == "csv":
+            con = connect(read_paths=[tf.path])
+            try:
+                found = con.execute(
+                    "SELECT Delimiter FROM sniff_csv(?)", [tf.path.as_posix()]
+                ).fetchall()
+            finally:
+                con.close()
+            delimiter = found[0][0] if found else None
+        settings = {"delimiter": delimiter} if delimiter else {}
+        return Source(kind=tf.format, file_role=role, **settings), delimiter
 
     def _ref(self, fid: str) -> FileRef:
         return self._state.files[int(fid[1:]) - 1]
@@ -576,6 +588,126 @@ class JobTools:
         """Tables worth loading as datasets (typed sources), for a person to choose from."""
         fid, wb = self._book(file)
         return encode.propose_datasets(wb, fid, offset, limit)
+
+    def _role(self, fid: str) -> str:
+        return next((r for r, i in self._state.roles.items() if i == self._ref(fid).id), "<role>")
+
+    def _inside_out_dir(self, path: Path, what: str) -> Path:
+        """`path` if it is a file under the job's output folder, else a StateError."""
+        if self.out_dir is None:
+            raise StateError("the host gave no out_dir; it cannot write outputs")
+        resolved = path.resolve()
+        if not resolved.is_relative_to(Path(self.out_dir).resolve()):
+            raise StateError(f"{what} is outside the output folder; run_pipeline again")
+        if not resolved.is_file():
+            raise StateError(f"{what} is gone from disk; run_pipeline again")
+        return resolved
+
+    @_tool
+    def ml_candidates(
+        self, table: str, target: str = "", offset: int = 0, limit: int = 100
+    ) -> dict:
+        """Profile a table before writing the `ml` section. One line per column
+        (`name|type|empty|distinct|notes`; notes: constant, one value plus empty, mostly empty,
+        id-like, free text, date), then the ids and excludes the notes suggest, then, when
+        `target` is given, its classes and sizes or its kind. `table` is a registered CSV,
+        Parquet or JSON file (F1 or its name) or an output of the last run; to look at a
+        cleaned step, write it as an output and run first. Pages of `limit` columns."""
+        s = self._state
+        if not isinstance(table, str) or not isinstance(target, str):
+            raise ValueError("table and target must be text")
+        if any(type(n) is not int for n in (offset, limit)) or offset < 0 or limit < 1:
+            raise ValueError("offset must be 0 or more and limit 1 or more")
+        try:
+            fid, f = self._file(table.strip())
+        except StateError:
+            fid, f = "", None
+        if isinstance(f, Workbook):
+            raise StateError(
+                f"{fid} is a workbook: profile_region reads its tables; here give a CSV, "
+                "Parquet or JSON file or an output of the last run"
+            )
+        if f is not None:
+            source, _ = self._table_source(f, self._role(fid))
+            con = connect(read_paths=[f.path])
+            try:
+                read_table_file(f, source, con, "t")
+                lines, nxt = mlprofile.profile(con, "t", target, offset, limit)
+            finally:
+                con.close()
+        else:
+            outputs = s.last_run.outputs if s.last_run else ()
+            out = next((o for o in outputs if o.name == table), None)
+            if out is None:
+                known = ", ".join(o.name for o in outputs)
+                raise StateError(
+                    f"no file {table!r} and no output of the last run by that name; outputs: "
+                    f"{known or 'none (run_pipeline first)'}"
+                )
+            path = self._inside_out_dir(Path(out.path), f"output {table!r}")
+            read = "read_parquet" if out.format == "parquet" else "read_csv"
+            con = connect(read_paths=[path])
+            try:
+                con.execute(f"CREATE VIEW t AS SELECT * FROM {read}({sql_text(path.as_posix())})")
+                lines, nxt = mlprofile.profile(con, "t", target, offset, limit)
+            finally:
+                con.close()
+        return {"text": "\n".join(lines), "truncated": nxt is not None, "next_offset": nxt}
+
+    @_tool
+    def apply_ml_preprocessing(
+        self, data: str, name: str, format: Literal["parquet", "csv"] = "parquet"
+    ) -> dict:
+        """Prepare NEW rows the way the training rows were, with the numbers learned from train
+        (kept in the last run's preprocessing_metadata.json) and never learned again. `data` is
+        a registered CSV, Parquet or JSON file (F2) with the feature columns. Writes
+        `prepared/<name>.<format>` (replacing one of that name) and says rows in and out, rows a
+        `drop` rule removed and values not seen in train. It prepares data only, no scoring."""
+        s = self._state
+        if self.out_dir is None:
+            raise StateError("the host gave no out_dir; it cannot write outputs")
+        if not isinstance(name, str) or not re.fullmatch(_NAME_PATTERN, name) or len(name) > 48:
+            raise ValueError(f"name {name!r} must be a plain table name: letters, digits, _")
+        if format not in ("parquet", "csv"):
+            raise ValueError("format must be parquet or csv")
+        found = [
+            a
+            for a in (s.last_run.artifacts if s.last_run else ())
+            if a.endswith("preprocessing_metadata.json")
+        ]
+        if not found:
+            raise StateError(
+                "the last run wrote no preprocessing_metadata.json; run_pipeline a spec with an "
+                "ml section first"
+            )
+        mpath = self._inside_out_dir(Path(found[0]), "the metadata file")
+        text = mpath.read_text(encoding="utf-8")
+        fid, f = self._file(data)
+        if not isinstance(f, TableFile):
+            raise StateError(f"{fid} is a workbook: new data must be a CSV, Parquet or JSON file")
+        source, _ = self._table_source(f, self._role(fid))
+        target_dir = Path(self.out_dir) / "prepared"
+        target_dir.mkdir(parents=True, exist_ok=True)
+        con = connect(write_dir=target_dir, read_paths=[f.path])
+        try:
+            read_table_file(f, source, con, "__new_rows")
+            result = apply_preprocessing(con, "__new_rows", text, name)
+            if not result.ok:
+                message = "; ".join(result.problems)
+                if "is missing" in message:
+                    message += (
+                        ". A column the training data had is not in the new file: if it is known "
+                        "only after the outcome it should not be a feature; otherwise add it"
+                    )
+                raise StateError(message)
+            path = target_dir / f"{name}.{format}"
+            fmt = "PARQUET" if format == "parquet" else "CSV, HEADER"
+            con.execute(f"COPY {quote(name)} TO {sql_text(path.as_posix())} (FORMAT {fmt})")
+        finally:
+            con.close()
+        lines = [f"prepared {result.rows_out} of {result.rows_in} rows|prepared/{name}.{format}"]
+        lines += [f"warning: {w}" for w in result.warnings]
+        return {"ok": True, "text": "\n".join(lines)}
 
     @_tool
     def source_for_region(self, region_id: str, file_role: str = "") -> dict:

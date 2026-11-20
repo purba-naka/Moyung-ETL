@@ -22,6 +22,7 @@ def _run(rows, columns, *, target, features, ids=(), by=None, strategy="random",
         base="base",
         part="part",
         row="__rn",
+        columns=[c for c in by_name.values() if c.name != "__rn"],
         target=by_name[target],
         features=[by_name[f] for f in features],
         ids=[by_name[i] for i in ids],
@@ -90,7 +91,7 @@ def test_shared_ids_and_duplicate_rows_across_partitions_are_flagged():
         parts=lambda n: "train" if n in (0, 2) else "test",
     )
     assert any("same entity" in w and "2 row" in w for w in found)
-    assert any("duplicates" in w for w in found)
+    assert any("identical in every column" in w for w in found)
 
 
 def test_a_group_split_does_not_warn_about_spread_and_clean_data_is_quiet():
@@ -98,3 +99,35 @@ def test_a_group_split_does_not_warn_about_spread_and_clean_data_is_quiet():
     cols = [("x", "INTEGER"), ("z", "INTEGER"), ("y", "INTEGER")]
     found = _run(rows, cols, target="y", features=["x", "z"], strategy="group", by="x")
     assert not any("another partition" in w for w in found)
+
+
+def test_a_column_filled_only_for_one_outcome_is_flagged_by_its_emptiness():
+    rows = [
+        ("price" if i % 3 == 0 else None, i % 7, "yes" if i % 3 == 0 else "no") for i in range(60)
+    ]
+    found = _run(
+        rows,
+        [("reason", "VARCHAR"), ("z", "INTEGER"), ("y", "VARCHAR")],
+        target="y",
+        features=["reason", "z"],
+    )
+    assert any("are empty almost fixes" in w and "'reason'" in w for w in found)
+    assert not any("'z'" in w for w in found)
+
+
+def test_low_cardinality_data_and_empty_ids_are_not_flagged_as_duplicates_or_sharing():
+    rows = [(None, i % 5, i % 2) for i in range(200)]
+    found = _run(
+        rows,
+        [("e", "INTEGER"), ("x", "INTEGER"), ("y", "INTEGER")],
+        target="y",
+        features=["x"],
+        ids=["e"],
+    )
+    assert not any("share their ids" in w for w in found)
+
+
+def test_a_tiny_sample_does_not_claim_a_feature_determines_the_target():
+    rows = [(i % 3, i % 2) for i in range(8)]
+    found = _run(rows, [("a", "INTEGER"), ("y", "INTEGER")], target="y", features=["a"])
+    assert not any("determine" in w for w in found)

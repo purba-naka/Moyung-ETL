@@ -205,9 +205,9 @@ what a value not seen in train becomes: `ignore` (all zeros, or empty) or `error
 all zeros (`one_hot`); a `constant` fill that equals a category is that category. The mean and
 standard deviation include outliers: clean them with a `filter` step before `ml`. A date
 feature is not preprocessed: derive a number from it (`derive`) before `ml`. `drop` also
-removes the rows of new data: `apply_preprocessing` says how many. The numbers learned (fill values, mean, std, min, max, categories)
+removes the rows of new data: `apply_ml_preprocessing` says how many. The numbers learned (fill values, mean, std, min, max, categories)
 are in `preprocessing_metadata.json`: the same file prepares new data later
-(`apply_preprocessing`), so a model sees new rows exactly as it saw the training rows.
+(`apply_ml_preprocessing`), so a model sees new rows exactly as it saw the training rows.
 
 Choosing roles: `ids` are keys kept for tracing (an id left among the features leaks);
 `exclude` is for personal data, free-text notes and columns that would give the answer away;
@@ -219,11 +219,18 @@ seed, send the whole `ml` section in `edit_spec`.
 `random` and `stratified` (keeps the target's class balance) take no `by`; `time` (the newest
 rows go to test) and `group` (a group never spans two partitions) need `"by": "<column>"`.
 
-A run also warns about likely leaks: a feature that equals or fully determines the target,
+Before writing the section, `ml_candidates(table, target)` shows each column's empty and
+distinct counts with notes (constant, id-like, mostly empty) and how the target is spread;
+`table` is a CSV, Parquet or JSON file, or an output of the last run. After a run,
+`apply_ml_preprocessing(data, name)` prepares new rows with the numbers learned from train
+(from the last run's `preprocessing_metadata.json`) and writes `prepared/<name>.parquet`.
+
+A run also warns about likely leaks: a feature that equals or fully determines the target, a feature whose being empty tells
+the target (a cancel reason filled in only after the person left),
 a feature with a different value in almost every row (like an id), a date feature later than
 the target or the `time` column, and the same ids or the same feature and target values on
 both sides of the split. These are hints from the data, not proof: a quiet run does not mean
-the dataset is clean, and a warning can be a false alarm. Show them to the person.
+the dataset is clean, and a warning can be a false alarm. Show them to the person. A date left in `features` also warns: derive a number from it.
 
 ## Where an output goes in a database
 
