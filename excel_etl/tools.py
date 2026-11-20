@@ -36,7 +36,7 @@ from typing import Any, Literal
 from pydantic import ValidationError
 
 from excel_etl import mlprofile
-from excel_etl.engine import PipelineError, run, validate
+from excel_etl.engine import PipelineError, RunReport, run, sha256_file, validate
 from excel_etl.hitl import HitlError, answer, approve, ask_human, gate
 from excel_etl.inspect import encode, tables
 from excel_etl.knowledge import lookup_knowledge
@@ -589,6 +589,30 @@ class JobTools:
         fid, wb = self._book(file)
         return encode.propose_datasets(wb, fid, offset, limit)
 
+    def _abs(self, stored: str) -> Path:
+        """A path kept in the state (relative to the output folder) as a real path."""
+        if self.out_dir is None:
+            raise StateError("the host gave no out_dir; it cannot write outputs")
+        return Path(self.out_dir) / stored
+
+    def _portable(self, rep: RunReport) -> RunReport:
+        """`rep` with the paths of its outputs and artifacts relative to the output folder, so
+        the state names no folder of this host."""
+        base = Path(self.out_dir or ".").resolve()
+
+        def rel(path: str) -> str:
+            try:
+                return Path(path).resolve().relative_to(base).as_posix()
+            except ValueError:
+                return path
+
+        return rep.model_copy(
+            update={
+                "outputs": tuple(o.model_copy(update={"path": rel(o.path)}) for o in rep.outputs),
+                "artifacts": tuple(rel(a) for a in rep.artifacts),
+            }
+        )
+
     def _role(self, fid: str) -> str:
         return next((r for r, i in self._state.roles.items() if i == self._ref(fid).id), "<role>")
 
@@ -644,7 +668,7 @@ class JobTools:
                     f"no file {table!r} and no output of the last run by that name; outputs: "
                     f"{known or 'none (run_pipeline first)'}"
                 )
-            path = self._inside_out_dir(Path(out.path), f"output {table!r}")
+            path = self._inside_out_dir(self._abs(out.path), f"output {table!r}")
             read = "read_parquet" if out.format == "parquet" else "read_csv"
             con = connect(read_paths=[path])
             try:
@@ -680,7 +704,7 @@ class JobTools:
                 "the last run wrote no preprocessing_metadata.json; run_pipeline a spec with an "
                 "ml section first"
             )
-        mpath = self._inside_out_dir(Path(found[0]), "the metadata file")
+        mpath = self._inside_out_dir(self._abs(found[0]), "the metadata file")
         text = mpath.read_text(encoding="utf-8")
         fid, f = self._file(data)
         if not isinstance(f, TableFile):
@@ -917,16 +941,24 @@ class JobTools:
         target = Path(self.out_dir)
         if self.per_version:
             target = target / f"v{self._version()}"
-        rep = run(spec, files, target, hitl=s.hitl, ref=f"v{self._version()}")
+        rep = self._portable(run(spec, files, target, hitl=s.hitl, ref=f"v{self._version()}"))
         stamp = datetime.now(UTC).isoformat(timespec="seconds")
-        self.job.update(
-            lambda st: st.model_copy(
-                update={
-                    "last_run": rep,
-                    "runs": [*st.runs, rep.summary(stamp)][-MAX_RUNS:],
-                }
+
+        def record() -> None:
+            self.job.update(
+                lambda st: st.model_copy(
+                    update={
+                        "last_run": rep,
+                        "runs": [*st.runs, rep.summary(stamp)][-MAX_RUNS:],
+                    }
+                )
             )
-        )
+
+        try:
+            record()
+        except StateConflict:
+            self.job.reload()
+            record()
         text = rep.text(full=False)
         if self._state.binds and not (bound := rebind(spec, files, self._state.binds)).ok:
             text += (
@@ -1027,10 +1059,16 @@ class JobTools:
                 raise StateError(
                     f"file {role!r} changed since the last run; run_pipeline again first"
                 )
-        cols, _ = file_columns(stat.path)
+        produced = self._inside_out_dir(self._abs(stat.path), f"output {output!r}")
+        if stat.sha256 and sha256_file(produced) != stat.sha256:
+            raise StateError(
+                f"output {output!r} changed on disk since the last run; run_pipeline again "
+                "before planning the load"
+            )
+        cols, _ = file_columns(str(produced))
         found = tuple(_split_column(c) for c in existing_columns) or None
         plan = plan_load(
-            platform, output, stat.path, out.load.table, out.load.mode, out.load.keys, cols,
+            platform, output, str(produced), out.load.table, out.load.mode, out.load.keys, cols,
             Where(database=database, schema_name=schema, stage=stage), found,
         )  # fmt: skip
         planned = PlannedLoad(output=output, platform=plan.platform, table=out.load.table, ref=ref)
