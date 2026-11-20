@@ -219,6 +219,12 @@ seed, send the whole `ml` section in `edit_spec`.
 `random` and `stratified` (keeps the target's class balance) take no `by`; `time` (the newest
 rows go to test) and `group` (a group never spans two partitions) need `"by": "<column>"`.
 
+A run also warns about likely leaks: a feature that equals or fully determines the target,
+a feature with a different value in almost every row (like an id), a date feature later than
+the target or the `time` column, and the same ids or the same feature and target values on
+both sides of the split. These are hints from the data, not proof: a quiet run does not mean
+the dataset is clean, and a warning can be a false alarm. Show them to the person.
+
 ## Where an output goes in a database
 
 Only when the person wants the result in a warehouse; the `excel-etl-load` skill covers the

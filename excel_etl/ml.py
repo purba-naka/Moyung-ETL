@@ -29,6 +29,7 @@ from pydantic import (
     model_validator,
 )
 
+from excel_etl import leakage
 from excel_etl.nodes.base import (
     _NAME_PATTERN,
     NUMERIC_TYPE,
@@ -365,7 +366,18 @@ def split(
             return None, problems
         result.rows_in = total
         result.classes = classes
-        result.warnings = [*_warnings(ml, classes, distinct), *result.warnings]
+        found = leakage.check(
+            con,
+            base=_BASE,
+            part=_PART,
+            row=_ROW,
+            target=by_name[ml.target.casefold()],
+            features=[by_name[c.casefold()] for c in ml.features],
+            ids=[by_name[c.casefold()] for c in ml.ids],
+            by=by_name[ml.split.by.casefold()] if ml.split.by else None,
+            strategy=strategy,
+        )
+        result.warnings = [*_warnings(ml, classes, distinct), *found, *result.warnings]
         return result, []
     finally:
         con.execute(f"DROP TABLE IF EXISTS {_BASE}")
