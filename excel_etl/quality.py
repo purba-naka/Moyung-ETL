@@ -7,7 +7,8 @@ check of severity `error` fails the run before any file is written; `warn` is on
     not_null         no NULL in the columns
     unique           no two rows share the same values in the columns (NULL equals NULL here)
     range            numbers or dates within min / max (NULL is skipped: use not_null for that)
-    accepted_values  values (compared as text) are among a list
+    accepted_values  values are among a list (whole numbers compared exactly, other
+                     numbers as DOUBLE, everything else as text); NULL is skipped
     regex            text values contain a match of the pattern (RE2 syntax: no lookaround,
                      no backreferences; anchor with ^ and $ to check the whole value;
                      NULL does not match: pair with not_null)
@@ -17,8 +18,9 @@ check of severity `error` fails the run before any file is written; `warn` is on
     reconcile        an aggregate of one table equals that of another table, or a number,
                      optionally per group; tolerance absolute and/or relative
 
-ponytail: `accepted_values` compares text, so a DOUBLE 1.0 does not equal the value 1.
-`reconcile` handles one aggregate per check. Upgrade: typed comparison, a list of aggregates.
+ponytail: `reconcile` compares aggregates as DOUBLE (about 15 significant digits), so give
+an `abs_tol` for money or large totals; NaN and infinity on either side always fail. It handles
+one aggregate per check. Upgrade: exact decimal aggregates, a list of aggregates.
 """
 
 from __future__ import annotations
@@ -28,6 +30,7 @@ import re
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import date, datetime, time
+from decimal import Decimal, InvalidOperation
 from typing import Annotated, Any, Literal
 
 import duckdb
@@ -39,6 +42,8 @@ from excel_etl.nodes.sqlexpr import bind, check_expression
 _ORDERED = re.compile(r"^(DATE|TIME|TIMESTAMP.*)$")
 _TEMPORAL = re.compile(r"^(DATE|TIMESTAMP.*)$")
 _EXAMPLES = 5
+_INTEGER = re.compile(r"^U?(TINY|SMALL|BIG|HUGE)?INT(EGER)?$")
+_DECIMAL = re.compile(r"^DECIMAL\((\d+),\s*(\d+)\)$")
 
 type Scalar = str | int | float
 
@@ -70,6 +75,13 @@ class Range(_OnTable):
     column: str = Field(min_length=1)
     min: Scalar | None = None
     max: Scalar | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _no_boolean_bound(cls, data: Any) -> Any:
+        if isinstance(data, dict) and any(isinstance(data.get(k), bool) for k in ("min", "max")):
+            raise ValueError("min and max are numbers or dates, not true/false")
+        return data
 
     @model_validator(mode="after")
     def _some_bound(self) -> Range:
@@ -158,10 +170,10 @@ class Reconcile(_Base):
     kind: Literal["reconcile"]
     left: Side
     right: Side | None = None
-    value: float | None = None
+    value: float | None = Field(default=None, allow_inf_nan=False)
     by: list[str] = []
-    abs_tol: float = Field(default=0, ge=0)
-    rel_tol: float = Field(default=0, ge=0)
+    abs_tol: float = Field(default=0, ge=0, allow_inf_nan=False)
+    rel_tol: float = Field(default=0, ge=0, allow_inf_nan=False)
 
     @model_validator(mode="after")
     def _shape(self) -> Reconcile:
@@ -272,6 +284,27 @@ def _plan_unique(c: Unique, schemas: dict[str, Schema]) -> _Plan:
     return _Plan(sql, [], judge)
 
 
+def _exact_bound(kind: str, bound: Scalar) -> tuple[str, str] | None:
+    """The SQL type and text to compare a whole-number or decimal column with `bound` without
+    rounding through DOUBLE, or None when DOUBLE is the only sensible way."""
+    try:
+        number = Decimal(str(bound).strip())
+    except InvalidOperation:
+        return None
+    if not number.is_finite():
+        return None
+    if _INTEGER.match(kind) and kind != "UHUGEINT":
+        if number != number.to_integral_value():
+            return None
+        return "HUGEINT", str(int(number))
+    if m := _DECIMAL.match(kind):
+        width, scale = int(m[1]), int(m[2])
+        places = max(0, -int(number.as_tuple().exponent))
+        if places <= scale and number.adjusted() + 1 <= width - scale:
+            return f"DECIMAL({width},{scale})", format(number, "f")
+    return None
+
+
 def _check_bound(bound: Scalar, kind: str, col: str) -> None:
     """A bound that cannot be read as the column's kind is a spec error, not a run failure."""
     if NUMERIC_TYPE.match(kind):
@@ -303,9 +336,20 @@ def _plan_range(c: Range, schemas: dict[str, Schema]) -> _Plan:
     for sign, bound in (("<", c.min), (">", c.max)):
         if bound is not None:
             _check_bound(bound, kind, col)
-            bad.append(f"{q} {sign} CAST(? AS {'DOUBLE' if NUMERIC_TYPE.match(kind) else kind})")
-            params.append(str(bound))
+            exact = _exact_bound(kind, bound) if NUMERIC_TYPE.match(kind) else None
+            if exact is not None:
+                sql_type, text = exact
+                side = f"CAST({q} AS HUGEINT)" if sql_type == "HUGEINT" else q
+                bad.append(f"{side} {sign} CAST(? AS {sql_type})")
+                params.append(text)
+            else:
+                bad.append(
+                    f"{q} {sign} CAST(? AS {'DOUBLE' if NUMERIC_TYPE.match(kind) else kind})"
+                )
+                params.append(str(bound))
             bounds.append(f"{'min' if sign == '<' else 'max'} {bound}")
+    if kind in ("FLOAT", "DOUBLE"):
+        bad.append(f"isnan({q})")
     cond = " OR ".join(bad)
     sql = (
         f"SELECT count(*) FILTER (WHERE {cond}), min({q}) FILTER (WHERE {cond}), "
@@ -328,8 +372,14 @@ def _plan_accepted(c: AcceptedValues, schemas: dict[str, Schema]) -> _Plan:
         bad = [v for v in c.values if isinstance(v, bool) or not _is_number(v)]
         if bad:
             raise _Bad(f"{col!r} is {kind}; accepted_values must be numbers, got {bad[0]!r}")
-        want: list[Any] = [float(v) for v in c.values]
-        cond = f"CAST({q} AS DOUBLE) NOT IN ({marks})"
+        if _INTEGER.match(kind) and kind != "UHUGEINT":
+            whole = [Decimal(str(v)) for v in c.values]
+            want: list[Any] = [str(int(d)) for d in whole if d == d.to_integral_value()]
+            marks = ", ".join("CAST(? AS HUGEINT)" for _ in want)
+            cond = f"CAST({q} AS HUGEINT) NOT IN ({marks})" if want else f"{q} IS NOT NULL"
+        else:
+            want = [float(v) for v in c.values]
+            cond = f"CAST({q} AS DOUBLE) NOT IN ({marks})"
     else:
         want = [str(v).lower() if isinstance(v, bool) else str(v) for v in c.values]
         cond = f"CAST({q} AS VARCHAR) NOT IN ({marks})"
@@ -483,7 +533,9 @@ def _plan_reconcile(c: Reconcile, schemas: dict[str, Schema]) -> _Plan:
         params.append(c.value)
     sql = f"SELECT {ks}{lv} AS lv, {rv} AS rv FROM {body}"
     bad = (
-        "(lv IS NULL) <> (rv IS NULL) OR abs(lv - rv) > greatest(?, ? * greatest(abs(lv), abs(rv)))"
+        "(lv IS NULL) <> (rv IS NULL) "
+        "OR (lv IS NOT NULL AND NOT isfinite(lv)) OR (rv IS NOT NULL AND NOT isfinite(rv)) "
+        "OR abs(lv - rv) > greatest(?, ? * greatest(abs(lv), abs(rv)))"
     )
     sql = f"SELECT * FROM ({sql}) WHERE {bad} ORDER BY 1"
     params += [c.abs_tol, c.rel_tol]

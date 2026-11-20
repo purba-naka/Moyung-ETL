@@ -60,9 +60,14 @@ _DENIED_FUNCTIONS = frozenset(
         "random", "uuid", "gen_random_uuid", "uuidv4", "uuidv7", "now", "current_timestamp",
         "current_date", "current_time", "today", "get_current_timestamp",
         "get_current_time", "localtime", "localtimestamp", "transaction_timestamp",
-        "statement_timestamp",
+        "statement_timestamp", "current_localtime", "current_localtimestamp",
+        "unnest", "unlist", "generate_subscripts", "format", "printf", "bar",
     }
 )  # fmt: skip
+
+_CLOCK_NAMES = frozenset(
+    {"current_date", "current_time", "current_timestamp", "localtime", "localtimestamp"}
+)
 
 
 def _fail(expr: str, why: str) -> NodeError:
@@ -87,6 +92,14 @@ def _walk(node: Any, expr: str) -> None:
                 "use the window node" if cls == "WINDOW" else "use plain column and function calls"
             )
             raise _fail(expr, f"{what} is not allowed; {use}")
+        if cls == "COLUMN_REF":
+            names = [str(n).lower() for n in node.get("column_names") or []]
+            if len(names) == 1 and names[0] in _CLOCK_NAMES:
+                raise _fail(
+                    expr,
+                    f"{names[0]} reads the clock, so the output would change from run to run; "
+                    "give the date as a constant or a column",
+                )
         if cls == "FUNCTION":
             name = str(node.get("function_name", "")).lower()
             if name in _DENIED_FUNCTIONS:
@@ -131,6 +144,18 @@ def _parse(expr: str, wrap: bool = True) -> dict:
 
 
 def check_expression(expr: str) -> str:
+    """Return `expr` (stripped) if it is one allowed scalar expression, else raise NodeError.
+
+    Column names that do not exist are not found here: that needs the input schema, and
+    happens when the node's `infer_schema` binds the expression.
+    """
+    try:
+        return _check_expression(expr)
+    except RecursionError:
+        raise NodeError("expression is nested too deeply to read") from None
+
+
+def _check_expression(expr: str) -> str:
     """Return `expr` (stripped) if it is one allowed scalar expression, else raise NodeError.
 
     Column names that do not exist are not found here: that needs the input schema, and

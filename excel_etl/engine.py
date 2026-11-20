@@ -4,8 +4,8 @@ Both go through `_load_sources` and `_run_steps`, one pass, so they cannot disag
 stops short of running the steps, nothing more. A problem in one step does not hide problems
 in steps that do not depend on it; the report lists them all.
 
-ponytail: no memory or row limit on a run (a many-to-many join can be large); duckdb's own
-default (80% of RAM) applies. Upgrade: a `memory_limit` argument passed to `connect`.
+ponytail: a run has a memory limit (`connect`, 4GB) but no row limit (a many-to-many join can
+be large). Upgrade: a row cap per step, a `memory_limit` argument on `run`.
 """
 
 from __future__ import annotations
