@@ -24,7 +24,7 @@ from pydantic import BaseModel, ConfigDict
 
 from excel_etl.hitl import HitlState, gate
 from excel_etl.inspect.regions import TOTAL_LABEL
-from excel_etl.ml import ARTIFACT_NOTES, MlResult, artifacts, check_columns
+from excel_etl.ml import ARTIFACT_FILES, ARTIFACT_NOTES, MlResult, artifacts, check_columns
 from excel_etl.ml import split as ml_split
 from excel_etl.nodes import Column, NodeError, Schema, build, infer, quote, schema_of
 from excel_etl.nodes.base import check_arity, connect, sql_text
@@ -116,6 +116,7 @@ class RunSummary(_Report):
     nodes: tuple[NodeRows, ...] = ()
     outputs: tuple[OutputStat, ...] = ()
     drift: str = ""
+    blocked: tuple[str, ...] = ()
 
 
 _SUMMARY_NODES = 100
@@ -243,6 +244,7 @@ class RunReport(_Report):
                 for n in self.nodes[:_SUMMARY_NODES]
             ),
             outputs=self.outputs,
+            blocked=tuple(self.blocked),
         )
 
     def text(self, full: bool = True) -> str:
@@ -270,6 +272,12 @@ class RunReport(_Report):
             f"  NOT written: output {name!r}, blocked by failed check(s) {', '.join(why)}"
             for name, why in self.blocked.items()
         ]
+        if self.blocked:
+            lines.append(
+                f"  partial: {len(self.outputs)} output(s) written, {len(self.blocked)} held "
+                "back; fix the data or the check and run again, or ask the person whether "
+                "the written outputs may be used"
+            )
         lines += [
             f"  wrote {a}|artifact: {ARTIFACT_NOTES.get(Path(a).name, '')}" for a in self.artifacts
         ]
@@ -729,6 +737,39 @@ def _blocked_outputs(spec: PipelineSpec, failed: dict[str, str]) -> dict[str, tu
     return {k: tuple(v) for k, v in out.items()}
 
 
+def _ml_held(spec: PipelineSpec, failed: dict[str, str]) -> bool:
+    """A failed check reads a table the ml partitions are built from."""
+    if spec.ml is None:
+        return False
+    up = _upstream(spec, next(iter(spec.ml.tables().values())))
+    return any(up.intersection(tables_of(spec.checks[c])) for c in failed)
+
+
+def _remove_stale(
+    spec: PipelineSpec,
+    out_path: Path,
+    blocked: dict[str, tuple[str, ...]],
+    ml_held: bool,
+    st: _State,
+) -> None:
+    """Delete what an earlier run wrote for an output held back now, so no old file is read
+    as this run's result."""
+    names = [f"{n}.{spec.outputs[n].format}" for n in blocked]
+    if ml_held:
+        names += list(ARTIFACT_FILES)
+    gone = []
+    for name in names:
+        path = out_path / name
+        try:
+            if path.is_file():
+                path.unlink()
+                gone.append(name)
+        except OSError as e:
+            st.warnings.append(f"could not remove the old {name}: {e}; do not use it")
+    if gone:
+        st.warnings.append(f"removed the files of an earlier run: {', '.join(gone)}")
+
+
 def _publish(parts: list[tuple[Path, Path]], st: _State) -> None:
     """Move each temporary file to its final name; on a failure, say which files are new."""
     for n, (tmp, final) in enumerate(parts):
@@ -783,7 +824,11 @@ def run(
     """Run a spec: read the sources, run the steps in order, write each output to
     `out_dir/<output name>.<format>`. Files are written under a temporary name and moved into
     place only when every step and every output succeeded, so a failed run leaves no
-    half-written file. A failed run returns status "failed" with the issues; it raises
+    half-written file. A failed `error` check holds back only the outputs built from a table
+    it reads: the others are written and the status is "partial", and the held back output's
+    file from an earlier run is removed. When a check holds back every output, or reads a
+    table no output is built from, the run is "failed". A failed run returns status "failed"
+    with the issues; it raises
     PipelineError only when it cannot start (bad `out_dir`, `files`, or a checkpoint that
     needs a person's approval). With `hitl` the checkpoints `after_propose_datasets` and
     `after_spec` are checked first; `ref` names what is being run (e.g. a spec version) so an
@@ -846,21 +891,19 @@ def run(
                 for cname, why in st.failed_checks.items():
                     st.issue(f"checks.{cname}", why)
                 blocked = {}
-            else:
-                st.warnings.append(
-                    "some outputs were not written because a check failed; the other outputs were"
-                )
+        ml_held = blocked and _ml_held(spec, st.failed_checks)
         if not st.issues:
             _write_outputs(spec, con, out_path, st, parts, outputs, frozenset(blocked))
-        if not st.issues and blocked:
-            if spec.ml is not None:
-                st.warnings.append("the ml artifacts were not written: a check failed")
+        if not st.issues and ml_held:
+            st.warnings.append("the ml artifacts were not written: a check on the ml data failed")
         elif not st.issues:
             written = _write_artifacts(spec, ml_result, st, out_path, parts)
         if not st.issues:
             _publish(parts, st)
+        if not st.issues and blocked:
+            _remove_stale(spec, out_path, blocked, bool(ml_held), st)
         if not st.issues:
-            checked = verify(spec, con)
+            checked = verify(spec, con, skip=set(blocked))
     finally:
         con.close()
         for tmp, _ in parts:

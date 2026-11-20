@@ -121,9 +121,19 @@ def _sources_behind(spec: PipelineSpec, name: str) -> set[str]:
     return seen & set(spec.sources)
 
 
-def verify(spec: PipelineSpec, con: duckdb.DuckDBPyConnection) -> VerifyReport:
-    """Compare the source tables and output tables still held in `con` after a run."""
-    outs = {o.input for o in spec.outputs.values()}
+def verify(
+    spec: PipelineSpec, con: duckdb.DuckDBPyConnection, skip: set[str] | None = None
+) -> VerifyReport:
+    """Compare the source tables and output tables still held in `con` after a run. Outputs
+    named in `skip` were held back: a column only they keep is listed as excluded, not lost."""
+    skip = skip or set()
+    outs = {o.input for n, o in spec.outputs.items() if n not in skip}
+    held = {
+        c.casefold()
+        for n, o in spec.outputs.items()
+        if n in skip and o.input not in outs
+        for c, _ in _columns(con, o.input)
+    }
     out_cols = {t: _columns(con, t) for t in outs}
     names = {c.casefold() for cols in out_cols.values() for c, _ in cols}
     out_sums = [
@@ -150,6 +160,10 @@ def verify(spec: PipelineSpec, con: duckdb.DuckDBPyConnection) -> VerifyReport:
             leaf = c.rsplit("|", 1)[-1].strip().casefold()
             if c.casefold() in reasons:
                 excluded.append(f"{src}.{c}: {reasons[c.casefold()]}")
+            elif names.isdisjoint((c.casefold(), leaf)) and not held.isdisjoint(
+                (c.casefold(), leaf)
+            ):
+                excluded.append(f"{src}.{c}: only in an output held back by a failed check")
             elif c.casefold() not in names and leaf not in names:
                 if any(_close(total, s) for s in out_sums):
                     continue

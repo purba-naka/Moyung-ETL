@@ -109,9 +109,7 @@ class PlannedLoad(_Model):
 
 
 class JobState(_Model):
-    """A job's saved state. `schema_version` is the layout of this JSON: a state written by a
-    newer library is refused instead of being read wrongly (`extra="forbid"` would only fail
-    on a field it does not know, not on one that changed meaning)."""
+    """A job's saved state. A state with a newer `schema_version` is refused."""
 
     schema_version: int = Field(default=STATE_SCHEMA, ge=1)
     job_id: str
