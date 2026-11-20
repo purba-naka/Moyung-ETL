@@ -18,9 +18,11 @@ check of severity `error` fails the run before any file is written; `warn` is on
     reconcile        an aggregate of one table equals that of another table, or a number,
                      optionally per group; tolerance absolute and/or relative
 
-ponytail: `reconcile` compares aggregates as DOUBLE (about 15 significant digits), so give
-an `abs_tol` for money or large totals; NaN and infinity on either side always fail. It handles
-one aggregate per check. Upgrade: exact decimal aggregates, a list of aggregates.
+ponytail: `reconcile` compares aggregates as DOUBLE (about 15 significant digits). Without an
+explicit `rel_tol` a DOUBLE/FLOAT column gets 1e-9 (summing millions of floats differs in the
+last digits); other columns stay exact. Give an `abs_tol` for money or large totals. NaN and
+infinity on either side always fail. It handles one aggregate per check. Upgrade: exact decimal
+aggregates, a list of aggregates.
 """
 
 from __future__ import annotations
@@ -179,7 +181,7 @@ class Reconcile(_Base):
     value: float | None = Field(default=None, allow_inf_nan=False)
     by: list[str] = []
     abs_tol: float = Field(default=0, ge=0, allow_inf_nan=False)
-    rel_tol: float = Field(default=0, ge=0, allow_inf_nan=False)
+    rel_tol: float | None = Field(default=None, ge=0, allow_inf_nan=False)
 
     @model_validator(mode="after")
     def _shape(self) -> Reconcile:
@@ -534,6 +536,23 @@ def _side_sql(schemas: dict[str, Schema], side: Side, by: list[str]) -> tuple[st
     return sql, keys, label
 
 
+_FLOAT_REL_TOL = 1e-9
+_FLOAT_TYPE = re.compile(r"^(DOUBLE|FLOAT|REAL)$", re.I)
+
+
+def _rel_tol(c: Reconcile, schemas: dict[str, Schema]) -> float:
+    if c.rel_tol is not None:
+        return c.rel_tol
+    for side in (c.left, c.right):
+        if (
+            side is not None
+            and side.column
+            and _FLOAT_TYPE.match(_type(schemas, side.table, side.column))
+        ):
+            return _FLOAT_REL_TOL
+    return 0.0
+
+
 def _plan_reconcile(c: Reconcile, schemas: dict[str, Schema]) -> _Plan:
     lsql, _, llabel = _side_sql(schemas, c.left, c.by)
     params: list[Any] = []
@@ -557,8 +576,9 @@ def _plan_reconcile(c: Reconcile, schemas: dict[str, Schema]) -> _Plan:
         "OR abs(lv - rv) > greatest(?, ? * greatest(abs(lv), abs(rv)))"
     )
     sql = f"SELECT * FROM ({sql}) WHERE {bad} ORDER BY 1"
-    params += [c.abs_tol, c.rel_tol]
-    tol = f"tolerance abs {c.abs_tol:g}, rel {c.rel_tol:g}"
+    rel_tol = _rel_tol(c, schemas)
+    params += [c.abs_tol, rel_tol]
+    tol = f"tolerance abs {c.abs_tol:g}, rel {rel_tol:g}"
 
     def judge(rows: list[tuple]) -> tuple[int, str]:
         if not rows:

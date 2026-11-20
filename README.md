@@ -18,6 +18,13 @@ kept inside, no agent framework imported. Repository `Moyung-ETL`, package `exce
 5. **Load** (plan only): SQL steps to load an output into Snowflake, Databricks or BigQuery.
    The host runs them with its own login.
 
+A check that fails does not always stop everything. It blocks only the outputs whose lineage
+(steps, and `ml` tables through `ml.input`) includes the checked table; the other outputs are
+written and the run status is `partial` (`RunReport.blocked`). Files of held-back outputs from
+earlier runs are deleted, and `plan_load` names the blocking check and asks for `after_run`
+approval before loading an output written by a partial run. A failed check outside every output's
+lineage, or one that blocks all outputs, gives status `failed`.
+
 A person stays in the loop: the agent asks questions and waits for approvals it cannot give itself.
 
 ## Tools
@@ -32,6 +39,14 @@ A person stays in the loop: the agent asks questions and waits for approvals it 
 
 A result is `{"text": ...}` (with `truncated`/`next_offset` when paged) or `{"error": ...}` saying
 what to change. A store conflict returns `conflict: true`: call `reload_job` and repeat.
+
+## Install
+
+```
+pip install "git+https://github.com/purba-naka/Moyung-ETL.git"
+```
+
+Python 3.12+. The MCP server needs the `mcp` extra (`pip install ".[mcp]"`).
 
 ## Integrate with an agent
 
@@ -163,6 +178,19 @@ Integer types narrower than 64 bits read as BIGINT and FLOAT as DOUBLE. UTF-8 te
 `filter` and `derive` take one scalar duckdb expression (no subqueries, aggregates or file
 access). `node_catalog` gives each step's exact fields and examples.
 
+## Run without an agent
+
+Once a spec is saved, a new file of the same shape needs no agent: every spec in a directory is
+tried with `rebind`, and the first whose sources are all found is run. If none fits, nothing is
+written and the report names the closest spec.
+
+```
+python -m excel_etl.auto <file.xlsx> <specs_dir> <out_dir>
+```
+
+`excel_etl.synth` can also draft a spec from the output table a person describes, without an
+LLM; the result is an ordinary spec that stays editable.
+
 ## Load into a warehouse
 
 ```json
@@ -196,6 +224,6 @@ Nothing below is a dependency. Runtime deps: `python-calamine`, `openpyxl`, `duc
 ## Checks before relying on it
 
 ```
-uv run ruff check . && uv run ruff format --check .
-uv run pytest -q
+python -m ruff check . && python -m ruff format --check .
+python -m pytest -q
 ```

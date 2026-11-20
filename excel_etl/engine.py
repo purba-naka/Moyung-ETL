@@ -770,6 +770,24 @@ def _remove_stale(
         st.warnings.append(f"removed the files of an earlier run: {', '.join(gone)}")
 
 
+def _warn_old_files(spec: PipelineSpec, out_path: Path, st: _State) -> None:
+    """A failed run writes nothing, so whatever stands in the out_dir belongs to an earlier run.
+    Name those files: without this the out_dir of a failed run reads like a fresh result."""
+    names = [
+        name
+        for n, out in spec.outputs.items()
+        if (out_path / (name := f"{n}.{out.format}")).is_file()
+    ]
+    names += [a for a in ARTIFACT_FILES if (out_path / a).is_file()]
+    if names:
+        one = len(names) == 1
+        st.warnings.append(
+            f"nothing was written, so {', '.join(names)} in the out_dir "
+            f"{'is' if one else 'are'} from an earlier run, not this one; do not read "
+            f"{'it' if one else 'them'} as this run's result"
+        )
+
+
 def _publish(parts: list[tuple[Path, Path]], st: _State) -> None:
     """Move each temporary file to its final name; on a failure, say which files are new."""
     for n, (tmp, final) in enumerate(parts):
@@ -910,6 +928,8 @@ def run(
             if not tmp.is_dir():
                 tmp.unlink(missing_ok=True)
     failed = bool(st.issues)
+    if failed:
+        _warn_old_files(spec, out_path, st)
     return RunReport(
         status="failed" if failed else ("partial" if blocked else "ok"),
         blocked={} if failed else blocked,

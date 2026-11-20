@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import duckdb
 import pytest
@@ -247,7 +248,7 @@ def test_a_split_that_leaves_a_partition_empty_is_an_issue(tmp_path):
 
 def test_the_run_writes_three_deterministic_artifacts(data, tmp_path):
     rep = run(_spec(), {"c": data}, tmp_path / "out")
-    names = sorted(a.rsplit("\\", 1)[-1] for a in rep.artifacts)
+    names = sorted(Path(a).name for a in rep.artifacts)
     assert names == [
         "feature_schema.json",
         "preparation_report.json",

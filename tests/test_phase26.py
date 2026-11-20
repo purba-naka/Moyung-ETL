@@ -200,3 +200,23 @@ def test_a_check_no_output_reads_fails_the_run(files, tmp_path):
         )
     )
     assert run(spec, files, tmp_path / "out").status == "failed"
+
+
+def test_a_failed_run_names_the_files_an_earlier_run_left(files, tmp_path):
+    out = tmp_path / "out"
+    assert run(_spec({}), files, out).status == "ok"
+    files["a"].unlink()
+    rep = run(_spec({}), files, out)
+    assert rep.status == "failed" and rep.outputs == ()
+    assert (out / "out_a.parquet").exists()
+    assert any(
+        "out_a.parquet, out_b.parquet in the out_dir are from an earlier run" in w
+        for w in rep.warnings
+    )
+
+
+def test_a_first_failed_run_has_nothing_to_warn_about(files, tmp_path):
+    files["a"].unlink()
+    rep = run(_spec({}), files, tmp_path / "out")
+    assert rep.status == "failed"
+    assert not any("earlier run" in w for w in rep.warnings)

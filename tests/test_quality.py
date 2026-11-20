@@ -819,3 +819,22 @@ def test_range_with_min_above_max_is_refused_in_the_spec():
     with pytest.raises(ValidationError, match="min 5 is above max 1"):
         chk(kind="range", table="t", column="x", min=5, max=1)
     chk(kind="range", table="t", column="d", min="2026-01-01", max="2026-12-31")
+
+
+def test_reconcile_float_columns_default_to_a_tiny_relative_tolerance():
+    con, sc = world(
+        a="CREATE TABLE a AS SELECT 999679134.8953822::DOUBLE AS v",
+        b="CREATE TABLE b AS SELECT 999679134.8953830::DOUBLE AS v",
+    )
+    sides = {"left": {"table": "a", "column": "v"}, "right": {"table": "b", "column": "v"}}
+    assert one({"c": rec(**sides)}, con, sc)[0][0].passed
+    assert not one({"c": rec(**sides, rel_tol=0)}, con, sc)[0][0].passed
+
+
+def test_reconcile_integer_columns_stay_exact_by_default():
+    con, sc = world(
+        a="CREATE TABLE a AS SELECT 1000000000::BIGINT AS v",
+        b="CREATE TABLE b AS SELECT 1000000001::BIGINT AS v",
+    )
+    sides = {"left": {"table": "a", "column": "v"}, "right": {"table": "b", "column": "v"}}
+    assert not one({"c": rec(**sides)}, con, sc)[0][0].passed

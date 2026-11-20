@@ -50,6 +50,39 @@ setiap pekerjaan.
 -   **Integrasi agent:** MCP dan Agent Skills sebagai lapisan integrasi
     opsional; core library tidak bergantung pada framework agent.
 
+### Status implementasi (per 2026-11-20)
+
+Dokumen ini ditulis sebelum kode ada, jadi sebagian nama di dalamnya
+tidak dipakai. Yang berlaku di kode adalah nama di kolom kanan.
+
+| Di dokumen ini | Di kode |
+|---|---|
+| package `moyung/`, class `Moyung` | package `excel_etl/`, class `JobTools` di `excel_etl/tools.py` |
+| protocol `DataAsset` + adapter per sumber (§6, §16) | `Source` di `excel_etl/pipeline.py`; Excel di `workbook.py`, csv/parquet/json di `tablefile.py`. Tidak ada protocol terpisah |
+| tool `create_spec`, `get_lineage` (§17) | `save_spec`/`edit_spec`; lineage dibaca dari `last_run` dan `verify_run` |
+
+Status per fase §18. "sebagian" berarti inti jalan, sisanya ada di
+daftar di bawah tabel.
+
+| Fase | Status | Catatan |
+|---|---|---|
+| Phase 0 Stabilize Excel-first | selesai | spec tervalidasi, error terstruktur, `verify_run`, rebind file baru |
+| Phase 1 Data understanding | selesai | profiling, strategi sampling (`sample.py`), `relate_tables`, `build_context` |
+| Phase 2 Reliable pipeline engine | selesai | deteksi cycle di `pipeline.py`, severity `error`/`warn`, drift policy, run metadata. Check gagal memblokir hanya output yang terkait (status `partial`) |
+| Phase 3 Multi-source foundation | sebagian | csv, parquet, json, jsonl jalan sebagai source; database adapter belum |
+| Phase 4 ML data preparation | selesai | `ml.py`, `prep.py`, `leakage.py`, artefak preprocessing |
+
+Yang belum, dan sengaja ditunda:
+
+-   Database adapter: menunggu batas credential jelas.
+-   Cache per node dari fingerprint (§9.5): `spec_sha256` dan sha256 file
+    sudah dicatat untuk penelusuran, tetapi hasil node belum dipakai ulang.
+-   Pada sumber non-Excel, `sample_data`, `profile_region`, dan
+    `find_text` belum tersedia; `workbook_map` satu-satunya alat
+    discovery. `excel_etl/auto.py` juga masih Excel saja.
+-   Nama `excel-etl` akan janggal setelah multi-source matang. Ganti nama
+    = perubahan nama paket publik, jadi butuh keputusan terpisah.
+
 ------------------------------------------------------------------------
 
 ## 2. Posisi Produk dan Batas Tanggung Jawab
@@ -308,6 +341,11 @@ satu-satunya sumber kebenaran pipeline.
 ------------------------------------------------------------------------
 
 ## 6. DataAsset Abstraction
+
+> **Tidak diikuti.** Multi-source dikerjakan tanpa protocol ini: `Source`
+> di `excel_etl/pipeline.py` menyatakan sumber, pembacanya `workbook.py`
+> (Excel) dan `tablefile.py` (csv, parquet, json, jsonl). Bagian ini
+> disimpan sebagai alasan di balik pilihan itu, bukan sebagai rencana.
 
 ### 6.1 Mengapa diperlukan?
 
@@ -1090,6 +1128,10 @@ konfirmasi.
 
 ## 16. Usulan Struktur Package
 
+> **Tidak diikuti.** Paket nyata bernama `excel_etl/` dan lebih datar
+> daripada susunan di bawah ini: tanpa folder `assets/`, dan tanpa class
+> `Moyung`. Permukaan publiknya `excel_etl/tools.py`.
+
 Contoh struktur target yang modular, tetapi tetap sederhana:
 
 ``` text
@@ -1188,6 +1230,10 @@ tanggung jawab yang mulai membesar.
 ------------------------------------------------------------------------
 
 ## 17. Usulan Tool API untuk Agent
+
+> **Nama usulan, bukan nama final.** Daftar tool yang benar-benar ada
+> beserta kelompoknya ada di `README.md`; sumbernya `JobTools` di
+> `excel_etl/tools.py`.
 
 Pertahankan tool yang sudah ada bila fungsinya masih relevan.
 Pengembangan berikut dapat memperjelas urutan kerja agent.
