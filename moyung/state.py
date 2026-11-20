@@ -48,8 +48,9 @@ from moyung.workbook import Workbook
 _JOB_ID = re.compile(r"[a-z0-9](?:[a-z0-9_.-]{0,98}[a-z0-9_-])?")
 _SHA = re.compile(r"[0-9a-f]{64}")
 _MAX_FILES = 50
+_MAX_CONNECTIONS = 20
 MAX_RUNS = 20
-STATE_SCHEMA = 1
+STATE_SCHEMA = 2
 _LOCK_WAIT = 5.0
 _STALE = 30.0
 
@@ -86,6 +87,26 @@ class FileRef(_Model):
         return self
 
 
+type Dialect = Literal["postgres"]
+
+
+class ConnRef(_Model):
+    """A database the host lets this job read. It holds no credential and no address: the host
+    keeps those and hands over a live connection for `id`, the way it hands over a file.
+
+    There is no hash to pin a database to, so a source that reads one is written to a parquet
+    snapshot whose hash is recorded instead (see `moyung/pipeline.py`).
+
+    `allow_sql` is the host's decision, never the spec's, because the agent writes the spec and
+    would otherwise grant itself the right to send its own SQL.
+    """
+
+    id: str = Field(min_length=1, max_length=200)
+    label: str = Field(min_length=1, max_length=300)
+    dialect: Dialect
+    allow_sql: bool = False
+
+
 class LoadRecord(_Model):
     """What the host reports after it ran a load plan. The library never loads anything."""
 
@@ -116,6 +137,8 @@ class JobState(_Model):
     version: int = Field(default=0, ge=0)
     files: list[FileRef] = Field(default=[], max_length=_MAX_FILES)
     roles: dict[str, str] = {}
+    connections: list[ConnRef] = Field(default=[], max_length=_MAX_CONNECTIONS)
+    conn_roles: dict[str, str] = {}
     knowledge: Knowledge = Field(default_factory=Knowledge)
     hitl: HitlState = Field(default_factory=HitlState)
     history: SpecHistory | None = None
@@ -143,7 +166,26 @@ class JobState(_Model):
         for role, fid in self.roles.items():
             if fid not in ids:
                 raise ValueError(f"role {role!r} points to file {fid!r}, which is not in files")
+        conn_ids = [c.id for c in self.connections]
+        if len(set(conn_ids)) != len(conn_ids):
+            raise ValueError("two connections have the same id")
+        for role, cid in self.conn_roles.items():
+            if cid not in conn_ids:
+                raise ValueError(
+                    f"connection_role {role!r} points to connection {cid!r}, "
+                    "which is not in connections"
+                )
         return self
+
+    @model_serializer(mode="wrap")
+    def _omit_empty_connections(self, handler: Any) -> dict[str, Any]:
+        """A job with no database reads like a job saved before databases existed, so its JSON
+        stays as small and as easy to diff as it was."""
+        data = handler(self)
+        for key in ("connections", "conn_roles"):
+            if not data.get(key):
+                data.pop(key, None)
+        return data
 
 
 def new_state(job_id: str) -> JobState:
@@ -175,6 +217,30 @@ def add_file(
         files.append(ref)
     roles = {**state.roles, **({role: file_id} if role else {})}
     return state.model_copy(update={"files": files, "roles": roles})
+
+
+def add_connection(
+    state: JobState,
+    conn_id: str,
+    label: str,
+    dialect: Dialect = "postgres",
+    role: str | None = None,
+    allow_sql: bool = False,
+) -> JobState:
+    """Register a database, or replace the one with this id. `role` maps the spec's
+    `connection_role` to it.
+    """
+    if role is not None and not isinstance(role, str):
+        raise StateError(f"role must be text, got {type(role).__name__}")
+    try:
+        ref = ConnRef(id=conn_id, label=label, dialect=dialect, allow_sql=allow_sql)
+    except ValidationError as e:
+        raise StateError(describe(e, "connection")) from None
+    conns = [ref if c.id == conn_id else c for c in state.connections]
+    if all(c.id != conn_id for c in state.connections):
+        conns.append(ref)
+    roles = {**state.conn_roles, **({role: conn_id} if role else {})}
+    return state.model_copy(update={"connections": conns, "conn_roles": roles})
 
 
 class StateStore(Protocol):
@@ -362,6 +428,48 @@ class Job:
 class FileProvider(Protocol):
     def open(self, file_id: str) -> str | os.PathLike[str] | bytes:
         """The file as a path or its bytes."""
+
+
+class ConnectionProvider(Protocol):
+    def open(self, conn_id: str) -> Any:
+        """A live DB-API 2.0 connection the library may read from. The host owns it: it holds
+        the credential, decides whether the account is read-only, and closes it."""
+
+
+def open_connection(ref: ConnRef, provider: ConnectionProvider, role: str | None = None) -> Any:
+    """Ask the host's provider for one registered database. Whatever the provider raises is the
+    host's problem and comes back as a StateError, not a bug."""
+    label = f"connection {ref.label!r}" + (f" (role {role!r})" if role else "")
+    try:
+        con = provider.open(ref.id)
+    except Exception as e:
+        raise StateError(f"{label} cannot be opened: {e}") from None
+    if not hasattr(con, "cursor"):
+        raise StateError(
+            f"{label} is not a DB-API connection: it has no cursor(). "
+            f"Give the connection object of a driver such as psycopg, not {type(con).__name__}"
+        )
+    return con
+
+
+def probe_connection(ref: ConnRef, provider: ConnectionProvider) -> None:
+    """Prove a database answers before it is registered, so a broken connection is found now
+    and not in the middle of a run. Mirrors `add_file`, which opens the file to hash it."""
+    con = open_connection(ref, provider)
+    try:
+        cur = con.cursor()
+        try:
+            cur.execute("SELECT 1")
+            cur.fetchone()
+        finally:
+            with contextlib.suppress(Exception):
+                cur.close()
+    except StateError:
+        raise
+    except Exception as e:
+        raise StateError(
+            f"connection {ref.label!r} opened but did not answer 'SELECT 1': {e}"
+        ) from None
 
 
 def read_file(
