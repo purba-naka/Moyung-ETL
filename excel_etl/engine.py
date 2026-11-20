@@ -4,8 +4,9 @@ Both go through `_load_sources` and `_run_steps`, one pass, so they cannot disag
 stops short of running the steps, nothing more. A problem in one step does not hide problems
 in steps that do not depend on it; the report lists them all.
 
-ponytail: a run has a memory limit (`connect`, 4GB) but no row limit (a many-to-many join can
-be large). Upgrade: a row cap per step, a `memory_limit` argument on `run`.
+ponytail: a run has a memory limit (`connect`, 4GB) that bounds tables and joins but not the
+vectors of one scalar expression (the deny list in `sqlexpr` covers those), and no row limit.
+Upgrade: run in a process with an OS memory cap, a row cap per step.
 """
 
 from __future__ import annotations
@@ -111,8 +112,10 @@ class RunSummary(_Report):
     spec_sha256: str = ""
     engine_version: str = ""
     files: dict[str, str] = {}
+    names: dict[str, str] = {}
     nodes: tuple[NodeRows, ...] = ()
     outputs: tuple[OutputStat, ...] = ()
+    drift: str = ""
 
 
 _SUMMARY_NODES = 100

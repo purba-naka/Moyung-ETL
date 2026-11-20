@@ -36,14 +36,20 @@ from typing import Annotated, Any, Literal
 import duckdb
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from excel_etl.nodes.base import NUMERIC_TYPE, NodeError, Schema, quote
+from excel_etl.nodes.base import (
+    DECIMAL_TYPE,
+    INTEGER_TYPE,
+    NUMERIC_TYPE,
+    NodeError,
+    Schema,
+    quote,
+)
 from excel_etl.nodes.sqlexpr import bind, check_expression
 
 _ORDERED = re.compile(r"^(DATE|TIME|TIMESTAMP.*)$")
 _TEMPORAL = re.compile(r"^(DATE|TIMESTAMP.*)$")
 _EXAMPLES = 5
-_INTEGER = re.compile(r"^U?(TINY|SMALL|BIG|HUGE)?INT(EGER)?$")
-_DECIMAL = re.compile(r"^DECIMAL\((\d+),\s*(\d+)\)$")
+_HUGEINT_MAX = 2**127 - 1
 
 type Scalar = str | int | float
 
@@ -293,11 +299,13 @@ def _exact_bound(kind: str, bound: Scalar) -> tuple[str, str] | None:
         return None
     if not number.is_finite():
         return None
-    if _INTEGER.match(kind) and kind != "UHUGEINT":
-        if number != number.to_integral_value():
+    if kind == "FLOAT":
+        return "FLOAT", str(number)
+    if INTEGER_TYPE.match(kind) and kind != "UHUGEINT":
+        if number != number.to_integral_value() or abs(int(number)) > _HUGEINT_MAX:
             return None
         return "HUGEINT", str(int(number))
-    if m := _DECIMAL.match(kind):
+    if m := DECIMAL_TYPE.match(kind):
         width, scale = int(m[1]), int(m[2])
         places = max(0, -int(number.as_tuple().exponent))
         if places <= scale and number.adjusted() + 1 <= width - scale:
@@ -363,6 +371,15 @@ def _plan_range(c: Range, schemas: dict[str, Schema]) -> _Plan:
     return _Plan(sql, params * 3, judge)
 
 
+def _is_exact_kind(kind: str) -> bool:
+    """Columns whose values are compared without DOUBLE: whole numbers, decimals, FLOAT."""
+    return bool(
+        (INTEGER_TYPE.match(kind) and kind != "UHUGEINT")
+        or DECIMAL_TYPE.match(kind)
+        or kind == "FLOAT"
+    )
+
+
 def _plan_accepted(c: AcceptedValues, schemas: dict[str, Schema]) -> _Plan:
     (col,) = _cols(schemas, c.table, [c.column])
     q = quote(col)
@@ -372,11 +389,13 @@ def _plan_accepted(c: AcceptedValues, schemas: dict[str, Schema]) -> _Plan:
         bad = [v for v in c.values if isinstance(v, bool) or not _is_number(v)]
         if bad:
             raise _Bad(f"{col!r} is {kind}; accepted_values must be numbers, got {bad[0]!r}")
-        if _INTEGER.match(kind) and kind != "UHUGEINT":
-            whole = [Decimal(str(v)) for v in c.values]
-            want: list[Any] = [str(int(d)) for d in whole if d == d.to_integral_value()]
-            marks = ", ".join("CAST(? AS HUGEINT)" for _ in want)
-            cond = f"CAST({q} AS HUGEINT) NOT IN ({marks})" if want else f"{q} IS NOT NULL"
+        if _is_exact_kind(kind):
+            pairs = [e for v in c.values if (e := _exact_bound(kind, v)) is not None]
+            want: list[Any] = [text for _, text in pairs]
+            sql_type = pairs[0][0] if pairs else ""
+            col = f"CAST({q} AS HUGEINT)" if sql_type == "HUGEINT" else q
+            marks = ", ".join(f"CAST(? AS {sql_type})" for _ in want)
+            cond = f"{col} NOT IN ({marks})" if want else f"{q} IS NOT NULL"
         else:
             want = [float(v) for v in c.values]
             cond = f"CAST({q} AS DOUBLE) NOT IN ({marks})"
