@@ -472,3 +472,10 @@ def test_the_target_class_balance_is_reported_for_a_random_split_too(data, tmp_p
     run(_spec(), {"c": data}, tmp_path / "out")
     report = json.loads((tmp_path / "out" / "preparation_report.json").read_text())
     assert set(report["target_classes"]) == {"train", "validation", "test"}
+
+
+def test_a_run_warns_about_a_feature_that_leaks_the_target(data, tmp_path):
+    ml = _ml(features=["age", "spend", "seg", "day", "id"], ids=["cust"])
+    rep = run(_spec(ml), {"c": data}, tmp_path / "out")
+    text = rep.text()
+    assert "identifier" in text and "'id'" in text
