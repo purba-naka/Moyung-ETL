@@ -983,8 +983,10 @@ class JobTools:
         need a person's approval are approved (`after_propose_datasets`, `after_spec`; a failed
         run may ask again, see the text it returns). Approval is per spec version: every
         save_spec/edit_spec needs a new approval. A source that drifted since the last bind is
-        not run: the answer names the drift and its ref for the person to approve. The result
-        is kept as the last run."""
+        not run: the answer names the drift and its ref for the person to approve. A failed
+        `error` check holds back only the outputs built from its table; the run is then
+        "partial" (`ok` false) and the others are written. The result is kept as the last
+        run."""
         s = self._state
         if s.history is None:
             raise StateError("no spec saved yet; use save_spec")
@@ -1059,7 +1061,8 @@ class JobTools:
         if why := gate(self._state.hitl, "after_run", failed=rep.status != "ok"):
             text += (
                 f"\nthe run finished with status {rep.status}; the checks and problems are "
-                f"listed above. Ask the person before going on: {why}"
+                f"listed above. Ask the person before going on: {why}. You cannot approve "
+                "this yourself: use ask_human (confirm) and stop"
             )
         return {"ok": rep.status == "ok", "text": text}
 
@@ -1120,8 +1123,20 @@ class JobTools:
         The output must have `load` in the spec (table, mode, keys)."""
         s = self._state
         rep = s.last_run
-        if rep is None or rep.status != "ok" or s.history is None:
+        if rep is None or rep.status == "failed" or s.history is None:
             raise StateError("run the pipeline successfully first (run_pipeline)")
+        if output in rep.blocked:
+            raise StateError(
+                f"the last run did not write {output!r}: failed check(s) "
+                f"{', '.join(rep.blocked[output])}; fix the data or the check and run again"
+            )
+        if rep.status == "partial" and (
+            why := gate(s.hitl, "after_run", failed=True, ref=f"v{self._version()}")
+        ):
+            raise StateError(
+                f"the last run was partial: {why}. Use ask_human (confirm) whether the written "
+                "outputs may be loaded, and stop; the host approves."
+            )
         spec = s.history.current.spec
         out = spec.outputs.get(output)
         if out is None:

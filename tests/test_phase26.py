@@ -103,3 +103,100 @@ def test_a_state_saved_before_schema_version_still_loads():
     data = json.loads(Job(new_state("j")).state_json())
     del data["schema_version"]
     assert Job.from_state(json.dumps(data)).state.schema_version == STATE_SCHEMA
+
+
+class _Paths:
+    def __init__(self, files):
+        self.files = files
+
+    def open(self, file_id):
+        return self.files[file_id]
+
+
+def _tool_spec(checks):
+    return json.dumps(
+        {
+            "sources": {
+                "sa": {"kind": "csv", "file_role": "a"},
+                "sb": {"kind": "csv", "file_role": "b"},
+            },
+            "outputs": {
+                "out_a": {"input": "sa", "load": {"table": "ta", "mode": "append"}},
+                "out_b": {"input": "sb", "load": {"table": "tb", "mode": "append"}},
+            },
+            "checks": checks,
+        }
+    )
+
+
+@pytest.fixture
+def jt(files, tmp_path):
+    from excel_etl.tools import JobTools
+
+    t = JobTools(Job(new_state("j")), _Paths(files), tmp_path / "out")
+    t.add_file("a", "a.csv", "a")
+    t.add_file("b", "b.csv", "b")
+    return t
+
+
+def _save_and_run(t, checks):
+    assert t.save_spec(_tool_spec(checks), "")["saved"]
+    t.approve("after_propose_datasets", "dina", f"v{t._version()}")
+    return t.run_pipeline()
+
+
+def test_a_partial_run_through_the_tools(jt):
+    res = _save_and_run(jt, {"a_big": {"kind": "row_count", "table": "sa", "min": 100}})
+    assert res["ok"] is False
+    assert "partial: 1 output(s) written, 1 held back" in res["text"]
+    assert "You cannot approve this yourself" in res["text"]
+    s = Job.from_state(jt.job.state_json()).state
+    assert s.last_run.status == "partial" and s.runs[-1].blocked == ("out_a",)
+    assert "partial" in jt.last_run()["text"]
+
+
+def test_plan_load_names_the_check_for_a_held_back_output(jt):
+    _save_and_run(jt, {"a_big": {"kind": "row_count", "table": "sa", "min": 100}})
+    err = jt.plan_load("snowflake", "out_a", "db", "sc", "@st")["error"]
+    assert "failed check(s) a_big" in err
+
+
+def test_plan_load_of_a_written_output_of_a_partial_run_needs_the_person(jt):
+    _save_and_run(jt, {"a_big": {"kind": "row_count", "table": "sa", "min": 100}})
+    err = jt.plan_load("snowflake", "out_b", "db", "sc", "@st")["error"]
+    assert "partial" in err and "ask_human" in err
+    jt.approve("after_run", "dina", f"v{jt._version()}")
+    jt.approve("before_load", "dina", f"v{jt._version()}")
+    assert "out_b" in jt.plan_load("snowflake", "out_b", "db", "sc", "@st")["text"]
+
+
+def test_a_held_back_output_from_an_earlier_run_is_removed(files, tmp_path):
+    out = tmp_path / "out"
+    assert run(_spec({}), files, out).status == "ok"
+    assert (out / "out_a.parquet").exists()
+    rep = run(_spec({"a_big": {"kind": "row_count", "table": "sa", "min": 100}}), files, out)
+    assert rep.status == "partial"
+    assert not (out / "out_a.parquet").exists() and (out / "out_b.parquet").exists()
+    assert any("removed the files of an earlier run: out_a.parquet" in w for w in rep.warnings)
+
+
+def test_verify_lists_columns_only_a_held_back_output_keeps(files, tmp_path):
+    rep = run(_spec({"a_big": {"kind": "row_count", "table": "sa", "min": 100}}), files, tmp_path)
+    assert rep.verify is not None and rep.verify.status == "explained"
+    assert any("held back" in e for e in rep.verify.excluded)
+
+
+def test_a_check_no_output_reads_fails_the_run(files, tmp_path):
+    spec = parse_spec(
+        json.dumps(
+            {
+                "sources": {
+                    "sa": {"kind": "csv", "file_role": "a"},
+                    "sb": {"kind": "csv", "file_role": "b"},
+                },
+                "outputs": {"out_b": {"input": "sb"}},
+                "checks": {"c": {"kind": "row_count", "table": "sa", "min": 100}},
+            }
+        )
+    )
+    assert run(spec, files, tmp_path / "out").status == "failed"
