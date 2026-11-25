@@ -6,6 +6,8 @@ is an error that lists them. Judging shifted/drift/missing per source is `rebind
 
 from __future__ import annotations
 
+import csv
+import itertools
 import re
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -438,6 +440,25 @@ def table_file_error(e: duckdb.Error, tf: TableFile) -> NodeError:
             f"Invalid unicode on line {m[1]}: the file is not UTF-8 text; save it as UTF-8"
         )
     return NodeError(text)
+
+
+def duplicate_headers(tf: TableFile, source: Source, con: duckdb.DuckDBPyConnection) -> list[str]:
+    """Header names of a csv that appear more than once (letter case ignored). duckdb renames
+    the copies (`a_1`), so a step that reads `a` may get another column than the author meant."""
+    if tf.format != "csv" or not source.header:
+        return []
+    path = sql_text(tf.path.as_posix())
+    delim = f", delim = {sql_text(source.delimiter)}" if source.delimiter else ""
+    delimiter, skip = con.execute(
+        f"SELECT Delimiter, SkipRows FROM sniff_csv({path}, header = true{delim})"
+    ).fetchall()[0]
+    with tf.path.open(encoding="utf-8-sig", errors="replace", newline="") as f:
+        rows = csv.reader(f, delimiter=delimiter or ",")
+        header = next(itertools.islice(rows, skip, None), [])
+    keys = [n.strip().casefold() for n in header]
+    return list(
+        dict.fromkeys(n.strip() for n, k in zip(header, keys, strict=True) if keys.count(k) > 1)
+    )
 
 
 def _refuse_dropped_lines(con: duckdb.DuckDBPyConnection, tf: TableFile, sniff: str) -> None:

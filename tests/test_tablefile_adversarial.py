@@ -349,14 +349,28 @@ class TestCsvProblems:
         rep, _ = _read(tmp_path, b"a\n" + b"x" * 2_000_000 + b"\n")
         assert rep.status == "failed" and rep.issues[0].where == "sources.c"
 
-    @pytest.mark.xfail(strict=True, reason="BUG-002: duplicate headers are renamed without a word")
-    @pytest.mark.parametrize("data", [b"a,a,b\n1,2,3\n", b"a,A\n1,2\n"])
-    def test_a_duplicate_header_is_reported(self, tmp_path, data):
+    @pytest.mark.parametrize(
+        "data, names",
+        [
+            (b"a,a,b\n1,2,3\n", "'a'"),
+            (b"a,A\n1,2\n", "'a'"),
+            (b"Title\na,a\n1,2\n", "'a'"),
+            (b"x;y;x\n1;2;3\n", "'x'"),
+        ],
+        ids=["same", "case", "title_above", "semicolon"],
+    )
+    def test_a_duplicate_header_is_reported(self, tmp_path, data, names):
         rep, _ = _read(tmp_path, data)
-        assert rep.status == "failed" or any("duplicate" in w.lower() for w in rep.warnings)
+        warned = [w for w in rep.warnings if "duplicate header" in w]
+        assert rep.status == "ok" and len(warned) == 1 and names in warned[0]
+
+    @pytest.mark.parametrize("data", [b"a,b\n1,2\n", b"a,a_1\n1,2\n", b"a\n1\n"])
+    def test_distinct_headers_give_no_duplicate_warning(self, tmp_path, data):
+        rep, _ = _read(tmp_path, data)
+        assert not any("duplicate header" in w for w in rep.warnings)
 
     @pytest.mark.parametrize("data", [b"a,a,b\n1,2,3\n", b"a,A\n1,2\n"])
-    def test_a_duplicate_header_is_renamed_with_a_suffix_today(self, tmp_path, data):
+    def test_a_duplicate_header_is_still_renamed_with_a_suffix(self, tmp_path, data):
         rep, text = _read(tmp_path, data)
         names = text.splitlines()[0].split(",")
         assert rep.status == "ok" and len(set(n.lower() for n in names)) == len(names)

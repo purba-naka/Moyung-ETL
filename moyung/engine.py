@@ -23,6 +23,7 @@ import duckdb
 from pydantic import BaseModel, ConfigDict
 
 from moyung.hitl import HitlState, gate
+from moyung.inspect.encode import few
 from moyung.inspect.regions import TOTAL_LABEL
 from moyung.ml import ARTIFACT_FILES, ARTIFACT_NOTES, MlResult, artifacts, check_columns
 from moyung.ml import split as ml_split
@@ -31,6 +32,7 @@ from moyung.nodes.base import check_arity, connect, sql_text
 from moyung.nodes.source import (
     Location,
     accepted_types,
+    duplicate_headers,
     expect_hits,
     expect_label,
     locate_all,
@@ -476,6 +478,12 @@ def _load_table(
     schema = schema_of(rel)
     st.schemas[name] = schema
     _check_columns(source, schema, st, f"sources.{name}")
+    if twice := duplicate_headers(tf, source, con):
+        st.warnings.append(
+            f"sources.{name}: duplicate header(s) {few([repr(n) for n in twice], 6)}; the "
+            "reader renamed the copies with a suffix (a_1, A_1), so check which column each "
+            "step reads"
+        )
     one = schema[0].name if len(schema) == 1 else ""
     if tf.format == "csv" and source.delimiter is None and any(d in one for d in ",;\t|"):
         st.warnings.append(
