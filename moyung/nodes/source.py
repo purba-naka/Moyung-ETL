@@ -92,9 +92,14 @@ def _header(wb: Workbook, g: SheetGrid, sheet: str, source: Source) -> tuple[int
         raise NodeError(
             f"sheet {sheet!r} is empty, so the header {source.region.header_anchor} is not there"
         )
-    where = "but not inside a table" if found else "not found"
+    if found:
+        raise NodeError(
+            f"header {source.region.header_anchor} is on sheet {sheet!r} but not inside a table; "
+            "a table needs at least two columns, so a single column is never one. "
+            "Check the table with sheet_regions"
+        )
     raise NodeError(
-        f"header {source.region.header_anchor} {where} on sheet {sheet!r}; "
+        f"header {source.region.header_anchor} not found on sheet {sheet!r}; "
         "check the texts with find_text and the table with sheet_regions"
     )
 

@@ -65,12 +65,9 @@ class TestTableEnd:
         assert rep.status == "failed" and "not inside a table" in rep.issues[0].message
         assert lines is None
 
-    @pytest.mark.xfail(
-        strict=True, reason="BUG-014: the error never says a table needs at least two columns"
-    )
     def test_the_single_column_error_names_the_two_column_rule(self, tmp_path):
         rep, _ = _read(tmp_path, [["A"], [1], [2]])
-        assert "two columns" in rep.issues[0].message or "2 columns" in rep.issues[0].message
+        assert "at least two columns" in rep.issues[0].message
 
     def test_a_header_without_rows_is_not_a_table(self, tmp_path):
         rep, _ = _read(tmp_path, [["A", "B"]])
