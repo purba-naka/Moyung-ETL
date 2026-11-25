@@ -37,3 +37,13 @@ def sample_path() -> Path:
     if not path or not Path(path).is_file():
         pytest.skip("MOYUNG_SAMPLE not set")
     return Path(path)
+
+
+@pytest.fixture
+def con():
+    """A locked duckdb connection like the engine's, closed after the test."""
+    from moyung.nodes.base import connect
+
+    connection = connect()
+    yield connection
+    connection.close()

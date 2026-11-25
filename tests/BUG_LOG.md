@@ -1,0 +1,61 @@
+# Bug log dari test generation
+
+Tujuan: setiap bug yang ditemukan test baru dicatat dengan cara memunculkannya, supaya bisa diperbaiki nanti tanpa menebak.
+
+## Alur menemukan dan mencatat bug
+
+1. Tulis test adversarial (input batas, input rusak, urutan tak lazim) untuk satu perilaku.
+2. Jalankan test. Kalau gagal dan penyebabnya kode produksi (bukan test salah), itu bug.
+3. Kecilkan reproduksi sampai satu test pendek yang gagal sendirian.
+4. Tandai test `@pytest.mark.xfail(strict=True, reason="BUG-NNN: ringkasan")`.
+   `strict=True` membuat test menyala (XPASS gagal) begitu bug diperbaiki, sehingga marker harus dilepas.
+5. Tambah satu entri di tabel bawah: id, modul, gejala, perintah reproduksi, perilaku seharusnya, status.
+6. Kode produksi tidak diubah di PR test. Perbaikan di PR terpisah yang melepas marker xfail.
+
+Perintah reproduksi selalu berbentuk:
+
+    .venv/Scripts/python.exe -m pytest tests/<file>.py::<test> -x --runxfail
+
+`--runxfail` menjalankan test seolah tanpa marker, jadi kegagalan asli terlihat.
+
+## Pengukuran
+
+    .venv/Scripts/python.exe -m pytest -q --cov=moyung --cov-branch --cov-report=term-missing:skip-covered
+
+Baseline 2026-11-25 (main 260ee8f): 1759 passed, 25 skipped, line+branch 97%, 181 baris dan 150 branch parsial belum tertutup.
+
+## Bug yang diketahui sebelum fase test ini (dari roadmap)
+
+| id | modul | gejala | status |
+|----|-------|--------|--------|
+| BUG-001 | source csv | file non-UTF-8 menghasilkan "internal error (InvalidInputException)" | terbuka |
+| BUG-002 | tablefile/csv | header duplikat diam-diam menjadi `Qty_1` | terbuka |
+| BUG-003 | auto.py | CSV melempar WorkbookError mentah | terbuka |
+| BUG-004 | relate_tables | menuntut bentuk F1.S2.R1 | terbuka |
+| BUG-005 | engine._publish | tidak atomic | terbuka |
+| BUG-006 | auto.py | exit code sama untuk partial dan failed | terbuka |
+
+## Bug baru dari test
+
+| id | modul | gejala | reproduksi | seharusnya | status |
+|----|-------|--------|-----------|-----------|--------|
+| BUG-007 | auto.auto | spec `{}` (no sources, no outputs) is valid, so `rebind` reports ok vacuously. It wins by name order, writes an empty `<out>/<spec>/<stem>/` folder, returns `ok` with zero outputs, and hides the real spec | create `a.json` containing `{}` next to a real spec, run `auto(book, specs, out)`; or `pytest tests/test_auto_adversarial.py::TestSpecFolder::test_an_empty_spec_does_not_hijack_the_run --runxfail` | reject a spec with no sources (and no outputs) in `parse_spec` or skip it in `auto` as "bad spec" | open |
+| BUG-003b | auto.auto | missing file, corrupt xlsx, zero-byte file and csv all raise raw `WorkbookError`; the CLI prints a traceback instead of a report | `pytest tests/test_auto_adversarial.py -k "unreadable or corrupt" --runxfail` | return `AutoReport` with a non-ok status and exit 1 without traceback | open |
+| BUG-008 | workbook.Workbook.meta | a formula with no cached value (any file written by openpyxl/pandas and never opened in Excel) that lies past the last cell calamine sees is missing from `meta()`; `formulas()` and `formula_cells()` do find it. Styles on such cells are lost too | `pytest tests/test_workbook_adversarial.py::TestMeta::test_a_formula_without_a_cached_value_is_in_meta --runxfail`; or write `ws["A1"]=1; ws["B1"]="=A1*2"` with openpyxl and call `Workbook.open(bytes).meta("S")` -> `{}` | `meta()` bounds should include `formula_cells` positions (max row/col), not only `len(values)` | open |
+| BUG-009 (low) | state.JobState | pydantic lax mode: `schema_version` of `true` or `"1"` and a `bytes` `job_id` are accepted and coerced instead of refused | `pytest tests/test_state_adversarial.py -k "string_or_bool or bytes_are_not" --runxfail` | `strict=True` on `schema_version` and `job_id` (or StrictInt/StrictStr) | open |
+| BUG-010 (low) | tools.JobTools.add_file | a non-text `filename` (None, int, list, ...) gives `internal error (TypeError): argument should be a str or an os.PathLike ...; this is a library bug` instead of a clear message. Host-only tool, not given to the agent | `pytest tests/test_tools_fuzz.py -k filename_that_is_not_text --runxfail` | validate the type in `add_file` and return `{"error": "filename must be text"}` | open |
+| BUG-011 (low) | pipeline names (`nodes/base.py _NAME_PATTERN`) | error text says "1-64 characters ... starting with a letter" but a letter-first name stops at 63 (pattern `[A-Za-z][A-Za-z0-9_]{0,62}`); a name of `_` plus a letter or digit is accepted up to 64, and the text never mentions the underscore form | `pytest tests/test_pipeline_adversarial.py -k 64_character --runxfail` | make the message and the pattern agree (63, or allow 64) | open |
+| BUG-012 (high) | nodes/source.read_table_file (duckdb CSV sniffer) | a CSV with `header` true and no `delimiter` silently drops lines whose field count differs from the dominant one. `a,b\n1,2,3` reads as 0 rows with header `1,2,3`; `a,b\n1,2\n3,4\nTotal,6,extra` becomes a table holding only the footer; `a\n=1+1\|x` loses its header. Status `ok`, no warning, so a month of data can vanish unnoticed | `pytest tests/test_tablefile_adversarial.py -k lines_are_never_dropped --runxfail` | compare rows read with the file's non-blank line count and warn (or fail) when lines were skipped; or read with `ignore_errors=false` / explicit `skip` so the sniffer cannot discard lines | open |
+| BUG-001b | nodes/source.read_table_file | non-UTF-8 csv no longer leaks `InvalidInputException`; it is a failed source, but the message is the raw multi-line duckdb text with no advice and there is no `encoding` option | `pytest tests/test_tablefile_adversarial.py -k non_utf8 --runxfail` | one line: "not UTF-8; save as UTF-8 or set encoding"; add `encoding` to Source | open |
+| BUG-002b | nodes/source.read_table_file | duplicate CSV headers are renamed (`a_1`, `A_1`) with no warning, so a later step silently reads the wrong column | `pytest tests/test_tablefile_adversarial.py -k duplicate_header_is_reported --runxfail` | warn naming the renamed columns | open |
+| BUG-013 (medium) | verify.verify (`_sums`, `_sample`) | run time grows faster than quadratic with the number of columns. A one-row CSV: 100 columns 0.4 s, 200 0.9 s, 400 3.7 s, 1000 columns 83 s. cProfile: nearly all of it is `verify._sums` and `verify._sample` | run: `PYTHONPATH=. .venv/Scripts/python.exe -c "import time,sys;sys.path.insert(0,'tests');from test_tablefile_adversarial import _read;import pathlib,tempfile;n=400;d=(','.join(f'c{i}' for i in range(n))+'\n'+','.join('1' for _ in range(n))+'\n').encode();t=time.time();_read(pathlib.Path(tempfile.mkdtemp()),d);print(time.time()-t)"` | build the sums and the sample per column (or in chunks of columns) instead of one statement with every column, or skip the sample above a column cap | open |
+| BUG-014 (low) | inspect/regions (`width < 2`) + nodes/source `_header` | a table of one column can never be a source. The error says `header ['A'] but not inside a table`, never that a table needs two columns, so a person keeps retuning anchors | `pytest tests/test_excel_input_adversarial.py -k two_column_rule --runxfail` | name the two-column rule in the message (or accept a single column when the anchor is the only text in a block) | open |
+| BUG-015 (medium) | workbook._normalize | a whole-number float of 2**63 or more (1e19, 1e25, 1e308) is turned into a Python int, no longer fits BIGINT, and the whole column becomes VARCHAR holding the exact binary expansion (`1e25` -> `10000000000000000905969664`, `1e308` -> 309 digits). A numeric column silently turns to text with invented digits | `pytest tests/test_excel_input_adversarial.py -k huge_number_stays --runxfail` | convert to int only when `abs(value) < 2**63` (or 2**53); keep larger floats as float | open |
+| BUG-016 (low) | engine._read_warnings | a merged cell inside the data (value only in the first row, NULL in the rest) is read with no warning and no hint to use `fill_down`, though the workbook knows the merged ranges | `pytest tests/test_excel_input_adversarial.py -k merged_cell_in_data_is_reported --runxfail` | warn when a merged range of height > 1 lies in a data column | open |
+| BUG-001c | tools.workbook_map / tools.ml_candidates | the ORIGINAL form of BUG-001 is still live through the tools: a non-UTF-8 csv registers fine, then `workbook_map("F1")` returns `internal error (InvalidInputException): Invalid Input Error: CSV Error on Line: 2 ... this is a library bug` (multi-line duckdb text, claims a library bug) | `pytest tests/test_tools_table_files.py -k latin1_csv_registers_and_reads --runxfail` | `add_file` should open the csv with duckdb and refuse non-UTF-8 at registration (like UTF-16 already is), or the tools should map `duckdb.Error` to a short advice message | open |
+| BUG-017 (medium) | nodes/general.Select (infer_schema) | `select` with a repeated column (`["a","a"]`) passes `infer_schema` with two columns named `a`, so `validate` says ok, but `run` makes duckdb name the copy `a_1` and fails with `internal: select promised [...] but produced [...]; this is a bug in the node`. Validation and run disagree | `pytest tests/test_nodes_differential.py -k select_of_one_column_twice_is_refused --runxfail`; or a spec with `{"node":"select","config":{"columns":["a","a"]}}` then `validate` (ok) then `run` (failed) | `infer_schema` should refuse a repeated column like `dedupe` refuses repeated keys | open |
+| BUG-018 (medium) | nodes/excel.DropRows.run | `keep_type` filters with `try_cast(col AS type) IS NOT NULL`, which also drops rows whose `column` is NULL or an empty string. The docstring says a row whose column is empty is kept by `keep_type` and `drop_regex` alike (`drop_regex` does keep it). A table whose label column has gaps loses those rows | `pytest tests/test_excel_nodes_differential.py -k keep_type_keeps_a_row --runxfail`; or `drop_rows {"column":"d","keep_type":"date"}` on `[("2026-01-31",1),(None,3)]` returns one row | use `col IS NULL OR try_cast(col AS type) IS NOT NULL` (and treat '' as empty) | open |
+| NOTE-001 | nodes/excel.DropRows | `keep_type: bigint` keeps `2.5` and `" 4 "` because `try_cast('2.5' AS BIGINT)` rounds to 2; a later `cast` to BIGINT then rounds the value silently. Not logged as a bug, the docs say "can be read as that type" | `pytest tests/test_excel_nodes_differential.py -k drops_text_but_keeps_decimals` | consider `try_cast AS DECIMAL` plus an integer check for bigint | note |
+| BUG-019 (low) | quality._plan_accepted_values | on a whole-number column the message names the internal expression: `1 row(s) of 'CAST("k" AS HUGEINT)' not among the accepted values` instead of the column `k` | `pytest tests/test_quality_differential.py -k accepted_values_on_a_number_column --runxfail` | use the column name in the message | open |
+| BUG-020 (low) | prep.fit (standard_scale) | a column holding finite values near +-1e308 is refused as `has NaN or infinite values in train` because the std overflows to inf; the finite data is blamed instead of the overflow | `pytest tests/test_prep_properties.py -k finite_huge_value --runxfail` | say "values too large to scale" when the inputs are finite but the std is not | open |
+| BUG-021 (medium) | leakage._after_reference (called from ml.split) | a `time` split by a NON-date column (a year, a sequence number) together with any DATE feature runs `"day" > "id"` (DATE vs BIGINT) and raises a duckdb BinderException; the whole `ml` section fails with `Binder Error: Cannot compare values of type DATE and type BIGINT`, although the config is valid | `pytest tests/test_leakage_properties.py -k time_split_by_a_number --runxfail` | only compare when the reference column is temporal too | open |
