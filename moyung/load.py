@@ -46,12 +46,15 @@ class Profile:
     fold: Callable[[str], str]
     to_type: Callable[[str], str | None]
     notes: tuple[str, ...] = ()
+    escape_backslash: bool = False
 
     def quote(self, name: str) -> str:
         """A name as one quoted identifier. The only place a name enters SQL text."""
         if "\x00" in name:
             raise LoadError(f"name {name[:40]!r} holds a NUL character")
         q = self.quote_char
+        if self.escape_backslash:
+            name = name.replace("\\", "\\\\")
         return q + name.replace(q, q * 2) + q
 
     def path(self, *parts: str) -> str:
@@ -139,6 +142,7 @@ BIGQUERY = Profile(
     bad_name=_bigquery_name,
     fold=str.casefold,
     to_type=_bigquery_type,
+    escape_backslash=True,
     notes=(
         "UBIGINT and HUGEINT have no BigQuery integer type: cast them first",
         "a TIMESTAMP without a zone is created as DATETIME here; the docs did not confirm that "
