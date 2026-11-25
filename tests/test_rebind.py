@@ -337,14 +337,22 @@ def test_a_column_that_turned_to_text_is_drift_with_advice() -> None:
     )
 
 
-def test_a_narrowed_type_is_drift_even_between_numbers() -> None:
+def test_a_decimal_column_that_is_whole_this_time_is_only_shifted() -> None:
     spec = _spec(_src())
     fractions = [["Item", "Price"], ["pen", 2.5], ["ink", 3.5]]
     prev = _bind(fractions, spec).records()
     whole = [["Item", "Price"], ["pen", 2], ["ink", 3]]
     s = _bind(whole, spec, prev).sources["s"]
-    assert s.status == "drift"
-    assert any("was DOUBLE, is now BIGINT" in d for d in s.diff)
+    assert s.status == "shifted"
+    assert any("type DOUBLE -> BIGINT (every value is a whole number" in d for d in s.diff)
+
+
+def test_a_number_that_turns_into_a_date_is_still_drift() -> None:
+    spec = _spec(_src())
+    prev = _bind([["Item", "Price"], ["pen", 2.5], ["ink", 3.5]], spec).records()
+    dates = [["Item", "Price"], ["pen", date(2026, 1, 1)], ["ink", date(2026, 1, 2)]]
+    s = _bind(dates, spec, prev).sources["s"]
+    assert s.status == "drift" and any("was DOUBLE, is now" in d for d in s.diff)
 
 
 def test_a_widened_type_is_only_shifted() -> None:

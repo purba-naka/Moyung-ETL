@@ -142,17 +142,9 @@ class TestTypes:
         ]
         assert bind(new, previous_from(old)).status == "shifted"
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason="BUG-024: a decimal column whose values are all whole this month is called drift",
-    )
     def test_a_decimal_column_that_is_whole_this_month_is_not_drift(self):
         s = bind([["Item", "Qty", "Price"], ["pen", 1, 2.0], ["ink", 2, 3.0]], previous_from())
         assert s.status in ("exact", "shifted")
-
-    def test_a_decimal_column_that_is_whole_this_month_is_called_narrowing_today(self):
-        s = bind([["Item", "Qty", "Price"], ["pen", 1, 2.0], ["ink", 2, 3.0]], previous_from())
-        assert s.status == "drift" and "was DOUBLE, is now BIGINT" in s.diff[0]
 
     @pytest.mark.xfail(
         strict=True, reason="BUG-025: a header that only changes letter case is called drift"

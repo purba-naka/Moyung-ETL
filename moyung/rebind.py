@@ -121,7 +121,11 @@ def _covered(source: Source, name: str) -> bool:
     return any(expect_hits(w, [name]) for w in source.expect_columns)
 
 
-_WIDENS = {("BIGINT", "DOUBLE"), ("DATE", "TIMESTAMP")}
+_SAFE_CHANGES = {
+    ("BIGINT", "DOUBLE"): "safe widening",
+    ("DATE", "TIMESTAMP"): "safe widening",
+    ("DOUBLE", "BIGINT"): "every value is a whole number this time; nothing is lost",
+}
 
 
 def _compare(
@@ -150,8 +154,8 @@ def _compare(
         if key not in types or was_type == types[key]:
             continue
         col = next((n for n in names if n.casefold() == key), key)
-        if (was_type, types[key]) in _WIDENS:
-            moved.append(f"column {col!r} type {was_type} -> {types[key]} (safe widening)")
+        if why := _SAFE_CHANGES.get((was_type, types[key])):
+            moved.append(f"column {col!r} type {was_type} -> {types[key]} ({why})")
         else:
             drift.append(
                 f"column {col!r} was {was_type}, is now {types[key]}: see the values first "
