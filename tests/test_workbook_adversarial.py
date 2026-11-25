@@ -173,18 +173,20 @@ class TestOpen:
 
     def test_the_cache_is_least_recently_used(self, monkeypatch):
         monkeypatch.setattr(wbmod, "_CACHE_SIZE", 2)
-        a, b, c = (Workbook.open(make_xlsx({"S": [[i]]})) for i in range(3))
-        assert Workbook.open(make_xlsx({"S": [[2]]})) is c
-        assert Workbook.open(make_xlsx({"S": [[1]]})) is b
-        assert Workbook.open(make_xlsx({"S": [[0]]})) is not a
+        books = [make_xlsx({"S": [[i]]}) for i in range(3)]
+        a, b, c = (Workbook.open(data) for data in books)
+        assert Workbook.open(books[2]) is c
+        assert Workbook.open(books[1]) is b
+        assert Workbook.open(books[0]) is not a
 
     def test_touching_an_entry_keeps_it_alive(self, monkeypatch):
         monkeypatch.setattr(wbmod, "_CACHE_SIZE", 2)
-        a = Workbook.open(make_xlsx({"S": [[0]]}))
-        Workbook.open(make_xlsx({"S": [[1]]}))
-        Workbook.open(make_xlsx({"S": [[0]]}))
-        Workbook.open(make_xlsx({"S": [[2]]}))
-        assert Workbook.open(make_xlsx({"S": [[0]]})) is a
+        books = [make_xlsx({"S": [[i]]}) for i in range(3)]
+        a = Workbook.open(books[0])
+        Workbook.open(books[1])
+        Workbook.open(books[0])
+        Workbook.open(books[2])
+        assert Workbook.open(books[0]) is a
 
     def test_one_changed_byte_is_a_different_workbook(self):
         data = make_xlsx({"S": [[1]]})
