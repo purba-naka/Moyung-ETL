@@ -150,7 +150,7 @@ class CellMeta:
 def _normalize(value: object) -> Cell:
     if value == "":
         return None
-    if isinstance(value, float) and value.is_integer() and abs(value) < 2**63:
+    if isinstance(value, float) and value.is_integer():
         return int(value)
     return value  # type: ignore[return-value]
 
