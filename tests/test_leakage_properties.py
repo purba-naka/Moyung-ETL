@@ -116,9 +116,6 @@ class TestLeaks:
         warnings = run_split(con, rows, features=("f", "g"), ids=("cust",))
         assert any("identical in every column" in w or "share their ids" in w for w in warnings)
 
-    @pytest.mark.xfail(
-        strict=True, reason="BUG-021: a time split by a number crashes when a feature is a date"
-    )
     def test_a_time_split_by_a_number_works_with_a_date_feature(self, con, seed):
         table(con, "d", COLUMNS, rows_for(seed))
         cfg = {
