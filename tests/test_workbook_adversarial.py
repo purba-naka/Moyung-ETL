@@ -451,9 +451,6 @@ class TestMeta:
         assert meta[(0, 3)] == CellMeta(number_format="0.00%")
         assert meta[(0, 4)].formula == "=A1+B1"
 
-    @pytest.mark.xfail(
-        strict=True, reason="BUG-008: meta() misses formulas past the last cached cell"
-    )
     def test_a_formula_without_a_cached_value_is_in_meta(self):
         def build(wb):
             ws = wb.active
@@ -464,6 +461,14 @@ class TestMeta:
         wb = Workbook.open(_book(build))
         assert (0, 1) in wb.formula_cells("S")
         assert wb.meta("S")[(0, 1)].formula == "=A1*2"
+
+    def test_a_sheet_of_only_uncached_formulas_has_them_in_meta(self):
+        def build(wb):
+            ws = wb.active
+            ws.title = "S"
+            ws["C3"] = "=1+1"
+
+        assert Workbook.open(_book(build)).meta("S")[(2, 2)].formula == "=1+1"
 
     def test_meta_is_cached(self):
         wb = Workbook.open(make_xlsx({"S": [[1]]}))
