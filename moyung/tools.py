@@ -34,6 +34,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal
 
+import duckdb
 from pydantic import ValidationError
 
 from moyung import mlprofile
@@ -45,7 +46,7 @@ from moyung.load import LoadError, Where, file_columns, plan_load
 from moyung.ml import describe as ml_describe
 from moyung.nodes import Column, NodeError, catalog, schema_of
 from moyung.nodes.base import _NAME_PATTERN, connect, describe, quote, sql_text
-from moyung.nodes.source import read_table_file
+from moyung.nodes.source import read_table_file, table_file_error
 from moyung.pipeline import (
     PipelineSpec,
     Source,
@@ -514,6 +515,8 @@ class JobTools:
                 found = con.execute(
                     "SELECT Delimiter FROM sniff_csv(?)", [tf.path.as_posix()]
                 ).fetchall()
+            except duckdb.Error as e:
+                raise table_file_error(e, tf) from None
             finally:
                 con.close()
             delimiter = found[0][0] if found else None
