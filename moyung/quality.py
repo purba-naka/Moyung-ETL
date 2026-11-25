@@ -395,9 +395,9 @@ def _plan_accepted(c: AcceptedValues, schemas: dict[str, Schema]) -> _Plan:
             pairs = [e for v in c.values if (e := _exact_bound(kind, v)) is not None]
             want: list[Any] = [text for _, text in pairs]
             sql_type = pairs[0][0] if pairs else ""
-            col = f"CAST({q} AS HUGEINT)" if sql_type == "HUGEINT" else q
+            left = f"CAST({q} AS HUGEINT)" if sql_type == "HUGEINT" else q
             marks = ", ".join(f"CAST(? AS {sql_type})" for _ in want)
-            cond = f"{col} NOT IN ({marks})" if want else f"{q} IS NOT NULL"
+            cond = f"{left} NOT IN ({marks})" if want else f"{q} IS NOT NULL"
         else:
             want = [float(v) for v in c.values]
             cond = f"CAST({q} AS DOUBLE) NOT IN ({marks})"
