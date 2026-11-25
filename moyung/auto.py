@@ -18,7 +18,7 @@ from pydantic import BaseModel
 from moyung.engine import RunReport, run
 from moyung.pipeline import SpecError, parse_spec
 from moyung.rebind import BindReport, rebind
-from moyung.workbook import Workbook
+from moyung.workbook import Workbook, WorkbookError
 
 
 class AutoReport(BaseModel):
@@ -46,9 +46,12 @@ def _found(b: BindReport) -> int:
 def auto(file: str | Path, specs_dir: str | Path, out_dir: str | Path) -> AutoReport:
     """Try every `specs_dir/*.json` on `file` (in name order); run the first that fits into
     `out_dir/<spec>/<file stem>/`. Every source of a spec reads this one file, whatever its
-    file_role.
+    file_role. A file that cannot be opened as a workbook gives status `unreadable`.
     """
-    wb = Workbook.open(str(file))
+    try:
+        wb = Workbook.open(str(file))
+    except WorkbookError as e:
+        return AutoReport(status="unreadable", tried={"-": f"cannot open {Path(file).name}: {e}"})
     tried: dict[str, str] = {}
     best: tuple[float, str, BindReport] | None = None
     for path in sorted(Path(specs_dir).glob("*.json")):
@@ -57,6 +60,9 @@ def auto(file: str | Path, specs_dir: str | Path, out_dir: str | Path) -> AutoRe
             spec = parse_spec(path.read_text(encoding="utf-8"))
         except (SpecError, OSError, UnicodeDecodeError) as e:
             tried[name] = f"bad spec: {e}"
+            continue
+        if not spec.sources:
+            tried[name] = "bad spec: it has no sources, so it fits every file"
             continue
         files = {s.file_role: wb for s in spec.sources.values()}
         b = rebind(spec, files)

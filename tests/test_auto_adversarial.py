@@ -10,7 +10,6 @@ from conftest import make_xlsx
 from test_coverage_gaps import ROWS, _excel_spec
 
 from moyung.auto import AutoReport, auto
-from moyung.workbook import WorkbookError
 
 
 @pytest.fixture
@@ -71,11 +70,11 @@ class TestSpecFolder:
         rep = auto(book, specs, tmp_path / "out")
         assert rep.tried["a_odd"].startswith("bad spec:") and rep.spec == "s"
 
-    @pytest.mark.xfail(strict=True, reason="BUG-007: an empty spec fits every workbook vacuously")
     def test_an_empty_spec_does_not_hijack_the_run(self, book, specs, tmp_path):
         (specs / "a_empty.json").write_text("{}")
         rep = auto(book, specs, tmp_path / "out")
-        assert rep.spec == "s"
+        assert rep.spec == "s" and "no sources" in rep.tried["a_empty"]
+        assert not (tmp_path / "out" / "a_empty").exists()
 
     def test_only_bad_specs_means_no_spec_with_every_reason(self, book, tmp_path):
         folder = tmp_path / "bad"
@@ -157,20 +156,12 @@ class TestReportText:
 
 
 class TestUnreadableInput:
-    def test_missing_file_raises_a_workbook_error_today(self, specs, tmp_path):
-        with pytest.raises(WorkbookError):
-            auto(tmp_path / "nope.xlsx", specs, tmp_path / "out")
-
     def test_nothing_is_written_for_an_unreadable_file(self, specs, tmp_path):
         bad = tmp_path / "bad.xlsx"
         bad.write_bytes(b"not a zip")
-        with pytest.raises(WorkbookError):
-            auto(bad, specs, tmp_path / "out")
-        assert not (tmp_path / "out").exists()
+        rep = auto(bad, specs, tmp_path / "out")
+        assert rep.status == "unreadable" and not (tmp_path / "out").exists()
 
-    @pytest.mark.xfail(
-        strict=True, raises=WorkbookError, reason="BUG-003: unreadable input raises, no report"
-    )
     @pytest.mark.parametrize(
         "name, payload",
         [
@@ -185,14 +176,14 @@ class TestUnreadableInput:
         if payload is not None:
             path.write_bytes(payload)
         rep = auto(path, specs, tmp_path / "out")
-        assert rep.status != "ok"
+        assert rep.status == "unreadable" and rep.tried["-"].startswith(f"cannot open {name}")
 
-    @pytest.mark.xfail(strict=True, reason="BUG-003: CLI prints a traceback on unreadable input")
     def test_cli_on_a_corrupt_file_exits_cleanly(self, specs, tmp_path):
         bad = tmp_path / "bad.xlsx"
         bad.write_bytes(b"not a zip")
         r = _cli(bad, specs, tmp_path / "out")
         assert r.returncode == 1 and "Traceback" not in r.stderr
+        assert "auto: unreadable" in r.stdout
 
 
 class TestCli:
