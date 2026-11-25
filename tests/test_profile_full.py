@@ -209,14 +209,32 @@ def test_line_breaking_text_values_stay_on_one_line():
     assert len(lines) == 3 and lines[1].startswith("k: VARCHAR top a b/c:2")
 
 
-def test_a_loader_crash_is_a_plain_workbook_error():
-    wb = Workbook.open(make_xlsx({"S": [["id", "m"], [1, 1e308], [2, 1.5]]}))
-    with pytest.raises(WorkbookError, match="F1.S1.R1"):
+@pytest.fixture
+def broken_loader(monkeypatch):
+    import duckdb
+
+    import moyung.nodes.source as source
+
+    def crash(*_args, **_kwargs):
+        raise duckdb.ConversionException("Conversion Error: value out of range\nmore detail")
+
+    monkeypatch.setattr(source, "read_locations", crash)
+
+
+def test_a_loader_crash_is_a_plain_workbook_error(broken_loader):
+    wb = Workbook.open(make_xlsx({"S": [["id", "m"], [1, 2.5], [2, 1.5]]}))
+    with pytest.raises(WorkbookError, match=r"F1.S1.R1 .*Conversion Error"):
         profile_region(wb, "F1", "F1.S1.R1", depth="full")
 
 
-def test_loader_failure_message_has_no_internal_error_marker():
-    wb = Workbook.open(make_xlsx({"S": [["id", "m"], [1, 1e308], [2, 1.5]]}))
+def test_loader_failure_message_has_no_internal_error_marker(broken_loader):
+    wb = Workbook.open(make_xlsx({"S": [["id", "m"], [1, 2.5], [2, 1.5]]}))
     with pytest.raises(WorkbookError) as caught:
         profile_region(wb, "F1", "F1.S1.R1", depth="full")
-    assert "internal error" not in str(caught.value)
+    assert "internal error" not in str(caught.value) and "more detail" not in str(caught.value)
+
+
+def test_a_huge_number_profiles_as_a_double():
+    wb = Workbook.open(make_xlsx({"S": [["id", "m"], [1, 1e308], [2, 1.5]]}))
+    text = profile_region(wb, "F1", "F1.S1.R1", depth="full")["text"]
+    assert "m: DOUBLE" in text

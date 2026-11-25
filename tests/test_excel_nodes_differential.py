@@ -26,19 +26,16 @@ class TestDropRows:
         got = apply(con, "drop_rows", {"column": "d", "keep_type": "date"}, "S")
         assert got == [("2026-01-31", 1), ("2026-02-28", 5)]
 
-    @pytest.mark.xfail(
-        strict=True, reason="BUG-018: keep_type drops rows whose column is empty; the docs say kept"
-    )
     @pytest.mark.parametrize("empty", [None, ""])
     def test_keep_type_keeps_a_row_whose_column_is_empty(self, con, empty):
         table(con, "S", [("d", "VARCHAR"), ("v", "INTEGER")], [("2026-01-31", 1), (empty, 3)])
         got = apply(con, "drop_rows", {"column": "d", "keep_type": "date"}, "S")
         assert (empty, 3) in got
 
-    def test_keep_type_today_drops_a_row_whose_column_is_empty(self, con):
-        table(con, "S", [("d", "VARCHAR"), ("v", "INTEGER")], [("2026-01-31", 1), (None, 3)])
-        got = apply(con, "drop_rows", {"column": "d", "keep_type": "date"}, "S")
-        assert got == [("2026-01-31", 1)]
+    def test_keep_type_on_a_typed_column_keeps_its_nulls(self, con):
+        table(con, "S", [("n", "INTEGER")], [(1,), (None,)])
+        got = apply(con, "drop_rows", {"blank": False, "column": "n", "keep_type": "bigint"}, "S")
+        assert sorted(got, key=lambda r: r[0] is None) == [(1,), (None,)]
 
     def test_keep_type_bigint_drops_text_but_keeps_decimals_because_they_round(self, con):
         table(con, "S", [("n", "VARCHAR")], [("1",), ("2.5",), ("x",), ("-3",), (" 4 ",)])
