@@ -248,6 +248,10 @@ class JobTools:
         = csv, `.parquet` `.pq` = parquet, `.json` = json (an array of objects), `.jsonl`
         `.ndjson` = jsonl, anything else = Excel. Re-registering an id replaces
         it (a new upload)."""
+        if not isinstance(filename, str) or not filename:
+            raise ValueError(
+                f"filename must be a non-empty string such as 'jan.xlsx', got {filename!r}"
+            )
         kind = kind_of_filename(filename)
         wb = read_file(file_id, self.provider, f"file {file_id!r}", kind)
         self.job.update(lambda s: add_file(s, file_id, filename, wb.sha256, role or None, kind))

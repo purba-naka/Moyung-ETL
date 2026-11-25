@@ -118,13 +118,10 @@ def test_a_hostile_argument_never_raises_and_never_leaks_an_internal_error(
     assert "internal error" not in str(result.get("error", ""))
 
 
-@pytest.mark.parametrize("bad", [None, -1, 0, 1.5, [], {}, True])
-@pytest.mark.xfail(
-    strict=True, reason="BUG-010: add_file with a non-text filename leaks an internal error"
-)
+@pytest.mark.parametrize("bad", [None, -1, 0, 1.5, [], {}, True, ""])
 def test_add_file_with_a_filename_that_is_not_text_is_a_clean_error(tmp_path, bad):
     result = _tools(tmp_path, False).add_file("b", bad, "g")
-    assert "internal error" not in str(result.get("error", ""))
+    assert "filename must be a non-empty string" in result["error"]
 
 
 def test_every_tool_has_a_documented_signature_the_fuzz_covers(tmp_path):
