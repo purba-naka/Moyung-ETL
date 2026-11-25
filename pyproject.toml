@@ -19,6 +19,8 @@ mcp = [
 dev = [
     "mcp>=2",
     "pytest>=8",
+    "pytest-cov>=5",
+    "hypothesis>=6",
     "ruff>=0.6",
 ]
 
