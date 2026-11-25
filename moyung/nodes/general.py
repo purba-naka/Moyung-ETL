@@ -41,6 +41,7 @@ class Select(Node):
     def infer_schema(self, inputs: list[Schema]) -> Schema:
         (schema,) = inputs
         _missing(self.config.columns, schema, self.name)
+        _unique(self.config.columns, "column", self.name)
         by_name = {c.name: c for c in schema}
         return tuple(by_name[n] for n in self.config.columns)
 
