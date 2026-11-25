@@ -78,7 +78,9 @@ class DropRows(Node):
         if cfg.blank:
             keep.append("NOT (" + " AND ".join(f"{quote(c)} IS NULL" for c in rel.columns) + ")")
         if cfg.column and cfg.keep_type:
-            keep.append(f"try_cast({quote(cfg.column)} AS {cfg.keep_type.upper()}) IS NOT NULL")
+            col = quote(cfg.column)
+            empty = f"coalesce(CAST({col} AS VARCHAR), '') = ''"
+            keep.append(f"({empty} OR try_cast({col} AS {cfg.keep_type.upper()}) IS NOT NULL)")
         if cfg.column and cfg.drop_regex is not None:
             col = quote(cfg.column)
             hit = f"regexp_matches(CAST({col} AS VARCHAR), {sql_text(cfg.drop_regex)})"
