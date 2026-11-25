@@ -104,13 +104,10 @@ class TestEveryKind:
 
 
 class TestBrokenTableFiles:
-    @pytest.mark.xfail(
-        strict=True, reason="BUG-001: a non-UTF-8 csv leaks InvalidInputException from the tools"
-    )
     @pytest.mark.parametrize("tool", ["workbook_map", "ml_candidates"])
     def test_a_latin1_csv_registers_and_reads_as_a_clean_error(self, tmp_path, tool):
         result = getattr(_tools(tmp_path, "s.csv", LATIN1), tool)("F1")
-        assert "error" in result and "internal error" not in result["error"]
+        assert "internal error" not in result["error"] and "save it as UTF-8" in result["error"]
 
     def test_a_latin1_csv_is_never_an_exception(self, tmp_path):
         tools = _tools(tmp_path, "s.csv", LATIN1)

@@ -339,15 +339,11 @@ class TestCsvProblems:
         assert "internal error" not in rep.issues[0].message
         assert "Invalid unicode" in rep.issues[0].message
 
-    @pytest.mark.xfail(strict=True, reason="BUG-001: no hint to save as UTF-8, no encoding option")
-    def test_non_utf8_text_tells_the_person_what_to_do(self, tmp_path):
-        rep, _ = _read(tmp_path, b"a,b\n1,caf\xe9\n")
-        assert "UTF-8" in rep.issues[0].message
-
-    @pytest.mark.xfail(strict=True, reason="BUG-001: the duckdb error is shown with several lines")
-    def test_non_utf8_message_is_one_short_line(self, tmp_path):
-        rep, _ = _read(tmp_path, b"a,b\n1,caf\xe9\n")
-        assert "\n" not in rep.issues[0].message
+    @pytest.mark.parametrize("data", [b"a,b\n1,caf\xe9\n", b"a,b\n1,\x93q\x94\n"])
+    def test_non_utf8_text_is_one_short_line_that_says_what_to_do(self, tmp_path, data):
+        rep, _ = _read(tmp_path, data)
+        message = rep.issues[0].message
+        assert "save it as UTF-8" in message and "line 2" in message and "\n" not in message
 
     def test_a_field_longer_than_the_line_limit_fails_the_source(self, tmp_path):
         rep, _ = _read(tmp_path, b"a\n" + b"x" * 2_000_000 + b"\n")

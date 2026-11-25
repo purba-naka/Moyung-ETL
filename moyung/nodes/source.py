@@ -424,7 +424,20 @@ def read_table_file(
             _refuse_dropped_lines(con, tf, f"sniff_csv({path}, header = {header}{options})")
         return _create_table(con, name, reader)
     except duckdb.Error as e:
-        raise NodeError(str(e).replace(tf.path.as_posix(), "<file>")) from None
+        raise table_file_error(e, tf) from None
+
+
+_NOT_UTF8 = re.compile(r"CSV Error on Line: (\d+)(?s:.*?)Invalid unicode")
+
+
+def table_file_error(e: duckdb.Error, tf: TableFile) -> NodeError:
+    """A duckdb read error as a short NodeError, without the file path."""
+    text = str(e).replace(tf.path.as_posix(), "<file>")
+    if m := _NOT_UTF8.search(text):
+        return NodeError(
+            f"Invalid unicode on line {m[1]}: the file is not UTF-8 text; save it as UTF-8"
+        )
+    return NodeError(text)
 
 
 def _refuse_dropped_lines(con: duckdb.DuckDBPyConnection, tf: TableFile, sniff: str) -> None:
