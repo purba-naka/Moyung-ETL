@@ -100,17 +100,11 @@ def skeleton(platform, mode, **slots):
     return outside_quotes(plan_sql(platform, mode, **slots), platform)
 
 
-def backslash_in_a_bigquery_name(platform, slot, payload):
-    return platform == "bigquery" and slot in ("table", "database", "schema") and "\\" in payload
-
-
 @pytest.mark.parametrize("platform", PLATFORMS)
 @pytest.mark.parametrize("mode", ["replace", "append", "merge"])
 @pytest.mark.parametrize("slot", ["table", "database", "schema", "file", "column", "key_column"])
 @pytest.mark.parametrize("payload", PAYLOADS)
 def test_hostile_text_never_leaves_its_quotes(platform, mode, slot, payload):
-    if backslash_in_a_bigquery_name(platform, slot, payload):
-        pytest.xfail("BUG-023: BigQuery quoted identifiers keep backslash escapes")
     benign = {
         "table": "t",
         "database": "db",
@@ -136,27 +130,35 @@ def test_hostile_text_never_leaves_its_quotes(platform, mode, slot, payload):
     assert got == want
 
 
+CHAIN = ".x FROM FILES (format = 'PARQUET', uris = ['gs://e/*']);DROP TABLE y;SELECT 1 AS z --"
+
+
 @pytest.mark.parametrize("platform", PLATFORMS)
-@pytest.mark.parametrize("payload", ["x\\", "\\", "x\\`; DROP TABLE t; --"])
-def test_a_backslash_in_a_database_name_changes_the_shape_of_a_bigquery_statement(
-    platform, payload
-):
-    sql = plan_sql(platform, "replace", database=payload, schema="sc")
-    shape = outside_quotes(sql, platform)
-    if platform == "bigquery":
-        assert shape != outside_quotes(
-            plan_sql(platform, "replace", database="db", schema="sc"), platform
-        )
-    else:
-        assert shape == outside_quotes(
-            plan_sql(platform, "replace", database="db", schema="sc"), platform
-        )
+@pytest.mark.parametrize("slot", ["database", "schema"])
+@pytest.mark.parametrize("payload", ["x\\", "\\", "x\\`; DROP TABLE t; --", CHAIN])
+def test_a_backslash_in_a_name_never_changes_the_shape_of_a_statement(platform, slot, payload):
+    base = {"database": "db", "schema": "sc"}
+    sql = plan_sql(platform, "replace", **{**base, slot: payload})
+    assert outside_quotes(sql, platform) == outside_quotes(
+        plan_sql(platform, "replace", **base), platform
+    )
 
 
-@pytest.mark.xfail(strict=True, reason="BUG-023: BigQuery identifiers need backslash escaped too")
+@pytest.mark.parametrize("platform", PLATFORMS)
+def test_the_chain_payload_stays_inside_the_quotes_on_every_platform(platform):
+    sql = plan_sql(platform, "replace", database="\\", schema=CHAIN)
+    assert "DROP TABLE y" not in outside_quotes(sql, platform)
+
+
 def test_bigquery_quote_escapes_the_backslash_like_a_string():
-    quoted = profile("bigquery").quote("a\\")
-    assert quoted == "`a\\\\`"
+    assert profile("bigquery").quote("a\\") == "`a\\\\`"
+
+
+@pytest.mark.parametrize("platform", ["snowflake", "databricks"])
+def test_a_platform_without_backslash_escapes_keeps_the_backslash_as_is(platform):
+    p = profile(platform)
+    q = p.quote_char
+    assert p.quote("a\\") == q + "a\\" + q
 
 
 class TestQuoting:
