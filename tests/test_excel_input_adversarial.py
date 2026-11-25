@@ -151,17 +151,14 @@ class TestValues:
         rep, _ = _read(tmp_path, [["A", "B"], [2.0**53 + 2, 1], [1.5, 1]])
         assert _schema(rep)[0] == "A DOUBLE"
 
-    @pytest.mark.xfail(
-        strict=True, reason="BUG-015: whole floats past 2**63 turn the column into text"
-    )
-    @pytest.mark.parametrize("value", [1e19, 1e25, 1e308, 2.0**63])
+    @pytest.mark.parametrize("value", [1e19, 1e25, 1e308, 2.0**63, -1e19])
     def test_a_huge_number_stays_a_number(self, tmp_path, value):
         rep, _ = _read(tmp_path, [["A", "B"], [value, 1], [5, 1]])
-        assert _schema(rep)[0] in ("A DOUBLE", "A HUGEINT", "A DECIMAL(38,0)")
+        assert _schema(rep)[0] == "A DOUBLE"
 
-    def test_a_huge_number_today_becomes_the_exact_digits_of_the_float_as_text(self, tmp_path):
-        rep, lines = _read(tmp_path, [["A", "B"], [1e25, 1], [5, 1]])
-        assert _schema(rep)[0] == "A VARCHAR" and lines[1] == "10000000000000000905969664,1"
+    def test_the_largest_float_below_two_to_the_63_is_still_an_integer(self, tmp_path):
+        rep, lines = _read(tmp_path, [["A", "B"], [2.0**63 - 1024, 1], [5, 1]])
+        assert _schema(rep)[0] == "A BIGINT" and lines[1] == "9223372036854774784,1"
 
     def test_a_merged_cell_in_data_fills_only_its_first_row(self, tmp_path):
         rows = [["A", "B"], ["x", 1], [None, 2], [None, 3]]
