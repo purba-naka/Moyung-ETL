@@ -137,9 +137,13 @@ def _compare(
     moved: list[str],
 ) -> None:
     """What changed in the columns since the last bind: names that came or went, and types."""
-    was, now = set(old.columns), set(names)
-    added = [n for n in names if n not in was]
-    gone = [n for n in old.columns if n not in now]
+    was = {n.casefold(): n for n in old.columns}
+    now = {n.casefold(): n for n in names}
+    added = [n for n in names if n.casefold() not in was]
+    gone = [n for n in old.columns if n.casefold() not in now]
+    recased = [f"{was[k]!r} -> {n!r}" for k, n in now.items() if k in was and was[k] != n]
+    if recased:
+        moved.append(f"columns whose letter case changed: {few(recased, 6)}")
     for label, cols in (("added", added), ("removed", gone)):
         if cols:
             moved.append(f"columns {label}: {few(cols, 6)}")
@@ -224,8 +228,11 @@ def _judge(
     rows: int | None,
 ) -> SourceBind:
     rec = _record(locs, types, rows)
-    if not types and old is not None:
-        rec = rec.model_copy(update={"types": old.types})
+    if old is not None:
+        present = {c.casefold() for c in rec.columns}
+        kept = {k: t for k, t in old.types.items() if k in present and k not in rec.types}
+        if kept or not types:
+            rec = rec.model_copy(update={"types": {**kept, **rec.types} if types else old.types})
     loc = locs[0]
     names = rec.columns
     drift: list[str] = []
@@ -310,7 +317,15 @@ def _read_types(
     with the real error."""
     try:
         rel = read_locations(locs, source, con, name)
-        types = {c.name.casefold(): c.type for c in schema_of(rel)}
+        schema = schema_of(rel)
+        if not schema:
+            return {}, _count(con, name)
+        filled = con.execute(
+            "SELECT "
+            + ", ".join(f"count({quote(c.name)})" for c in schema)
+            + f" FROM {quote(name)}"
+        ).fetchall()[0]
+        types = {c.name.casefold(): c.type for c, n in zip(schema, filled, strict=True) if n}
         return types, _count(con, name)
     except (NodeError, WorkbookError, duckdb.Error):
         return {}, None
