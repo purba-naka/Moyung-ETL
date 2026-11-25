@@ -527,18 +527,10 @@ class TestRenameSelect:
         table(con, "S", [("a", "INTEGER"), ("b", "INTEGER"), ("c", "INTEGER")], [(1, 2, 3)])
         assert apply(con, "select", {"columns": ["c", "a"]}, "S") == [(3, 1)]
 
-    @pytest.mark.xfail(
-        strict=True, reason="BUG-017: select [a, a] passes infer_schema and fails at run"
-    )
     def test_select_of_one_column_twice_is_refused_when_the_spec_is_checked(self, con):
         table(con, "S", [("a", "INTEGER")], [(1,)])
-        with pytest.raises(NodeError):
+        with pytest.raises(NodeError, match="listed twice"):
             infer(build("select", {"columns": ["a", "a"]}), [schema_of(con.table("S"))])
-
-    def test_select_of_one_column_twice_makes_duckdb_rename_the_copy(self, con):
-        table(con, "S", [("a", "INTEGER")], [(1,)])
-        build("select", {"columns": ["a", "a"]}).run([con.table("S")]).create("T")
-        assert con.table("T").columns == ["a", "a_1"]
 
     def test_select_nothing_is_refused(self):
         with pytest.raises(NodeError):
