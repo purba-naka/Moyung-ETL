@@ -174,7 +174,8 @@ def check(
             "identifier; a model can memorize them instead of learning: list them under ids or "
             "exclude"
         )
-    reference = target if temporal(target) else by if strategy == "time" and by else None
+    split_by = by if strategy == "time" and by is not None and temporal(by) else None
+    reference = target if temporal(target) else split_by
     if reference is not None:
         late = _after_reference(con, base, reference, [f for f in features if f is not reference])
         if late:
