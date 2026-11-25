@@ -405,6 +405,11 @@ def _read_warnings(source: Source, locs: list[Location], where: str) -> list[str
                 "as data, so data values became column names; check header_rows"
             )
             break
+    if merged := sum(loc.merged for loc in locs):
+        found.append(
+            f"{where}: {merged} merged cell(s) span several data rows; only the first row of "
+            "each holds the value and the rest read as empty. Use fill_down on that column"
+        )
     if (below := sum(loc.below for loc in locs)) > 0:
         found.append(
             f"{where}: {below} more filled row(s) lie below the table after "

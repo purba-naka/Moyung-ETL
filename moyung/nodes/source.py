@@ -155,6 +155,7 @@ class Location:
     below: int
     errors: int
     data_in_header: int | None = None
+    merged: int = 0
 
 
 def locate(wb: Workbook, source: Source) -> Location:
@@ -206,7 +207,12 @@ def _locate_in(wb: Workbook, source: Source, sheet: str, how: How) -> Location:
     bad = wb.error_cells(sheet) or frozenset()
     errors = sum(1 for r, c in bad if hdr[-1] < r <= last and left <= c <= right)
     deep = reg.data_start if len(hdr) > 1 and hdr[-1] >= reg.data_start else None
-    return Location(sheet, how, top, left, right, names, g, last, below, errors, deep)
+    merged = sum(
+        1
+        for r0, c0, r1, c1 in wb.merged(sheet)
+        if r1 > r0 and hdr[-1] < r0 <= last and c0 <= right and c1 >= left
+    )
+    return Location(sheet, how, top, left, right, names, g, last, below, errors, deep, merged)
 
 
 def _table_end(g: SheetGrid, header_last: int, left: int, right: int, gap: int) -> tuple[int, int]:

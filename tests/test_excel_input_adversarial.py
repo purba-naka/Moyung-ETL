@@ -162,11 +162,17 @@ class TestValues:
         rep, lines = _read(tmp_path, rows, merged={"S": ["A2:A4"]})
         assert lines == ["A,B", "x,1", ",2", ",3"]
 
-    @pytest.mark.xfail(strict=True, reason="BUG-016: merged data cells give NULLs with no warning")
     def test_a_merged_cell_in_data_is_reported(self, tmp_path):
         rows = [["A", "B"], ["x", 1], [None, 2], [None, 3]]
         rep, _ = _read(tmp_path, rows, merged={"S": ["A2:A4"]})
-        assert any("merged" in w.lower() for w in rep.warnings)
+        warned = [w for w in rep.warnings if "merged cell" in w]
+        assert len(warned) == 1 and "1 merged cell(s)" in warned[0] and "fill_down" in warned[0]
+
+    @pytest.mark.parametrize("merged", ["A1:B1", "A2:B2"], ids=["header", "one_row_across"])
+    def test_a_merge_that_spans_no_data_rows_is_not_reported(self, tmp_path, merged):
+        rows = [["A", "B"], ["x", 1], ["y", 2]]
+        rep, _ = _read(tmp_path, rows, merged={"S": [merged]})
+        assert not any("merged cell" in w for w in rep.warnings)
 
     def test_five_thousand_rows(self, tmp_path):
         rows = [["A", "B"]] + [[i, f"v{i}"] for i in range(5000)]
