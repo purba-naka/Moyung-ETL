@@ -44,6 +44,7 @@ CHECKPOINTS: tuple[str, ...] = (
 _MAX_PENDING = 20
 _MAX_TEXT = 1000
 _MAX_OPTIONS = 20
+_MAX_QA = 1000
 _CONFIRM = {"yes": "yes", "y": "yes", "ya": "yes", "no": "no", "n": "no", "tidak": "no"}
 
 
@@ -156,7 +157,8 @@ def answer(
 ) -> tuple[HitlState, Knowledge]:
     """Give the person's reply to a waiting question. It leaves `pending` and goes to
     `knowledge.qa_log`. A `choose` reply must be one of the options (letter case ignored) and
-    a `confirm` reply yes or no; what is stored is the canonical form.
+    a `confirm` reply yes or no; what is stored is the canonical form. The log keeps the
+    latest 1000 answers.
     """
     q = next((p for p in state.pending if p.id == question_id), None)
     if q is None:
@@ -175,7 +177,7 @@ def answer(
     entry = QA(question=q.question, answer=text, ref=q.ref)
     return (
         state.model_copy(update={"pending": [p for p in state.pending if p.id != q.id]}),
-        knowledge.model_copy(update={"qa_log": [*knowledge.qa_log, entry]}),
+        knowledge.model_copy(update={"qa_log": [*knowledge.qa_log, entry][-_MAX_QA:]}),
     )
 
 

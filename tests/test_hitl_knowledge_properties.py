@@ -286,13 +286,13 @@ class TestAnswer:
             answer(state, knowledge, q.id, "maybe")
         assert len(state.pending) == 1 and knowledge.qa_log == []
 
-    @pytest.mark.xfail(strict=True, reason="BUG-022: qa_log grows without a limit")
-    def test_the_answer_log_is_bounded(self):
+    def test_the_answer_log_is_bounded_and_keeps_the_latest(self):
         state, knowledge = HitlState(), Knowledge()
         for i in range(1500):
             q, state = ask_human(state, "clarify", f"q{i}?")
             state, knowledge = answer(state, knowledge, q.id, "x")
-        assert len(knowledge.qa_log) <= 1000
+        assert len(knowledge.qa_log) == 1000
+        assert knowledge.qa_log[-1].question == "q1499?" and knowledge.qa_log[0].question == "q500?"
 
 
 class TestShouldAsk:
