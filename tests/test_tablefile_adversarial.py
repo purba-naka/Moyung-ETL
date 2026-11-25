@@ -365,16 +365,22 @@ class TestCsvProblems:
         names = text.splitlines()[0].split(",")
         assert rep.status == "ok" and len(set(n.lower() for n in names)) == len(names)
 
-    @pytest.mark.xfail(strict=True, reason="BUG-012: the CSV sniffer drops lines without a word")
     @pytest.mark.parametrize(
         "data",
         [
             b"a,b\n1,2,3\n",
             b"a,b\n1,2,3\n4,5,6\n7,8,9\n",
             b"a,b\n1,2\n3,4\nTotal,6,extra\n",
-            b"a\n=1+1|x\n",
+            b"a;b\n1;2;3\n",
+            pytest.param(
+                b"a\n=1+1|x\n",
+                marks=pytest.mark.xfail(
+                    strict=True,
+                    reason="BUG-012b: a one-column csv whose cell holds | loses its header",
+                ),
+            ),
         ],
-        ids=["wider_row", "wider_rows", "footer", "pipe_in_cell"],
+        ids=["wider_row", "wider_rows", "footer", "semicolon", "pipe_in_cell"],
     )
     def test_lines_are_never_dropped_silently(self, tmp_path, data):
         rep, _ = _read(tmp_path, data)
@@ -382,9 +388,27 @@ class TestCsvProblems:
         silent = rep.status == "ok" and not rep.warnings and _rows(rep) + 1 < len(lines)
         assert not silent
 
-    def test_a_row_wider_than_the_header_makes_the_wide_line_the_header_today(self, tmp_path):
-        rep, text = _read(tmp_path, b"a,b\n1,2,3\n4,5,6\n7,8,9\n")
-        assert _rows(rep) == 2 and text.splitlines()[0] == "1,2,3"
+    @pytest.mark.parametrize(
+        "data, line",
+        [
+            (b"a,b\n1,2,3\n4,5,6\n7,8,9\n", "line 1: 'a,b'"),
+            (b"a,b\n1,2\n3,4\nTotal,6,extra\n", "line 1: 'a,b'"),
+        ],
+        ids=["wider_rows", "footer"],
+    )
+    def test_a_row_with_more_fields_fails_and_names_the_first_lost_line(self, tmp_path, data, line):
+        rep, text = _read(tmp_path, data)
+        assert rep.status == "failed" and text is None
+        assert line in str(rep)
+
+    @pytest.mark.parametrize(
+        "data",
+        [b"\n\na,b\n1,2\n", b"Report title\na,b\n1,2\n", b"Report title\nJan 2026\na,b\n1,2\n"],
+        ids=["blank_lines", "one_title", "two_titles"],
+    )
+    def test_skipped_lines_without_a_delimiter_still_read(self, tmp_path, data):
+        rep, text = _read(tmp_path, data)
+        assert rep.status == "ok" and text.splitlines()[0] == "a,b" and _rows(rep) == 1
 
     def test_a_title_block_above_the_header_is_skipped(self, tmp_path):
         rep, text = _read(tmp_path, b"Report title\n\na,b\n1,2\n3,4\n")

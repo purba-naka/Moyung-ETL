@@ -417,11 +417,29 @@ def read_table_file(
                 for column, kind in source.types.items()
             )
             options += f", types = {{{pairs}}}"
-        reader = f"read_csv({path}, header = {'true' if source.header else 'false'}{options})"
+        header = "true" if source.header else "false"
+        reader = f"read_csv({path}, header = {header}{options})"
     try:
+        if tf.format == "csv":
+            _refuse_dropped_lines(con, tf, f"sniff_csv({path}, header = {header}{options})")
         return _create_table(con, name, reader)
     except duckdb.Error as e:
         raise NodeError(str(e).replace(tf.path.as_posix(), "<file>")) from None
+
+
+def _refuse_dropped_lines(con: duckdb.DuckDBPyConnection, tf: TableFile, sniff: str) -> None:
+    delimiter, skip = con.execute(f"SELECT Delimiter, SkipRows FROM {sniff}").fetchall()[0]
+    if not skip:
+        return
+    lines = tf.path.read_bytes().decode("utf-8", errors="replace").splitlines()[:skip]
+    lost = [(i + 1, line) for i, line in enumerate(lines) if delimiter in line]
+    if lost:
+        number, line = lost[0]
+        raise NodeError(
+            f"the csv reader would skip {len(lost)} line(s) at the top that hold data "
+            f"(line {number}: {line[:60]!r}) because the rows below have another number of "
+            "fields; make every row have as many fields as the header"
+        )
 
 
 def _create_table(con: duckdb.DuckDBPyConnection, name: str, reader: str) -> Relation:
