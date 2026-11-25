@@ -69,17 +69,31 @@ class TestLostColumns:
         rep = verify_of(tmp_path, csv="a,z\n1,5\n2,-5\n", steps=[select(["a"])])
         assert lost_names(rep) == ["s.z"]
 
-    def test_one_lost_column_among_many_is_still_found(self, tmp_path):
-        cols = [f"c{i}" for i in range(30)]
+    @pytest.mark.parametrize("width, dropped", [(30, [29]), (120, [1, 48, 49, 50, 99, 100, 118])])
+    def test_one_lost_column_among_many_is_still_found(self, tmp_path, width, dropped):
+        cols = [f"c{i}" for i in range(width)]
         csv = (
             ",".join(["id", *cols])
             + "\n"
-            + ",".join(["1", *(str(i + 1) for i in range(30))])
+            + ",".join(["1", *(str(i + 1) for i in range(width))])
             + "\n"
         )
-        keep = ["id", *cols[:-1]]
+        keep = ["id", *(c for i, c in enumerate(cols) if i not in dropped)]
         rep = verify_of(tmp_path, csv=csv, steps=[select(keep)])
-        assert lost_names(rep) == ["s.c29"]
+        assert lost_names(rep) == [f"s.c{i}" for i in dropped]
+
+    def test_a_text_column_with_numbers_past_the_first_chunk_is_reported(self, tmp_path):
+        cols = [f"c{i}" for i in range(80)]
+        csv = (
+            ",".join(["id", *cols])
+            + "\n"
+            + ",".join(["1", *("n/a" if i == 70 else "x" for i in range(80))])
+            + "\n"
+            + ",".join(["2", *("5" if i == 70 else "y" for i in range(80))])
+            + "\n"
+        )
+        rep = verify_of(tmp_path, csv=csv)
+        assert rep.verify.skipped == ("s.c70 (e.g. 'n/a')",)
 
     def test_two_sources_each_judged_on_its_own_columns(self, tmp_path):
         source_d = {"kind": "csv", "file_role": "d"}
