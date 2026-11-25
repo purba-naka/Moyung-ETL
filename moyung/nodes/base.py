@@ -21,7 +21,7 @@ from pydantic import BaseModel, ConfigDict, ValidationError
 type Relation = duckdb.DuckDBPyRelation
 
 _MAX_ERRORS = 10
-_NAME_PATTERN = r"^(?:[A-Za-z]|_[A-Za-z0-9])[A-Za-z0-9_]{0,62}$"
+_NAME_PATTERN = r"^(?:[A-Za-z][A-Za-z0-9_]{0,63}|_[A-Za-z0-9][A-Za-z0-9_]{0,62})$"
 INTEGER_TYPE = re.compile(r"^U?(TINY|SMALL|BIG|HUGE)?INT(EGER)?$")
 _INTEGER = r"U?(TINY|SMALL|BIG|HUGE)?INT(EGER)?"
 NUMERIC_TYPE = re.compile(rf"^({_INTEGER}|FLOAT|DOUBLE|DECIMAL\(.*\))$")
@@ -94,8 +94,8 @@ def _say(item: Any) -> str:
     kind, msg, pattern = item["type"], item["msg"], (item.get("ctx") or {}).get("pattern")
     if kind == "string_pattern_mismatch" and pattern == _NAME_PATTERN:
         return (
-            "a name is 1-64 characters: letters, digits and _ only, starting with a letter "
-            "(no spaces, dashes or dots), such as 'sales_2026'"
+            "a name is 1-64 characters: letters, digits and _ only, starting with a letter, or "
+            "with _ and then a letter or digit (no spaces, dashes or dots), such as 'sales_2026'"
         )
     if kind == "list_type":
         return 'must be a list, such as ["a"] (even for one item)'
