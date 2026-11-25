@@ -340,9 +340,12 @@ class Workbook:
         if not self._xlsx:
             raise WorkbookError("formulas and styles need an .xlsx/.xlsm file")
         rows = self.values(sheet)
+        formulas = self.formula_cells(sheet) or frozenset()
         out: dict[tuple[int, int], CellMeta] = {}
-        if rows:
-            bounds = {"max_row": len(rows), "max_col": max(map(len, rows))}
+        if rows or formulas:
+            max_row = max([len(rows), *(r + 1 for r, _ in formulas)])
+            max_col = max([*map(len, rows), *(c + 1 for _, c in formulas)])
+            bounds = {"max_row": max_row, "max_col": max_col}
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore", UserWarning)
                 ws = self._openpyxl()[sheet]
