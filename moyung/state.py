@@ -111,8 +111,8 @@ class PlannedLoad(_Model):
 class JobState(_Model):
     """A job's saved state. A state with a newer `schema_version` is refused."""
 
-    schema_version: int = Field(default=STATE_SCHEMA, ge=1)
-    job_id: str
+    schema_version: int = Field(default=STATE_SCHEMA, ge=1, strict=True)
+    job_id: str = Field(strict=True)
     version: int = Field(default=0, ge=0)
     files: list[FileRef] = Field(default=[], max_length=_MAX_FILES)
     roles: dict[str, str] = {}
