@@ -215,6 +215,12 @@ def _imputed(q: str, missing: dict[str, Any] | None) -> str:
     return q if missing is None else f"coalesce({q}, {_literal(missing['value'])})"
 
 
+_TOO_LARGE = (
+    "has values too large to scale (the mean or spread overflows a double); divide the column "
+    "with a derive step first"
+)
+
+
 def _why_no_number(raw: object) -> str:
     if raw is None:
         return "has no value in train to learn from"
@@ -332,6 +338,8 @@ def _fit_column(
         ).fetchall()[0]
         mean, std, low, high = (_finite(v) for v in stats)
         if mean is None or std is None or low is None or high is None:
+            if low is not None and high is not None:
+                return entry, [_TOO_LARGE], []
             return entry, [_why_no_number(None if stats[0] is None else float("nan"))], []
         params: dict[str, Any] = {"strategy": numeric.strategy}
         if numeric.strategy == "standard_scale":
