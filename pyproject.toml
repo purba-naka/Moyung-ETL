@@ -41,7 +41,10 @@ select = ["E", "F", "I", "UP", "B", "SIM"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
-markers = ["sample: needs the real BALANSITAS file via MOYUNG_SAMPLE"]
+markers = [
+    "sample: needs the real BALANSITAS file via MOYUNG_SAMPLE",
+    "slow: long fuzz run, skip locally with -m \"not slow\"",
+]
 
 [tool.ruff.lint.per-file-ignores]
 "tests/test_quality.py" = ["E501"]

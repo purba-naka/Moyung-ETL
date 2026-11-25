@@ -10,6 +10,8 @@ from test_tools import SALES, SPEC, Provider
 from moyung.state import Job, new_state
 from moyung.tools import JobTools
 
+pytestmark = pytest.mark.slow
+
 VALID = {
     "file": "F1",
     "sheet": "Sales",
