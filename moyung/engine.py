@@ -802,19 +802,38 @@ def _warn_old_files(spec: PipelineSpec, out_path: Path, st: _State) -> None:
 
 
 def _publish(parts: list[tuple[Path, Path]], st: _State) -> None:
-    """Move each temporary file to its final name; on a failure, say which files are new."""
-    for n, (tmp, final) in enumerate(parts):
-        try:
+    """Swap in every new file or none: old files are moved to `.bak` first, and on any
+    failure the new files are taken out and the old ones put back."""
+    saved: list[tuple[Path, Path]] = []
+    placed: list[Path] = []
+    try:
+        for _, final in parts:
+            if final.is_file():
+                bak = final.with_name(final.name + ".bak")
+                os.replace(final, bak)
+                saved.append((bak, final))
+        for tmp, final in parts:
             os.replace(tmp, final)
-        except OSError as e:
-            new = ", ".join(f.name for _, f in parts[:n]) or "none"
-            old = ", ".join(f.name for _, f in parts[n:])
-            st.issue(
-                f"outputs.{final.stem}",
-                f"cannot write {final.name!r}: {e}; already replaced: {new}; "
-                f"still old: {old}; fix the cause and run again",
-            )
-            return
+            placed.append(final)
+    except OSError as e:
+        for final in placed:
+            final.unlink(missing_ok=True)
+        stuck = []
+        for bak, final in saved:
+            try:
+                os.replace(bak, final)
+            except OSError:
+                stuck.append(bak.name)
+        kept = f"; could not restore {', '.join(stuck)}" if stuck else ""
+        name = Path(getattr(e, "filename2", None) or getattr(e, "filename", None) or "out")
+        st.issue(
+            f"outputs.{name.stem}",
+            f"cannot publish the outputs: {e}; no file was replaced, the out_dir still holds "
+            f"the earlier run{kept}; fix the cause and run again",
+        )
+        return
+    for bak, _ in saved:
+        bak.unlink(missing_ok=True)
 
 
 def _data_warnings(

@@ -856,13 +856,16 @@ def test_run_warns_about_a_total_row_and_nan_left_in_an_output(tmp_path) -> None
     assert rep.status == "ok" and "'X' has 2 NaN" in text and "drop_regex" in text
 
 
-def test_a_failed_publish_names_the_outputs_already_replaced(book, tmp_path) -> None:
+def test_a_failed_publish_keeps_every_old_output(book, tmp_path) -> None:
     spec = _spec(
         sources={"orders": _src("Orders", "Order")},
         outputs={"one": {"input": "orders"}, "two": {"input": "orders"}},
     )
+    (tmp_path / "one.parquet").write_bytes(b"old")
     (tmp_path / "two.parquet").mkdir()
     (tmp_path / "two.parquet" / "x").write_text("x")
     rep = run(spec, {"f": book}, tmp_path)
     assert rep.status == "failed"
-    assert "already replaced: one.parquet; still old: two.parquet" in rep.issues[0].message
+    assert "no file was replaced" in rep.issues[0].message
+    assert (tmp_path / "one.parquet").read_bytes() == b"old"
+    assert not list(tmp_path.glob("*.bak")) and not list(tmp_path.glob("*.part"))
