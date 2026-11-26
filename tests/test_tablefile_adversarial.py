@@ -382,13 +382,7 @@ class TestCsvProblems:
             b"a,b\n1,2,3\n4,5,6\n7,8,9\n",
             b"a,b\n1,2\n3,4\nTotal,6,extra\n",
             b"a;b\n1;2;3\n",
-            pytest.param(
-                b"a\n=1+1|x\n",
-                marks=pytest.mark.xfail(
-                    strict=True,
-                    reason="BUG-012b: a one-column csv whose cell holds | loses its header",
-                ),
-            ),
+            b"a\n=1+1|x\n",
         ],
         ids=["wider_row", "wider_rows", "footer", "semicolon", "pipe_in_cell"],
     )

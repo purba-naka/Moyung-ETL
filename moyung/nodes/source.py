@@ -476,8 +476,14 @@ def _refuse_dropped_lines(con: duckdb.DuckDBPyConnection, tf: TableFile, sniff: 
     delimiter, skip = con.execute(f"SELECT Delimiter, SkipRows FROM {sniff}").fetchall()[0]
     if not skip:
         return
-    lines = tf.path.read_bytes().decode("utf-8", errors="replace").splitlines()[:skip]
-    lost = [(i + 1, line) for i, line in enumerate(lines) if delimiter in line]
+    every = tf.path.read_bytes().decode("utf-8", errors="replace").splitlines()
+    lines, rest = every[:skip], every[skip:]
+    header_only = sum(bool(line.strip()) for line in rest) <= 1
+    lost = [
+        (i + 1, line)
+        for i, line in enumerate(lines)
+        if delimiter in line or (header_only and line.strip())
+    ]
     if lost:
         number, line = lost[0]
         raise NodeError(
