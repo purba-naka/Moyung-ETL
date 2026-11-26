@@ -244,16 +244,24 @@ class TestFailures:
         rep = run(_simple(steps=steps, outputs={"o": {"input": "c"}}), {"f": wb}, tmp_path / "o")
         assert rep.status == "failed" and "failed while running cast" in rep.issues[0].message
 
-    def test_publish_failure_names_what_was_replaced_and_what_is_old(self, wb, tmp_path):
+    def test_a_failed_publish_replaces_nothing(self, wb, tmp_path):
         out = tmp_path / "o"
         out.mkdir()
+        (out / "o.parquet").write_bytes(b"old")
         (out / "p.csv").mkdir()
         spec = _simple(outputs={"o": {"input": "a"}, "p": {"input": "a", "format": "csv"}})
         rep = run(spec, {"f": wb}, out)
-        assert rep.status == "failed"
-        message = rep.issues[0].message
-        assert "already replaced: o.parquet" in message and "still old: p.csv" in message
-        assert not list(out.glob("*.part"))
+        assert rep.status == "failed" and "no file was replaced" in rep.issues[0].message
+        assert (out / "o.parquet").read_bytes() == b"old"
+        assert sorted(p.name for p in out.iterdir()) == ["o.parquet", "p.csv"]
+
+    def test_a_successful_publish_leaves_no_backup(self, wb, tmp_path):
+        out = tmp_path / "o"
+        out.mkdir()
+        (out / "o.parquet").write_bytes(b"old")
+        rep = run(_simple(), {"f": wb}, out)
+        assert rep.status == "ok" and (out / "o.parquet").read_bytes() != b"old"
+        assert not list(out.glob("*.bak"))
 
     def test_a_failed_publish_keeps_status_failed_and_no_outputs(self, wb, tmp_path):
         out = tmp_path / "o"

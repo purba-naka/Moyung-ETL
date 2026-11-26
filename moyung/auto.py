@@ -5,6 +5,9 @@ only needs `auto`: every saved spec is tried with `rebind`, the first one whose 
 found (exact or shifted) is run. When no spec fits, nothing is written and the report says
 which spec came closest, so a person (or the agent) can repair it.
 
+The CLI exits 0 when every output was written, 2 when a failed check held some outputs back
+(partial), and 1 for anything else.
+
 CLI: python -m moyung.auto <file.xlsx> <specs_dir> <out_dir>
 """
 
@@ -88,4 +91,4 @@ if __name__ == "__main__":
         sys.exit(__doc__.strip().splitlines()[-1])
     r = auto(*sys.argv[1:])
     print(r.text())
-    sys.exit(0 if r.status == "ok" else 1)
+    sys.exit({"ok": 0, "partial": 2}.get(r.status, 1))
