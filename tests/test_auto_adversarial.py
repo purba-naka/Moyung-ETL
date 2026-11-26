@@ -205,3 +205,16 @@ class TestCli:
         (specs / "s.json").write_text(json.dumps(spec))
         r = _cli(book, specs, tmp_path / "out")
         assert r.returncode == 1 and "auto: failed" in r.stdout
+
+    def test_cli_partial_run_exits_two(self, book, specs, tmp_path):
+        spec = {
+            **_excel_spec(),
+            "steps": [
+                {"id": "d", "node": "select", "inputs": ["t"], "config": {"columns": ["Plant"]}}
+            ],
+            "outputs": {"clean": {"input": "t"}, "side": {"input": "d"}},
+            "checks": {"c": {"kind": "row_count", "table": "d", "min": 9}},
+        }
+        (specs / "s.json").write_text(json.dumps(spec))
+        r = _cli(book, specs, tmp_path / "out")
+        assert r.returncode == 2 and "auto: partial" in r.stdout
