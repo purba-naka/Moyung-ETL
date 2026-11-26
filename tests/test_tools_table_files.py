@@ -150,16 +150,30 @@ class TestBrokenTableFiles:
 
 
 class TestRelateAndSourceNeedRegionIds:
-    @pytest.mark.parametrize("tool", ["relate_tables", "source_for_region"])
-    def test_a_file_id_is_not_a_region_id(self, tmp_path, tool):
+    def test_a_file_id_is_not_a_region_id_for_source_for_region(self, tmp_path):
         tools = _tools(tmp_path, *FILES["csv"])
-        result = _call(tools, tool, {"a": "F1", "b": "F1", "region_id": "F1"})
+        result = _call(tools, "source_for_region", {"region_id": "F1"})
         assert "not a region id" in result["error"]
 
-    @pytest.mark.xfail(
-        strict=True, reason="BUG-004: relate_tables demands F1.S2.R1 even for a table file"
-    )
     def test_relate_tables_accepts_two_table_files(self, tmp_path):
         tools = _tools(tmp_path, *FILES["csv"])
         tools.add_file("d", "more.csv", "g")
-        assert "error" not in tools.relate_tables("F1", "F2")
+        result = tools.relate_tables("F1", "F2")
+        assert "error" not in result and result["text"].startswith("F1 (csv)")
+
+    def test_relate_tables_with_one_table_file_against_itself_is_refused(self, tmp_path):
+        result = _tools(tmp_path, *FILES["csv"]).relate_tables("F1", "F1")
+        assert "two different tables" in result["error"]
+
+    def test_a_region_id_on_a_table_file_is_refused(self, tmp_path):
+        tools = _tools(tmp_path, *FILES["csv"])
+        tools.add_file("d", "more.csv", "g")
+        assert "give just F1" in tools.relate_tables("F1.S1.R1", "F2")["error"]
+
+    def test_a_bare_workbook_id_is_still_not_a_region_id(self, tmp_path):
+        from conftest import make_xlsx
+
+        book = make_xlsx({"Sales": [["Item", "Qty"], ["pen", 2], ["ink", 1], ["pad", 3]]})
+        tools = _tools(tmp_path, *FILES["csv"], second=book)
+        assert "registered" in tools.add_file("d", "book.xlsx", "g")["text"]
+        assert "not a region id" in tools.relate_tables("F1", "F2")["error"]

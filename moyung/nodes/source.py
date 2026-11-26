@@ -6,6 +6,8 @@ is an error that lists them. Judging shifted/drift/missing per source is `rebind
 
 from __future__ import annotations
 
+import csv
+import itertools
 import re
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -90,9 +92,14 @@ def _header(wb: Workbook, g: SheetGrid, sheet: str, source: Source) -> tuple[int
         raise NodeError(
             f"sheet {sheet!r} is empty, so the header {source.region.header_anchor} is not there"
         )
-    where = "but not inside a table" if found else "not found"
+    if found:
+        raise NodeError(
+            f"header {source.region.header_anchor} is on sheet {sheet!r} but not inside a table; "
+            "a table needs at least two columns, so a single column is never one. "
+            "Check the table with sheet_regions"
+        )
     raise NodeError(
-        f"header {source.region.header_anchor} {where} on sheet {sheet!r}; "
+        f"header {source.region.header_anchor} not found on sheet {sheet!r}; "
         "check the texts with find_text and the table with sheet_regions"
     )
 
@@ -148,6 +155,7 @@ class Location:
     below: int
     errors: int
     data_in_header: int | None = None
+    merged: int = 0
 
 
 def locate(wb: Workbook, source: Source) -> Location:
@@ -199,7 +207,12 @@ def _locate_in(wb: Workbook, source: Source, sheet: str, how: How) -> Location:
     bad = wb.error_cells(sheet) or frozenset()
     errors = sum(1 for r, c in bad if hdr[-1] < r <= last and left <= c <= right)
     deep = reg.data_start if len(hdr) > 1 and hdr[-1] >= reg.data_start else None
-    return Location(sheet, how, top, left, right, names, g, last, below, errors, deep)
+    merged = sum(
+        1
+        for r0, c0, r1, c1 in wb.merged(sheet)
+        if r1 > r0 and hdr[-1] < r0 <= last and c0 <= right and c1 >= left
+    )
+    return Location(sheet, how, top, left, right, names, g, last, below, errors, deep, merged)
 
 
 def _table_end(g: SheetGrid, header_last: int, left: int, right: int, gap: int) -> tuple[int, int]:
@@ -438,6 +451,25 @@ def table_file_error(e: duckdb.Error, tf: TableFile) -> NodeError:
             f"Invalid unicode on line {m[1]}: the file is not UTF-8 text; save it as UTF-8"
         )
     return NodeError(text)
+
+
+def duplicate_headers(tf: TableFile, source: Source, con: duckdb.DuckDBPyConnection) -> list[str]:
+    """Header names of a csv that appear more than once (letter case ignored). duckdb renames
+    the copies (`a_1`), so a step that reads `a` may get another column than the author meant."""
+    if tf.format != "csv" or not source.header:
+        return []
+    path = sql_text(tf.path.as_posix())
+    delim = f", delim = {sql_text(source.delimiter)}" if source.delimiter else ""
+    delimiter, skip = con.execute(
+        f"SELECT Delimiter, SkipRows FROM sniff_csv({path}, header = true{delim})"
+    ).fetchall()[0]
+    with tf.path.open(encoding="utf-8-sig", errors="replace", newline="") as f:
+        rows = csv.reader(f, delimiter=delimiter or ",")
+        header = next(itertools.islice(rows, skip, None), [])
+    keys = [n.strip().casefold() for n in header]
+    return list(
+        dict.fromkeys(n.strip() for n, k in zip(header, keys, strict=True) if keys.count(k) > 1)
+    )
 
 
 def _refuse_dropped_lines(con: duckdb.DuckDBPyConnection, tf: TableFile, sniff: str) -> None:

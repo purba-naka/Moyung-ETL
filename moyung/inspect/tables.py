@@ -26,6 +26,7 @@ from moyung.pipeline import Source
 from moyung.profile import column_line, profile_table
 from moyung.relate import relate
 from moyung.sample import sample_table
+from moyung.tablefile import TableFile
 from moyung.workbook import Workbook, WorkbookError
 
 
@@ -45,6 +46,26 @@ def load_region(wb: Workbook, file_id: str, ref: str, con: duckdb.DuckDBPyConnec
         read_locations(locate_all(wb, source), source, con, "profiled")
     except (NodeError, duckdb.Error) as e:
         raise WorkbookError(f"{label}: {str(e).splitlines()[0]}") from None
+    return "profiled"
+
+
+def _side_label(f: Workbook | TableFile, file_id: str, ref: str) -> str:
+    return f"{file_id} ({f.format})" if isinstance(f, TableFile) else _region(f, file_id, ref)[0]
+
+
+def _load_side(
+    f: Workbook | TableFile, file_id: str, ref: str, con: duckdb.DuckDBPyConnection
+) -> str:
+    """One side of `relate_tables`: a workbook region, or a whole CSV/Parquet/JSON file read
+    with the kind's default settings (the delimiter is detected)."""
+    if not isinstance(f, TableFile):
+        return load_region(f, file_id, ref, con)
+    from moyung.nodes.source import read_table_file
+
+    try:
+        read_table_file(f, Source(kind=f.format, file_role="relate"), con, "profiled")
+    except (NodeError, duckdb.Error) as e:
+        raise WorkbookError(f"{file_id}: {str(e).splitlines()[0]}") from None
     return "profiled"
 
 
@@ -153,14 +174,14 @@ def relate_tables(
     """
     _paging(offset)
     _check_budget(budget)
-    label_a, _, _, _ = _region(wb_a, file_a, ref_a)
-    label_b, _, _, _ = _region(wb_b, file_b, ref_b)
+    sides = [(wb_a, file_a, ref_a), (wb_b, file_b, ref_b)]
+    label_a, label_b = (_side_label(*s) for s in sides)
     if (wb_a.sha256, ref_a) == (wb_b.sha256, ref_b):
         raise WorkbookError("relate_tables needs two different tables")
-    con = connect()
+    con = connect(read_paths=[f.path for f, _, _ in sides if isinstance(f, TableFile)])
     try:
-        con.execute(f"ALTER TABLE {quote(load_region(wb_a, file_a, ref_a, con))} RENAME TO __a")
-        con.execute(f"ALTER TABLE {quote(load_region(wb_b, file_b, ref_b, con))} RENAME TO __b")
+        for (f, fid, ref), alias in zip(sides, ("__a", "__b"), strict=True):
+            con.execute(f"ALTER TABLE {quote(_load_side(f, fid, ref, con))} RENAME TO {alias}")
         rows_a = con.execute("SELECT count(*) FROM __a").fetchall()[0][0]
         rows_b = con.execute("SELECT count(*) FROM __b").fetchall()[0][0]
         got = relate(con, "__a", "__b")

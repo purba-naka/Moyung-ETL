@@ -45,7 +45,6 @@ class TestSchemaVersion:
         with pytest.raises(StateError):
             Job.from_state(json.dumps({"job_id": "job1", "schema_version": version}))
 
-    @pytest.mark.xfail(strict=True, reason="BUG-009: lax coercion accepts True and '1' as versions")
     @pytest.mark.parametrize("version", ["1", True])
     def test_a_string_or_bool_is_not_a_version(self, version):
         with pytest.raises(StateError):
@@ -174,7 +173,6 @@ class TestConsistency:
         with pytest.raises(StateError):
             new_state(job_id)
 
-    @pytest.mark.xfail(strict=True, reason="BUG-009: lax coercion turns bytes into a job_id")
     def test_bytes_are_not_a_job_id(self):
         with pytest.raises(StateError):
             new_state(b"abc")

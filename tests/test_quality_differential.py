@@ -166,12 +166,10 @@ class TestKnownCases:
         res = check(con, schemas, kind="unique", table="t", columns=["k"])
         assert "x2" in res.message
 
-    @pytest.mark.xfail(
-        strict=True, reason="BUG-019: the message shows CAST(... AS HUGEINT) instead of the column"
-    )
     def test_accepted_values_on_a_number_column_names_the_column(self, con, schemas):
         res = check(con, schemas, kind="accepted_values", table="t", column="k", values=[1])
         assert "HUGEINT" not in res.message and "CAST" not in res.message
+        assert "of 'k' not among" in res.message
 
     def test_a_number_column_accepts_a_float_value_that_is_whole(self, con, schemas):
         res = check(con, schemas, kind="accepted_values", table="t", column="k", values=[1.0, 2.0])

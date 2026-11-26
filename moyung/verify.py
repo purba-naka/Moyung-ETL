@@ -75,28 +75,42 @@ def _columns(con: duckdb.DuckDBPyConnection, table: str) -> list[tuple[str, str]
     return [(r[0], r[1]) for r in con.execute(f"DESCRIBE {quote(table)}").fetchall()]
 
 
+_CHUNK = 50
+
+
+def _row(con: duckdb.DuckDBPyConnection, table: str, cols: list[str], parts) -> list:
+    """One aggregate row over `cols`, built `_CHUNK` columns per query: duckdb plans one
+    statement with thousands of aggregates far slower than many small ones."""
+    row: list = []
+    for i in range(0, len(cols), _CHUNK):
+        sql = ", ".join(parts(c) for c in cols[i : i + _CHUNK])
+        row += con.execute(f"SELECT {sql} FROM {quote(table)}").fetchall()[0]
+    return row
+
+
 def _sums(con: duckdb.DuckDBPyConnection, table: str, cols: list[str]) -> dict[str, tuple]:
-    """column -> (sum, non-zero count), one query for the whole table."""
-    if not cols:
-        return {}
-    parts = ", ".join(
-        f"sum(CAST({quote(c)} AS DOUBLE)), count(*) FILTER ({quote(c)} <> 0)" for c in cols
+    """column -> (sum, non-zero count)."""
+    row = _row(
+        con,
+        table,
+        cols,
+        lambda c: f"sum(CAST({quote(c)} AS DOUBLE)), count(*) FILTER ({quote(c)} <> 0)",
     )
-    row = con.execute(f"SELECT {parts} FROM {quote(table)}").fetchall()[0]
     return {c: (row[2 * i] or 0.0, row[2 * i + 1]) for i, c in enumerate(cols)}
 
 
 def _skipped(con: duckdb.DuckDBPyConnection, table: str, cols: list[str]) -> list[str]:
-    """Text columns holding some numbers, as `table.col (e.g. 'n/a')`; one query per table."""
-    if not cols:
-        return []
-    parts = ", ".join(
-        f"count(TRY_CAST({quote(c)} AS DOUBLE)), "
-        f"any_value({quote(c)}) FILTER (TRY_CAST({quote(c)} AS DOUBLE) IS NULL "
-        f"OR isnan(TRY_CAST({quote(c)} AS DOUBLE)))"
-        for c in cols
+    """Text columns holding some numbers, as `table.col (e.g. 'n/a')`."""
+    row = _row(
+        con,
+        table,
+        cols,
+        lambda c: (
+            f"count(TRY_CAST({quote(c)} AS DOUBLE)), "
+            f"any_value({quote(c)}) FILTER (TRY_CAST({quote(c)} AS DOUBLE) IS NULL "
+            f"OR isnan(TRY_CAST({quote(c)} AS DOUBLE)))"
+        ),
     )
-    row = con.execute(f"SELECT {parts} FROM {quote(table)}").fetchall()[0]
     return [
         f"{table}.{c} (e.g. {row[2 * i + 1]!r})"
         for i, c in enumerate(cols)

@@ -305,15 +305,13 @@ class TestEdges:
         result, problems, _ = prepare(con, rows, "num", numerical={"f": {"strategy": "log1p"}})
         assert result is None and "above -1" in problems[0]
 
-    @pytest.mark.xfail(
-        strict=True, reason="BUG-020: finite 1e308 values are reported as NaN or infinite"
-    )
     def test_a_finite_huge_value_is_not_called_infinite(self, con):
         rows = [(i, 1e308 * (1 if i % 2 else -1), "y" if i % 2 else "n") for i in range(60)]
         result, problems, _ = prepare(
             con, rows, "num", numerical={"f": {"strategy": "standard_scale"}}
         )
         assert not any("NaN or infinite" in p for p in problems)
+        assert any("too large to scale" in p for p in problems)
 
     def test_too_many_categories_names_the_limit(self, con):
         rows = [(i, f"c{i}", "y" if i % 2 else "n") for i in range(60)]

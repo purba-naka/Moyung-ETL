@@ -146,21 +146,23 @@ class TestTypes:
         s = bind([["Item", "Qty", "Price"], ["pen", 1, 2.0], ["ink", 2, 3.0]], previous_from())
         assert s.status in ("exact", "shifted")
 
-    @pytest.mark.xfail(
-        strict=True, reason="BUG-025: a header that only changes letter case is called drift"
-    )
     def test_a_header_that_only_changes_case_is_not_drift(self):
         s = bind([["Item", "QTY", "Price"], ["pen", 1, 2.5]], previous_from())
-        assert s.status in ("exact", "shifted")
+        assert s.status == "shifted"
+        assert any("letter case changed" in d and "'Qty' -> 'QTY'" in d for d in s.diff)
 
-    @pytest.mark.xfail(
-        strict=True, reason="BUG-026: a column that is empty this month turns VARCHAR and is drift"
-    )
     def test_a_column_that_is_empty_this_month_is_not_drift(self):
         s = bind(
             [["Item", "Qty", "Price"], ["pen", None, 2.5], ["ink", None, 1.5]], previous_from()
         )
         assert s.status in ("exact", "shifted")
+
+    def test_an_empty_month_keeps_the_old_type_for_the_next_month(self):
+        empty = [["Item", "Qty", "Price"], ["pen", None, 2.5], ["ink", None, 1.5]]
+        after_empty = rebind(spec(), {"f": make_xlsx({"Data": empty})}, previous_from()).records()
+        text = [["Item", "Qty", "Price"], ["pen", "many", 2.5]]
+        s = bind(text, after_empty)
+        assert s.status == "drift" and any("was BIGINT, is now VARCHAR" in d for d in s.diff)
 
 
 class TestRecords:

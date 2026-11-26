@@ -83,17 +83,15 @@ class TestNames:
         with pytest.raises(SpecError):
             _parse(_base(sources={name: SRC}, steps=[], outputs={}))
 
-    @pytest.mark.parametrize("name", ["a", "A1", "a_b", "a" * 63, "_a", "_1", "_" + "a" * 63])
+    @pytest.mark.parametrize(
+        "name", ["a", "A1", "a_b", "a" * 63, "a" * 64, "_a", "_1", "_" + "a" * 63]
+    )
     def test_good_source_names(self, name):
         assert name in _parse(_base(sources={name: SRC}, steps=[], outputs={})).sources
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason="BUG-011: the error says 1-64 characters, a letter-first name stops at 63",
-    )
-    def test_a_64_character_name_starting_with_a_letter_is_accepted_as_the_message_says(self):
-        name = "a" * 64
-        assert name in _parse(_base(sources={name: SRC}, steps=[], outputs={})).sources
+    def test_the_name_message_mentions_the_underscore_form(self):
+        with pytest.raises(SpecError, match="with _ and then a letter or digit"):
+            _parse(_base(sources={"a b": SRC}, steps=[], outputs={}))
 
     def test_sources_that_differ_only_in_case(self):
         with pytest.raises(SpecError, match="differ only in letter case"):

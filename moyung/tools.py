@@ -248,6 +248,10 @@ class JobTools:
         = csv, `.parquet` `.pq` = parquet, `.json` = json (an array of objects), `.jsonl`
         `.ndjson` = jsonl, anything else = Excel. Re-registering an id replaces
         it (a new upload)."""
+        if not isinstance(filename, str) or not filename:
+            raise ValueError(
+                f"filename must be a non-empty string such as 'jan.xlsx', got {filename!r}"
+            )
         kind = kind_of_filename(filename)
         wb = read_file(file_id, self.provider, f"file {file_id!r}", kind)
         self.job.update(lambda s: add_file(s, file_id, filename, wb.sha256, role or None, kind))
@@ -590,15 +594,22 @@ class JobTools:
     @_tool
     def relate_tables(self, a: str, b: str, offset: int = 0, budget: int = 24_000) -> dict:
         """Which columns of two tables share values, to find a join key. `a`, `b` = region ids
-        from sheet_regions (F1.S2.R1; the file is part of the id), possibly of different files.
+        from sheet_regions (F1.S2.R1; the file is part of the id), or the file id (F2) of a
+        CSV, Parquet or JSON file, possibly of different files.
         Per pair: cardinality (N:1 = lookup, N:M = a join multiplies rows), shared values and
         a few values each side lacks."""
+        sides = []
         for ref in (a, b):
-            if not isinstance(ref, str) or "." not in ref:
+            if not isinstance(ref, str):
                 raise ValueError(f"{ref!r} is not a region id; use the form F1.S2.R1")
-        fa, wa = self._book(a.split(".")[0])
-        fb, wb = self._book(b.split(".")[0])
-        return tables.relate_tables(wa, fa, a, wb, fb, b, offset, budget)
+            fid, f = self._file(ref.split(".")[0])
+            if isinstance(f, TableFile) and "." in ref:
+                raise ValueError(f"{fid} is a {f.format} file with no regions; give just {fid}")
+            if not isinstance(f, TableFile) and "." not in ref:
+                raise ValueError(f"{ref!r} is not a region id; use the form F1.S2.R1")
+            sides.append((f, fid, ref))
+        (wa, fa, ra), (wb, fb, rb) = sides
+        return tables.relate_tables(wa, fa, ra, wb, fb, rb, offset, budget)
 
     @_tool
     def find_text(self, file: str, query: str, offset: int = 0, budget: int = 24_000) -> dict:
