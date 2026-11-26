@@ -28,9 +28,9 @@ Baseline 2026-11-25 (main 260ee8f): 1759 passed, 25 skipped, line+branch 97%, 18
 
 | id | modul | gejala | status |
 |----|-------|--------|--------|
-| BUG-001 | source csv | file non-UTF-8 menghasilkan "internal error (InvalidInputException)" | terbuka |
-| BUG-002 | tablefile/csv | header duplikat diam-diam menjadi `Qty_1` | terbuka |
-| BUG-003 | auto.py | CSV melempar WorkbookError mentah | terbuka |
+| BUG-001 | source csv | file non-UTF-8 menghasilkan "internal error (InvalidInputException)" | fixed: lewat BUG-001b dan 001c (#36), pesan "Invalid unicode on line N: the file is not UTF-8 text" |
+| BUG-002 | tablefile/csv | header duplikat diam-diam menjadi `Qty_1` | fixed: lewat BUG-002b (#40), run memberi peringatan header ganda |
+| BUG-003 | auto.py | CSV melempar WorkbookError mentah | fixed: lewat BUG-003b (#35), auto memberi status unreadable |
 | BUG-004 | relate_tables | menuntut bentuk F1.S2.R1 | fixed: file tabel cukup pakai id file seperti F2; id region pada file tabel dan id workbook polos ditolak dengan pesan jelas |
 | BUG-005 | engine._publish | tidak atomic | fixed: file lama dipindah ke .bak dulu; bila satu file gagal, semua file baru dicabut dan file lama dikembalikan |
 | BUG-006 | auto.py | exit code sama untuk partial dan failed | fixed: CLI keluar 0 untuk ok, 2 untuk partial, 1 untuk lainnya |
