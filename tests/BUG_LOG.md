@@ -31,7 +31,7 @@ Baseline 2026-11-25 (main 260ee8f): 1759 passed, 25 skipped, line+branch 97%, 18
 | BUG-001 | source csv | file non-UTF-8 menghasilkan "internal error (InvalidInputException)" | terbuka |
 | BUG-002 | tablefile/csv | header duplikat diam-diam menjadi `Qty_1` | terbuka |
 | BUG-003 | auto.py | CSV melempar WorkbookError mentah | terbuka |
-| BUG-004 | relate_tables | menuntut bentuk F1.S2.R1 | terbuka |
+| BUG-004 | relate_tables | menuntut bentuk F1.S2.R1 | fixed: file tabel cukup pakai id file seperti F2; id region pada file tabel dan id workbook polos ditolak dengan pesan jelas |
 | BUG-005 | engine._publish | tidak atomic | terbuka |
 | BUG-006 | auto.py | exit code sama untuk partial dan failed | terbuka |
 
